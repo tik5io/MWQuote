@@ -1,0 +1,152 @@
+{
+    "name": "Projet Exemple",
+    "reference": "PRJ-2024-001",
+    "client": "Client Test",
+    "operations": [
+        {
+            "code": "USI",
+            "label": "Usinage pi\u00e8ce",
+            "costs": {
+                "Acier inox 316L": {
+                    "name": "Acier inox 316L",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "\u00c9chelons",
+                        "fixed_price": 0.0,
+                        "unit_price": 0.0,
+                        "unit": "pi\u00e8ce",
+                        "tiers": [
+                            {
+                                "min_quantity": 1,
+                                "max_quantity": 50,
+                                "unit_price": 15.0,
+                                "description": "Prix standard"
+                            },
+                            {
+                                "min_quantity": 51,
+                                "max_quantity": 200,
+                                "unit_price": 12.0,
+                                "description": "Remise 20%"
+                            },
+                            {
+                                "min_quantity": 201,
+                                "max_quantity": null,
+                                "unit_price": 10.0,
+                                "description": "Remise 33%"
+                            }
+                        ]
+                    },
+                    "fixed_time": 0.0,
+                    "per_piece_time": 0.0,
+                    "margin_percentage": 0.0,
+                    "supplier_quote_ref": "FOURNISSEUR-001",
+                    "comment": "Mati\u00e8re premi\u00e8re"
+                },
+                "Temps d'usinage": {
+                    "name": "Phase 1",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Forfait",
+                        "fixed_price": 0.0,
+                        "unit_price": 0.0,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 2.0,
+                    "per_piece_time": 0.15,
+                    "margin_percentage": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": "R\u00e9glage + usinage"
+                },
+                "Temps d'usinage (copie)": {
+                    "name": "Phase 2",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Forfait",
+                        "fixed_price": 0.0,
+                        "unit_price": 0.0,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 2.0,
+                    "per_piece_time": 0.15,
+                    "margin_percentage": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": "R\u00e9glage + usinage"
+                },
+                "Marge commerciale": {
+                    "name": "Marge commerciale",
+                    "cost_type": "Marge",
+                    "pricing": {
+                        "pricing_type": "Forfait",
+                        "fixed_price": 0.0,
+                        "unit_price": 0.0,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.0,
+                    "per_piece_time": 0.0,
+                    "margin_percentage": 25.0,
+                    "supplier_quote_ref": null,
+                    "comment": "Marge standard"
+                }
+            },
+            "total_pieces": 100
+        },
+        {
+            "code": "TRT",
+            "label": "Traitement de surface",
+            "costs": {
+                "Anodisation": {
+                    "name": "Anodisation",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Forfait",
+                        "fixed_price": 500.0,
+                        "unit_price": 0.0,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.0,
+                    "per_piece_time": 0.0,
+                    "margin_percentage": 0.0,
+                    "supplier_quote_ref": "ANODISEUR-42",
+                    "comment": "Traitement lot complet"
+                },
+                "Contr\u00f4le qualit\u00e9": {
+                    "name": "Contr\u00f4le qualit\u00e9",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Forfait",
+                        "fixed_price": 0.0,
+                        "unit_price": 0.0,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.0,
+                    "per_piece_time": 0.05,
+                    "margin_percentage": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": "Inspection visuelle et dimensionnelle"
+                },
+                "Marge traitement": {
+                    "name": "Marge traitement",
+                    "cost_type": "Marge",
+                    "pricing": {
+                        "pricing_type": "Forfait",
+                        "fixed_price": 0.0,
+                        "unit_price": 0.0,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.0,
+                    "per_piece_time": 0.0,
+                    "margin_percentage": 15.0,
+                    "supplier_quote_ref": null,
+                    "comment": "Marge sur traitement"
+                }
+            },
+            "total_pieces": 100
+        }
+    ]
+}

@@ -41,7 +41,7 @@ def create_sample_project():
     machining_cost = CostItem(
         name="Temps d'usinage",
         cost_type=CostType.INTERNAL_OPERATION,
-        pricing=PricingStructure(pricing_type=PricingType.FIXED),
+        pricing=PricingStructure(pricing_type=PricingType.PER_UNIT),
         fixed_time=2.0,
         per_piece_time=0.15,
         comment="Réglage + usinage"
@@ -52,7 +52,7 @@ def create_sample_project():
     margin_cost = CostItem(
         name="Marge commerciale",
         cost_type=CostType.MARGIN,
-        pricing=PricingStructure(pricing_type=PricingType.FIXED),
+        pricing=PricingStructure(pricing_type=PricingType.PER_UNIT),
         margin_percentage=25.0,
         comment="Marge standard"
     )
@@ -65,7 +65,7 @@ def create_sample_project():
     
     # Sous-traitance avec prix forfaitaire
     subcontracting_pricing = PricingStructure(
-        pricing_type=PricingType.FIXED,
+        pricing_type=PricingType.PER_UNIT,
         fixed_price=500.0
     )
     subcontracting_cost = CostItem(
@@ -81,7 +81,7 @@ def create_sample_project():
     qa_cost = CostItem(
         name="Contrôle qualité",
         cost_type=CostType.INTERNAL_OPERATION,
-        pricing=PricingStructure(pricing_type=PricingType.FIXED),
+        pricing=PricingStructure(pricing_type=PricingType.PER_UNIT),
         fixed_time=1.0,
         per_piece_time=0.05,
         comment="Inspection visuelle et dimensionnelle"
@@ -92,7 +92,7 @@ def create_sample_project():
     margin2_cost = CostItem(
         name="Marge traitement",
         cost_type=CostType.MARGIN,
-        pricing=PricingStructure(pricing_type=PricingType.FIXED),
+        pricing=PricingStructure(pricing_type=PricingType.PER_UNIT),
         margin_percentage=15.0,
         comment="Marge sur traitement"
     )

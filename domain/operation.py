@@ -9,15 +9,17 @@ class Operation:
     costs: Dict[str, CostItem] = field(default_factory=dict)
     total_pieces: int = 1  # Number of pieces for per-piece calculations
 
-    def total_cost(self) -> float:
+    def total_cost(self, quantity: int = None) -> float:
         """Calculate total cost including materials, subcontracting, internal operations"""
-        base_cost = sum(item.calculate_value(self.total_pieces) for item in self.costs.values()
+        q = quantity if quantity is not None else self.total_pieces
+        base_cost = sum(item.calculate_value(q) for item in self.costs.values()
                        if item.cost_type != CostType.MARGIN)
         return base_cost
 
-    def total_with_margins(self) -> float:
+    def total_with_margins(self, quantity: int = None) -> float:
         """Calculate total cost including margins"""
-        base_cost = self.total_cost()
+        q = quantity if quantity is not None else self.total_pieces
+        base_cost = self.total_cost(q)
         total_margin = sum(item.margin_percentage / 100 * base_cost
                           for item in self.costs.values()
                           if item.cost_type == CostType.MARGIN)

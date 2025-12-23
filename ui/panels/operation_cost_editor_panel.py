@@ -242,11 +242,11 @@ class OperationCostEditorPanel(wx.Panel):
                 self.prop_pricing_type.Bind(wx.EVT_CHOICE, self._on_pricing_type_changed)
                 grid.Add(self.prop_pricing_type, 1, wx.EXPAND)
 
-                if cost.pricing.pricing_type == PricingType.FIXED:
-                    grid.Add(wx.StaticText(self.properties_panel, label="Prix fixe (€):"))
+                if cost.pricing.pricing_type == PricingType.PER_UNIT:
+                    grid.Add(wx.StaticText(self.properties_panel, label="Frais fixes (€):"))
                     self.prop_fixed_price = wx.TextCtrl(self.properties_panel, value=f"{cost.pricing.fixed_price:.2f}")
                     grid.Add(self.prop_fixed_price, 1, wx.EXPAND)
-                elif cost.pricing.pricing_type == PricingType.PER_UNIT:
+                    
                     grid.Add(wx.StaticText(self.properties_panel, label="Prix unitaire (€):"))
                     self.prop_unit_price = wx.TextCtrl(self.properties_panel, value=f"{cost.pricing.unit_price:.2f}")
                     grid.Add(self.prop_unit_price, 1, wx.EXPAND)
@@ -275,6 +275,17 @@ class OperationCostEditorPanel(wx.Panel):
                 grid.Add(wx.StaticText(self.properties_panel, label="Marge (%):"))
                 self.prop_margin_pct = wx.TextCtrl(self.properties_panel, value=f"{cost.margin_percentage:.1f}")
                 grid.Add(self.prop_margin_pct, 1, wx.EXPAND)
+
+        # Conversion section
+        if cost.cost_type != CostType.MARGIN:
+            grid.Add(wx.StaticLine(self.properties_panel), 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 5)
+            grid.Add(wx.StaticLine(self.properties_panel), 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 5)
+            
+            lbl_mult = wx.StaticText(self.properties_panel, label="Multiplier (unit/pc):")
+            lbl_mult.SetToolTip("Facteur de conversion. Ex: mètres par pièce.")
+            grid.Add(lbl_mult, 0, wx.ALIGN_CENTER_VERTICAL)
+            self.prop_multiplier = wx.TextCtrl(self.properties_panel, value=f"{cost.quantity_multiplier:.4f}")
+            grid.Add(self.prop_multiplier, 1, wx.EXPAND)
 
         self.dynamic_fields_sizer.Add(grid, 1, wx.EXPAND)
         self.dynamic_fields_sizer.Layout()
@@ -305,9 +316,8 @@ class OperationCostEditorPanel(wx.Panel):
                 cost.name = self.prop_cost_name.GetValue()
                 cost.comment = self.prop_comment.GetValue() or None
                 if cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING]:
-                    if cost.pricing.pricing_type == PricingType.FIXED:
+                    if cost.pricing.pricing_type == PricingType.PER_UNIT:
                         cost.pricing.fixed_price = float(self.prop_fixed_price.GetValue())
-                    elif cost.pricing.pricing_type == PricingType.PER_UNIT:
                         cost.pricing.unit_price = float(self.prop_unit_price.GetValue())
                         cost.pricing.unit = self.prop_unit.GetValue()
                     cost.supplier_quote_ref = self.prop_supplier_ref.GetValue() or None
@@ -316,6 +326,10 @@ class OperationCostEditorPanel(wx.Panel):
                     cost.per_piece_time = float(self.prop_per_piece_time.GetValue())
                 elif cost.cost_type == CostType.MARGIN:
                     cost.margin_percentage = float(self.prop_margin_pct.GetValue())
+                
+                # Save conversion factors
+                if cost.cost_type != CostType.MARGIN:
+                    cost.quantity_multiplier = float(self.prop_multiplier.GetValue())
                 
                 item = self.tree.GetSelection()
                 cost_icon = "💰" if cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING] else "⚙️" if cost.cost_type == CostType.INTERNAL_OPERATION else "📈"
@@ -351,7 +365,7 @@ class OperationCostEditorPanel(wx.Panel):
                 name = f"Nouveau {ct.value.lower()} {i}"
                 i += 1
             
-            pricing = PricingStructure(PricingType.FIXED)
+            pricing = PricingStructure(PricingType.PER_UNIT)
             cost = CostItem(name, ct, pricing)
             op.costs[name] = cost
             
@@ -404,12 +418,75 @@ class OperationCostEditorPanel(wx.Panel):
         self._update_totals()
 
     def _on_move_up(self, event):
-        # Simplifié pour le moment
-        pass
+        item = self.tree.GetSelection()
+        if not item.IsOk() or item == self.root: return
+        data = self.tree.GetItemData(item)
+        
+        if data["type"] == "operation":
+            ops = self.project.operations
+            op = data["operation"]
+            idx = ops.index(op)
+            if idx > 0:
+                ops[idx], ops[idx-1] = ops[idx-1], ops[idx]
+                self._refresh_tree_and_select(op)
+        else:
+            op = data["operation"]
+            cost = data["cost"]
+            costs_list = list(op.costs.items())
+            idx = -1
+            for i, (name, c) in enumerate(costs_list):
+                if c == cost:
+                    idx = i
+                    break
+            if idx > 0:
+                costs_list[idx], costs_list[idx-1] = costs_list[idx-1], costs_list[idx]
+                op.costs = dict(costs_list)
+                self._refresh_tree_and_select(cost)
 
     def _on_move_down(self, event):
-        # Simplifié pour le moment
-        pass
+        item = self.tree.GetSelection()
+        if not item.IsOk() or item == self.root: return
+        data = self.tree.GetItemData(item)
+        
+        if data["type"] == "operation":
+            ops = self.project.operations
+            op = data["operation"]
+            idx = ops.index(op)
+            if idx < len(ops) - 1:
+                ops[idx], ops[idx+1] = ops[idx+1], ops[idx]
+                self._refresh_tree_and_select(op)
+        else:
+            op = data["operation"]
+            cost = data["cost"]
+            costs_list = list(op.costs.items())
+            idx = -1
+            for i, (name, c) in enumerate(costs_list):
+                if c == cost:
+                    idx = i
+                    break
+            if idx < len(costs_list) - 1:
+                costs_list[idx], costs_list[idx+1] = costs_list[idx+1], costs_list[idx]
+                op.costs = dict(costs_list)
+                self._refresh_tree_and_select(cost)
+
+    def _refresh_tree_and_select(self, target_obj):
+        self._refresh_tree()
+        self._select_object(self.root, target_obj)
+
+    def _select_object(self, parent_item, target_obj):
+        child, cookie = self.tree.GetFirstChild(parent_item)
+        while child.IsOk():
+            data = self.tree.GetItemData(child)
+            if data:
+                if (data["type"] == "operation" and data["operation"] == target_obj) or \
+                   (data["type"] == "cost" and data["cost"] == target_obj):
+                    self.tree.SelectItem(child)
+                    self.tree.EnsureVisible(child)
+                    return True
+            if self._select_object(child, target_obj):
+                return True
+            child, cookie = self.tree.GetNextChild(parent_item, cookie)
+        return False
 
     def _on_pieces_changed(self, event):
         val = self.pieces_ctrl.GetValue()
@@ -468,7 +545,8 @@ class TiersEditorDialog(wx.Dialog):
         self.list = wx.ListCtrl(self, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
         self.list.InsertColumn(0, "Qté Min", width=80)
         self.list.InsertColumn(1, "Qté Max", width=80)
-        self.list.InsertColumn(2, "Prix Unitaire", width=100)
+        self.list.InsertColumn(2, "Fixe (€)", width=100)
+        self.list.InsertColumn(3, "Unitaire (€)", width=100)
         self._refresh_list()
         sizer.Add(self.list, 1, wx.EXPAND | wx.ALL, 10)
 
@@ -496,7 +574,8 @@ class TiersEditorDialog(wx.Dialog):
         for i, t in enumerate(self.tiers):
             self.list.InsertItem(i, str(t.min_quantity))
             self.list.SetItem(i, 1, str(t.max_quantity) if t.max_quantity else "∞")
-            self.list.SetItem(i, 2, f"{t.unit_price:.2f}")
+            self.list.SetItem(i, 2, f"{t.fixed_price:.2f}")
+            self.list.SetItem(i, 3, f"{t.unit_price:.2f}")
 
     def _on_add(self, event):
         dlg = SingleTierDialog(self)
@@ -515,20 +594,26 @@ class TiersEditorDialog(wx.Dialog):
         return self.tiers
 
 class SingleTierDialog(wx.Dialog):
-    def __init__(self, parent):
-        super().__init__(parent, title="Nouvel échelon", size=(300, 200))
+    def __init__(self, parent, tier=None):
+        super().__init__(parent, title="Détail de l'échelon", size=(350, 250))
+        self.tier = tier
         grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=10)
         
         grid.Add(wx.StaticText(self, label="Quantité Min:"))
-        self.min_q = wx.SpinCtrl(self, min=0, max=1000000)
+        self.min_q = wx.SpinCtrl(self, min=0, max=1000000, initial=tier.min_quantity if tier else 0)
         grid.Add(self.min_q, 1, wx.EXPAND)
         
         grid.Add(wx.StaticText(self, label="Quantité Max:"))
-        self.max_q = wx.TextCtrl(self, value="")
+        val_max = str(tier.max_quantity) if tier and tier.max_quantity else ""
+        self.max_q = wx.TextCtrl(self, value=val_max)
         grid.Add(self.max_q, 1, wx.EXPAND)
+
+        grid.Add(wx.StaticText(self, label="Frais fixes (€):"))
+        self.fixed = wx.TextCtrl(self, value=f"{tier.fixed_price:.2f}" if tier else "0.0")
+        grid.Add(self.fixed, 1, wx.EXPAND)
         
-        grid.Add(wx.StaticText(self, label="Prix Unitaire:"))
-        self.price = wx.TextCtrl(self, value="0.0")
+        grid.Add(wx.StaticText(self, label="Prix Unitaire (€):"))
+        self.price = wx.TextCtrl(self, value=f"{tier.unit_price:.2f}" if tier else "0.0")
         grid.Add(self.price, 1, wx.EXPAND)
         
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -541,5 +626,6 @@ class SingleTierDialog(wx.Dialog):
         return PricingTier(
             min_quantity=self.min_q.GetValue(),
             max_quantity=int(mq) if mq else None,
+            fixed_price=float(self.fixed.GetValue()),
             unit_price=float(self.price.GetValue())
         )

@@ -1,7 +1,7 @@
-# domain/cost.py
+import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Union
 
 class CostType(Enum):
     MATERIAL = "Matière"
@@ -10,7 +10,6 @@ class CostType(Enum):
     MARGIN = "Marge"
 
 class PricingType(Enum):
-    FIXED = "Forfait"  # Prix fixe
     PER_UNIT = "Par unité"  # Prix par unité (pièce, mètre, kg, etc.)
     TIERED = "Échelons"  # Tarification par échelons de quantité
 
@@ -19,10 +18,11 @@ class PricingTier:
     """Un échelon de tarification avec plage de quantité"""
     min_quantity: int = 0  # Quantité minimale pour cet échelon
     max_quantity: Optional[int] = None  # Quantité maximale (None = illimité)
-    unit_price: float = 0.0  # Prix unitaire pour cet échelon
-    description: str = ""  # Description optionnelle (ex: "Remise 10%")
+    fixed_price: float = 0.0  # Part fixe du tarif pour cet échelon
+    unit_price: float = 0.0  # Part unitaire pour cet échelon
+    description: str = ""  # Description optionnelle
 
-    def applies_to_quantity(self, quantity: int) -> bool:
+    def applies_to_quantity(self, quantity: Union[int, float]) -> bool:
         """Vérifie si cet échelon s'applique à la quantité donnée"""
         if quantity < self.min_quantity:
             return False
@@ -34,11 +34,10 @@ class PricingTier:
 class PricingStructure:
     """Structure de tarification flexible"""
     pricing_type: PricingType
-    # For FIXED pricing
+    # For legacy/simple PER_UNIT pricing (using a virtual 0-inf tier)
     fixed_price: float = 0.0
-    # For PER_UNIT pricing
     unit_price: float = 0.0
-    unit: str = "pièce"  # unité: pièce, mètre, kg, litre, etc.
+    unit: str = "pièce"
     # For TIERED pricing
     tiers: List[PricingTier] = None
 
@@ -46,38 +45,27 @@ class PricingStructure:
         if self.tiers is None:
             self.tiers = []
 
-    def calculate_price(self, total_quantity: int = 1) -> float:
+    def calculate_price(self, total_quantity: Union[int, float] = 1) -> float:
         """Calcule le prix selon le type de tarification"""
         match self.pricing_type:
-            case PricingType.FIXED:
-                return self.fixed_price
             case PricingType.PER_UNIT:
-                return self.unit_price * total_quantity
+                return self.fixed_price + (self.unit_price * total_quantity)
             case PricingType.TIERED:
                 return self._calculate_tiered_price(total_quantity)
 
-    def _calculate_tiered_price(self, total_quantity: int) -> float:
+    def _calculate_tiered_price(self, total_quantity: Union[int, float]) -> float:
         """Calcule le prix avec tarification par échelons"""
         if not self.tiers:
             return 0.0
 
-        # Trouver l'échelon applicable
-        applicable_tier = None
-        for tier in sorted(self.tiers, key=lambda t: t.min_quantity):
-            if tier.applies_to_quantity(total_quantity):
-                applicable_tier = tier
-                break
+        tier = self.get_applicable_tier(total_quantity)
+        if not tier:
+            # Si aucun échelon ne correspond, prendre le plus proche
+            tier = sorted(self.tiers, key=lambda t: abs(t.min_quantity - total_quantity))[0]
 
-        if applicable_tier:
-            return applicable_tier.unit_price * total_quantity
-        else:
-            # Si aucun échelon ne correspond, prendre le dernier (quantité max)
-            if self.tiers:
-                last_tier = max(self.tiers, key=lambda t: t.min_quantity)
-                return last_tier.unit_price * total_quantity
-            return 0.0
+        return tier.fixed_price + (tier.unit_price * total_quantity)
 
-    def get_applicable_tier(self, total_quantity: int) -> Optional[PricingTier]:
+    def get_applicable_tier(self, total_quantity: Union[int, float]) -> Optional[PricingTier]:
         """Retourne l'échelon applicable pour une quantité donnée"""
         for tier in sorted(self.tiers, key=lambda t: t.min_quantity):
             if tier.applies_to_quantity(total_quantity):
@@ -89,11 +77,13 @@ class CostItem:
     name: str
     cost_type: CostType
     pricing: PricingStructure
-    # For internal operations (if applicable)
-    fixed_time: float = 0.0  # in hours
-    per_piece_time: float = 0.0  # in hours per piece
+    # For internal operations
+    fixed_time: float = 0.0  # legacy flat time
+    per_piece_time: float = 0.0  # legacy per piece time
     # For margins
     margin_percentage: float = 0.0
+    # Conversion parameters
+    quantity_multiplier: float = 1.0  # units per piece (e.g. meter/piece)
     # Supplier quote reference
     supplier_quote_ref: Optional[str] = None
     # Common
@@ -101,12 +91,19 @@ class CostItem:
 
     def calculate_value(self, total_pieces: int = 1) -> float:
         """Calculate the total value based on cost type"""
+        # Base quantity conversion
+        units = total_pieces * self.quantity_multiplier
+        
         match self.cost_type:
             case CostType.MATERIAL | CostType.SUBCONTRACTING:
-                return self.pricing.calculate_price(total_pieces)
+                return self.pricing.calculate_price(units)
             case CostType.INTERNAL_OPERATION:
-                return self.fixed_time + (self.per_piece_time * total_pieces)
+                # Internal operations also use the PricingStructure if set, 
+                # but fallback to fixed_time + per_piece_time for legacy compatibility
+                if self.pricing and (self.pricing.unit_price != 0 or self.pricing.fixed_price != 0 or self.pricing.tiers):
+                    return self.pricing.calculate_price(units)
+                return self.fixed_time + (self.per_piece_time * units)
             case CostType.MARGIN:
-                return 0.0  # Margins are calculated separately
+                return 0.0
             case _:
                 return 0.0
