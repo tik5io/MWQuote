@@ -169,8 +169,9 @@ class ResultSummaryPanel(wx.Panel):
                 val_pc = item.total_with_margins(qty)
                 val_total = val_pc * qty
                 title = f"Opération : {item.label or item.code}"
-                
-                for cost in item.costs.values():
+
+                # Utiliser _get_active_costs() pour n'inclure que les coûts actifs (sous-traitance)
+                for cost in item._get_active_costs():
                     res = Calculator.calculate_item(cost, qty)
                     if cost.cost_type == CostType.INTERNAL_OPERATION:
                         total_h += cost.fixed_time + (cost.per_piece_time * qty)

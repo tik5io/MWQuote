@@ -1,6 +1,7 @@
 # ui/panels/comparison_panel.py
 import wx
 import os
+import wx.grid
 from infrastructure.persistence import PersistenceService
 from domain.calculator import Calculator
 from domain.cost import CostType
@@ -30,19 +31,54 @@ class ComparisonPanel(wx.Panel):
         
         main_sizer.Add(tool_sizer, 0, wx.EXPAND | wx.BOTTOM, 5)
         
-        # --- Comparison Grid (Scrolled) ---
-        self.scroll = wx.ScrolledWindow(self)
-        self.scroll.SetScrollRate(20, 20)
-        # Fix: rows=0 to allow any number of rows
-        self.grid_sizer = wx.FlexGridSizer(rows=0, cols=1, vgap=8, hgap=10)
+        # Splitter for Metrics/Table vs Charts
+        self.main_splitter = wx.SplitterWindow(self, style=wx.SP_LIVE_UPDATE | wx.SP_3D)
+        self.main_splitter.SetMinimumPaneSize(100)
         
+        # --- Comparison Content (Scrolled) ---
+        self.scroll = wx.ScrolledWindow(self.main_splitter)
+        self.scroll.SetScrollRate(20, 20)
+        self.grid_sizer = wx.FlexGridSizer(rows=0, cols=1, vgap=8, hgap=10)
         self.scroll.SetSizer(self.grid_sizer)
-        main_sizer.Add(self.scroll, 1, wx.EXPAND | wx.ALL, 5)
+        
+        # --- Smart Comparison Grid ---
+        self.grid_container = wx.Panel(self.scroll)
+        self.grid_sizer_v = wx.BoxSizer(wx.VERTICAL)
+        
+        lbl = wx.StaticText(self.grid_container, label="OFFRES DE VENTE (Smart Match / Quantités Projet 1)")
+        lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        lbl.SetForegroundColour(wx.Colour(100, 100, 100))
+        self.grid_sizer_v.Add(lbl, 0, wx.ALL, 5)
+        
+        self.smart_grid = wx.grid.Grid(self.grid_container)
+        self.smart_grid.CreateGrid(0, 0)
+        self.smart_grid.EnableEditing(False)
+        self.smart_grid.SetDefaultCellAlignment(wx.ALIGN_RIGHT, wx.ALIGN_CENTER_VERTICAL)
+        self.grid_sizer_v.Add(self.smart_grid, 1, wx.EXPAND | wx.ALL, 5)
+        
+        self.grid_container.SetSizer(self.grid_sizer_v)
+        self.grid_sizer.Add(self.grid_container, 0, wx.EXPAND | wx.ALL, 5)
+
+        # --- Sub-Header for Metrics ---
+        self.metric_lbl = wx.StaticText(self.scroll, label="DÉTAILS ANALYSE (Quantité sélectionnée)")
+        self.metric_lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        self.metric_lbl.SetForegroundColour(wx.Colour(100, 100, 100))
+        self.grid_sizer.Add(self.metric_lbl, 0, wx.ALL | wx.TOP, 15)
+        
+        # Inner grid for metrics
+        self.metrics_inner_grid = wx.FlexGridSizer(rows=0, cols=1, vgap=8, hgap=10)
+        self.grid_sizer.Add(self.metrics_inner_grid, 0, wx.EXPAND | wx.ALL, 5)
         
         # --- Charts Section ---
-        self.chart_panel = wx.Panel(self, size=(-1, 260))
+        self.chart_panel = wx.Panel(self.main_splitter, size=(-1, 400))
+        self.chart_panel.SetMinSize((-1, 200))
         self.chart_panel.Bind(wx.EVT_PAINT, self._on_paint_charts)
-        main_sizer.Add(self.chart_panel, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Split!
+        self.main_splitter.SplitHorizontally(self.scroll, self.chart_panel, -300)
+        self.main_splitter.SetSashGravity(1.0)
+        
+        main_sizer.Add(self.main_splitter, 1, wx.EXPAND | wx.ALL, 5)
         
         self.SetSizer(main_sizer)
 
@@ -88,16 +124,39 @@ class ComparisonPanel(wx.Panel):
         self.Refresh()
 
     def _update_comparison_grid(self):
-        self.grid_sizer.Clear(True)
-        # Set column count based on projects
-        self.grid_sizer.SetCols(len(self.projects) + 1)
+        if not self.projects: return
+        
+        # 1. Update Smart Match Grid
+        self.smart_grid.ClearGrid()
+        if self.smart_grid.GetNumberRows() > 0: self.smart_grid.DeleteRows(0, self.smart_grid.GetNumberRows())
+        if self.smart_grid.GetNumberCols() > 0: self.smart_grid.DeleteCols(0, self.smart_grid.GetNumberCols())
+        
+        base_qtys = sorted(self.projects[0].sale_quantities)
+        self.smart_grid.AppendCols(len(self.projects))
+        self.smart_grid.AppendRows(len(base_qtys))
+        
+        for i, p in enumerate(self.projects):
+            self.smart_grid.SetColLabelValue(i, f"{p.name}\n({p.reference})")
+        
+        for i, q in enumerate(base_qtys):
+            self.smart_grid.SetRowLabelValue(i, f"Qté: {q}")
+            for j, p in enumerate(self.projects):
+                price = p.total_price(q)
+                self.smart_grid.SetCellValue(i, j, f"{price:.4f} €/pc")
+                if j == 0:
+                    self.smart_grid.SetCellBackgroundColour(i, j, wx.Colour(245, 245, 245))
+        
+        self.smart_grid.AutoSize()
+        
+        # 2. Update Metrics Inner Grid
+        self.metrics_inner_grid.Clear(True)
+        self.metrics_inner_grid.SetCols(len(self.projects) + 1)
         
         qty_str = self.qty_choice.GetStringSelection()
         qty = int(qty_str) if qty_str else 0
         
         labels = [
             "Projet / Réf",
-            "Vente Unit. (€/pc)",
             "Vente Totale (Lot)",
             "Répart. Achats (%)",
             "Répart. Interne (%)",
@@ -109,57 +168,56 @@ class ComparisonPanel(wx.Panel):
         for lbl in labels:
             t = wx.StaticText(self.scroll, label=lbl)
             t.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-            self.grid_sizer.Add(t, 0, wx.ALIGN_LEFT | wx.ALIGN_CENTER_VERTICAL)
+            self.metrics_inner_grid.Add(t, 0, wx.ALIGN_LEFT | wx.ALIGN_CENTER_VERTICAL)
             
             row_idx = labels.index(lbl)
             for p in self.projects:
                 val = "-"
-                if qty in p.sale_quantities:
-                    unit_p = p.total_price(qty)
-                    if row_idx == 0: val = f"{p.name[:20]}...\n({p.reference})"
-                    elif row_idx == 1: val = f"{unit_p:.2f} €/pc"
-                    elif row_idx == 2: val = f"{unit_p * qty:.2f} €"
-                    elif row_idx == 3 or row_idx == 4:
-                        ps = 0; prod_s = 0
-                        for op in p.operations:
-                            for cost in op.costs.values():
+                # Note: Smart match also for metrics!
+                unit_p = p.total_price(qty)
+                if row_idx == 0: val = f"{p.name[:20]}...\n({p.reference})"
+                elif row_idx == 1: val = f"{unit_p * qty:.2f} €"
+                elif row_idx == 2 or row_idx == 3:
+                    ps = 0; prod_s = 0
+                    for op in p.operations:
+                        for cost in op._get_active_costs():
+                            res = Calculator.calculate_item(cost, qty)
+                            if cost.cost_type == CostType.INTERNAL_OPERATION: prod_s += res.unit_sale_price * qty
+                            else: ps += res.unit_sale_price * qty
+                    total = ps + prod_s
+                    if total > 0:
+                        val = f"{ps/total*100:.1f} %" if row_idx == 2 else f"{prod_s/total*100:.1f} %"
+                elif row_idx == 4:
+                    pc = 0; ps = 0
+                    for op in p.operations:
+                        for cost in op._get_active_costs():
+                            if cost.cost_type != CostType.INTERNAL_OPERATION:
                                 res = Calculator.calculate_item(cost, qty)
-                                if cost.cost_type == CostType.INTERNAL_OPERATION: prod_s += res.unit_sale_price * qty
-                                else: ps += res.unit_sale_price * qty
-                        total = ps + prod_s
-                        if total > 0:
-                            val = f"{ps/total*100:.1f} %" if row_idx == 3 else f"{prod_s/total*100:.1f} %"
-                    elif row_idx == 5:
-                        pc = 0; ps = 0
-                        for op in p.operations:
-                            for cost in op.costs.values():
-                                if cost.cost_type != CostType.INTERNAL_OPERATION:
-                                    res = Calculator.calculate_item(cost, qty)
-                                    pc += res.batch_supplier_cost
-                                    ps += res.unit_sale_price * qty
-                        val = f"{((ps-pc)/ps*100):.1f} %" if ps > 0 else "0 %"
-                    elif row_idx == 6:
-                        th = 0; ps = 0
-                        for op in p.operations:
-                            for cost in op.costs.values():
-                                if cost.cost_type == CostType.INTERNAL_OPERATION:
-                                    res = Calculator.calculate_item(cost, qty)
-                                    th += cost.fixed_time + (cost.per_piece_time * qty)
-                                    ps += res.unit_sale_price * qty
-                        val = f"{ps/th:.2f} €/h" if th > 0 else "0 €/h"
-                    elif row_idx == 7:
-                        th = 0
-                        for op in p.operations:
-                            for cost in op.costs.values():
-                                if cost.cost_type == CostType.INTERNAL_OPERATION:
-                                    th += cost.fixed_time + (cost.per_piece_time * qty)
-                        val = f"{th:.2f} h"
+                                pc += res.batch_supplier_cost
+                                ps += res.unit_sale_price * qty
+                    val = f"{((ps-pc)/ps*100):.1f} %" if ps > 0 else "0 %"
+                elif row_idx == 5:
+                    th = 0; ps = 0
+                    for op in p.operations:
+                        for cost in op._get_active_costs():
+                            if cost.cost_type == CostType.INTERNAL_OPERATION:
+                                res = Calculator.calculate_item(cost, qty)
+                                th += cost.fixed_time + (cost.per_piece_time * qty)
+                                ps += res.unit_sale_price * qty
+                    val = f"{ps/th:.2f} €/h" if th > 0 else "0 €/h"
+                elif row_idx == 6:
+                    th = 0
+                    for op in p.operations:
+                        for cost in op._get_active_costs():
+                            if cost.cost_type == CostType.INTERNAL_OPERATION:
+                                th += cost.fixed_time + (cost.per_piece_time * qty)
+                    val = f"{th:.2f} h"
                 
                 v = wx.StaticText(self.scroll, label=val)
                 if row_idx == 0:
                     v.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
                     v.SetForegroundColour(wx.Colour(0, 102, 204))
-                self.grid_sizer.Add(v, 0, wx.ALIGN_RIGHT)
+                self.metrics_inner_grid.Add(v, 0, wx.ALIGN_RIGHT)
 
         self.grid_sizer.Layout()
         self.scroll.Layout()
@@ -185,18 +243,18 @@ class ComparisonPanel(wx.Panel):
         data = []
         max_p = 0; max_e = 0
         for p in self.projects:
-            if qty in p.sale_quantities:
-                up = p.total_price(qty)
-                th = 0; ps = 0
-                for op in p.operations:
-                    for cost in op.costs.values():
-                        if cost.cost_type == CostType.INTERNAL_OPERATION:
-                            res = Calculator.calculate_item(cost, qty)
-                            th += cost.fixed_time + (cost.per_piece_time * qty)
-                            ps += res.unit_sale_price * qty
-                eff = ps / th if th > 0 else 0
-                data.append((p.reference, up, eff))
-                max_p = max(max_p, up); max_e = max(max_e, eff)
+            # Smart match for charts too!
+            up = p.total_price(qty)
+            th = 0; ps = 0
+            for op in p.operations:
+                for cost in op._get_active_costs():
+                    if cost.cost_type == CostType.INTERNAL_OPERATION:
+                        res = Calculator.calculate_item(cost, qty)
+                        th += cost.fixed_time + (cost.per_piece_time * qty)
+                        ps += res.unit_sale_price * qty
+            eff = ps / th if th > 0 else 0
+            data.append((p.reference, up, eff))
+            max_p = max(max_p, up); max_e = max(max_e, eff)
 
         if not data: return
         

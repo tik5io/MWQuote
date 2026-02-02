@@ -14,10 +14,14 @@ class Project:
     project_date: str = None  # ISO format date (YYYY-MM-DD)
     sale_quantities: List[int] = field(default_factory=lambda: [1, 10, 50, 100])
     tags: List[str] = field(default_factory=list)
-    
+
     # Milestones & Tracking
     status: str = "En construction" # options: "En construction", "Finalisée", "Transmise"
     status_dates: dict = field(default_factory=dict) # key: status, value: ISO date
+    export_history: List[dict] = field(default_factory=list) # [{ "devis_ref": str, "date": str }]
+
+    # Pricing parameters
+    volume_margin_rates: dict = field(default_factory=dict)  # dict {quantity: rate}
 
     @property
     def drawing_filename(self):
@@ -30,7 +34,10 @@ class Project:
         return self.documents[0].data if self.documents else None
 
     def total_price(self, quantity: int = None) -> float:
-        return sum(op.total_with_margins(quantity) for op in self.operations)
+        """Calcule le prix total unitaire avec le taux de marge sur volume."""
+        base_price = sum(op.total_with_margins(quantity) for op in self.operations)
+        rate = self.volume_margin_rates.get(quantity, 1.0) if quantity is not None else 1.0
+        return base_price * rate
 
     def add_operation(self, operation: Operation) -> None:
         self.operations.append(operation)

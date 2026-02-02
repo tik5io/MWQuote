@@ -24,13 +24,19 @@ class SalesPricingPanel(wx.Panel):
         # Left side: Grid
         self.grid_panel = wx.Panel(self.splitter)
         grid_sizer = wx.BoxSizer(wx.VERTICAL)
-        
-        title_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
+        # Header with title and volume margin rate
+        header_sizer = wx.BoxSizer(wx.HORIZONTAL)
         title = wx.StaticText(self.grid_panel, label="Récapitulatif des Prix de Vente")
         title.SetFont(wx.Font(11, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        title_sizer.Add(title, 0, wx.ALL | wx.ALIGN_CENTER, 10)
-        grid_sizer.Add(title_sizer, 0, wx.EXPAND)
-        
+        header_sizer.Add(title, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
+
+        header_sizer.AddStretchSpacer()
+
+        header_sizer.AddStretchSpacer()
+
+        grid_sizer.Add(header_sizer, 0, wx.EXPAND)
+
         self.grid = gridlib.Grid(self.grid_panel)
         self.grid.CreateGrid(0, 2)
         self.grid.SetColLabelValue(0, "Opération")
@@ -50,7 +56,7 @@ class SalesPricingPanel(wx.Panel):
         
         # Use shared component
         self.cost_editor = CostItemEditor(self.detail_panel)
-        self.cost_editor.on_changed = lambda temp_cost: None
+        self.cost_editor.on_changed = self._on_cost_changed
         self.detail_sizer.Add(self.cost_editor, 0, wx.EXPAND)
         self.cost_editor.Hide()
         
@@ -69,6 +75,7 @@ class SalesPricingPanel(wx.Panel):
         self.SetSizer(main_sizer)
 
         self.grid.Bind(gridlib.EVT_GRID_SELECT_CELL, self._on_select_cell)
+        self.grid.Bind(gridlib.EVT_GRID_CELL_CHANGED, self._on_grid_cell_changed)
 
     def load_project(self, project: Project):
         self.project = project
@@ -92,7 +99,7 @@ class SalesPricingPanel(wx.Panel):
         self.row_to_cost = {}
         for op in self.project.operations:
             op_start_row = self.grid.GetNumberRows()
-            for cost in op.costs.values():
+            for cost in op._get_active_costs():
                 row = self.grid.GetNumberRows()
                 self.grid.AppendRows(1)
                 self.row_to_cost[row] = (cost, op)
@@ -121,6 +128,24 @@ class SalesPricingPanel(wx.Panel):
                 self.grid.SetReadOnly(subtotal_row, 2 + i, True)
                 self.grid.SetCellBackgroundColour(subtotal_row, 2 + i, wx.Colour(235, 235, 235))
                 self.grid.SetCellFont(subtotal_row, 2 + i, wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+
+        # Add Volume Margin rate row
+        margin_row = self.grid.GetNumberRows()
+        self.grid.AppendRows(1)
+        self.grid.SetCellValue(margin_row, 1, "COEFF. MARGE / VOLUME")
+        self.grid.SetReadOnly(margin_row, 1, True)
+        self.grid.SetCellBackgroundColour(margin_row, 0, wx.Colour(255, 245, 230))
+        self.grid.SetCellBackgroundColour(margin_row, 1, wx.Colour(255, 245, 230))
+        self.grid.SetCellFont(margin_row, 1, wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        self.margin_row_idx = margin_row
+
+        for i, q in enumerate(qtys):
+            rate = self.project.volume_margin_rates.get(q, 1.0)
+            self.grid.SetCellValue(margin_row, 2 + i, f"{rate:.2f}")
+            self.grid.SetCellBackgroundColour(margin_row, 2 + i, wx.Colour(255, 250, 240))
+            self.grid.SetCellTextColour(margin_row, 2 + i, wx.Colour(200, 100, 0))
+            self.grid.SetCellFont(margin_row, 2 + i, wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            # This row is editable
 
         total_row = self.grid.GetNumberRows()
         self.grid.AppendRows(1)
@@ -164,7 +189,7 @@ class SalesPricingPanel(wx.Panel):
 
     def _on_apply_details(self, event):
         if not self.current_cost or not self.current_op: return
-        
+
         # Handle renaming first to keep dict key in sync
         new_name = self.cost_editor.prop_name.GetValue().strip()
         if new_name and new_name != self.current_cost.name:
@@ -172,10 +197,40 @@ class SalesPricingPanel(wx.Panel):
 
         if self.cost_editor.apply_changes():
             self.refresh_data()
-            # Try to notify app of changes if possible
-            parent = self.GetParent()
-            while parent and not hasattr(parent, 'on_operation_updated'):
-                parent = parent.GetParent()
-            if parent and parent.on_operation_updated:
-                # Notify with None to avoid project header reload but trigger total refreshes
-                parent.on_operation_updated(None)
+            self._notify_main_frame()
+
+    def _on_cost_changed(self, temp_cost):
+        """Callback appelé quand un coût est modifié en temps réel."""
+        if not self.current_cost or not self.current_op:
+            return
+        # Rafraîchir la grille pour refléter les changements
+        self.refresh_data()
+        self._notify_main_frame()
+
+    def _notify_main_frame(self):
+        """Notifie le MainFrame des changements pour rafraîchir les autres panels."""
+        parent = self.GetParent()
+        while parent and not hasattr(parent, 'on_operation_updated'):
+            parent = parent.GetParent()
+        if parent and hasattr(parent, 'on_operation_updated') and parent.on_operation_updated:
+            parent.on_operation_updated(None)
+
+    def refresh_quantities(self):
+        """Rafraîchit les sélecteurs de quantités dans les sous-composants."""
+        if self.cost_editor.IsShown():
+            self.cost_editor.result_panel._refresh_qty_choice()
+
+    def _on_grid_cell_changed(self, event):
+        row = event.GetRow()
+        col = event.GetCol()
+        if hasattr(self, 'margin_row_idx') and row == self.margin_row_idx and col >= 2:
+            try:
+                val = float(self.grid.GetCellValue(row, col).replace(',', '.'))
+                qtys = sorted(self.project.sale_quantities)
+                q = qtys[col - 2]
+                self.project.volume_margin_rates[q] = val
+                self.refresh_data()
+                self._notify_main_frame()
+            except ValueError:
+                self.refresh_data() # Reset to valid value
+        event.Skip()

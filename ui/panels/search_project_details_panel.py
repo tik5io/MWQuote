@@ -25,18 +25,21 @@ class ProjectDetailsPanel(wx.Panel):
         
         vbox.Add(wx.StaticLine(self), 0, wx.EXPAND | wx.ALL, 10)
         
+        # Splitter for Tree vs Graph
+        self.splitter = wx.SplitterWindow(self, style=wx.SP_LIVE_UPDATE | wx.SP_3D)
+        self.splitter.SetMinimumPaneSize(100)
+        
         # Middle: Tree of operations
-        self.tree = wx.TreeCtrl(self, style=wx.TR_HAS_BUTTONS | wx.TR_HIDE_ROOT | wx.TR_LINES_AT_ROOT)
+        self.tree = wx.TreeCtrl(self.splitter, style=wx.TR_HAS_BUTTONS | wx.TR_HIDE_ROOT | wx.TR_LINES_AT_ROOT)
         self.tree.Bind(wx.EVT_TREE_SEL_CHANGED, self._on_tree_selection)
-        vbox.Add(self.tree, 2, wx.EXPAND | wx.LEFT | wx.RIGHT, 10) # Adjusted proportion to 2
         
         # Bottom area: dynamic switching (Chart or Offer Comparison)
-        self.bottom_container = wx.Panel(self)
+        self.bottom_container = wx.Panel(self.splitter)
         self.bottom_sizer = wx.BoxSizer(wx.VERTICAL)
         
         # Bottom: Analysis Chart
         self.analysis_panel = GraphAnalysisPanel(self.bottom_container)
-        self.analysis_panel.SetMinSize((-1, 400))
+        self.analysis_panel.SetMinSize((-1, 300))
         self.bottom_sizer.Add(self.analysis_panel, 1, wx.EXPAND)
         
         # Bottom: Offer Comparison
@@ -45,7 +48,12 @@ class ProjectDetailsPanel(wx.Panel):
         self.bottom_sizer.Add(self.comparison_grid, 1, wx.EXPAND)
         
         self.bottom_container.SetSizer(self.bottom_sizer)
-        vbox.Add(self.bottom_container, 3, wx.EXPAND | wx.ALL, 5)
+        
+        # Split!
+        self.splitter.SplitHorizontally(self.tree, self.bottom_container, -400) # Start with 400px for bottom
+        self.splitter.SetSashGravity(1.0) # Bottom keeps its size on resize
+        
+        vbox.Add(self.splitter, 1, wx.EXPAND | wx.ALL, 5)
         
         self.SetSizer(vbox)
         

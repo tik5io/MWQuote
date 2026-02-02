@@ -93,6 +93,12 @@ class ProjectPanel(wx.Panel):
             
         tag_sizer.Add(self.tags_wrap_sizer, 0, wx.EXPAND)
         main_sizer.Add(tag_sizer, 0, wx.EXPAND | wx.ALL, 10)
+
+        # Export History Section
+        history_sizer = wx.StaticBoxSizer(wx.VERTICAL, self, "Historique des Exports (XLSX)")
+        self.history_list = wx.ListBox(self, size=(-1, 100))
+        history_sizer.Add(self.history_list, 1, wx.EXPAND | wx.ALL, 5)
+        main_sizer.Add(history_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
         
         self.SetSizer(main_sizer)
 
@@ -124,6 +130,7 @@ class ProjectPanel(wx.Panel):
             if idx != wx.NOT_FOUND:
                 self.status_choice.SetSelection(idx)
             self._update_milestone_ui()
+            self._update_history_ui()
         finally:
             self._is_loading = False
 
@@ -188,6 +195,15 @@ class ProjectPanel(wx.Panel):
         
         self._update_milestone_ui()
         self.save_project()
+
+    def _update_history_ui(self):
+        if not self.project: return
+        self.history_list.Clear()
+        history = getattr(self.project, "export_history", [])
+        # Show latest first
+        for entry in reversed(history):
+            time_str = f" {entry['time']}" if 'time' in entry else ""
+            self.history_list.Append(f"{entry['devis_ref']} - {entry['date']}{time_str}")
 
     def _update_qty_ui(self):
         if not self.project: return

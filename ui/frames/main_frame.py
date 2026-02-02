@@ -50,11 +50,7 @@ class MainFrame(wx.Frame):
         new_item = file_menu.Append(wx.ID_NEW, "&Nouveau\tCtrl+N")
         open_item = file_menu.Append(wx.ID_OPEN, "&Ouvrir...\tCtrl+O")
         file_menu.AppendSeparator()
-        save_item = file_menu.Append(wx.ID_SAVE, "&Enregistrer\tCtrl+S")
-        save_as_item = file_menu.Append(wx.ID_SAVEAS, "Enregistrer &sous...\tCtrl+Shift+S")
         duplicate_item = file_menu.Append(wx.ID_DUPLICATE, "&Dupliquer")
-        file_menu.AppendSeparator()
-        export_excel_item = file_menu.Append(wx.ID_ANY, "Exporter Offre (Excel)...")
         file_menu.AppendSeparator()
         exit_item = file_menu.Append(wx.ID_EXIT, "&Quitter\tAlt+F4")
         
@@ -64,10 +60,7 @@ class MainFrame(wx.Frame):
         # Bindings
         self.Bind(wx.EVT_MENU, self._on_new, new_item)
         self.Bind(wx.EVT_MENU, self._on_open, open_item)
-        self.Bind(wx.EVT_MENU, self._on_save, save_item)
-        self.Bind(wx.EVT_MENU, self._on_save_as, save_as_item)
         self.Bind(wx.EVT_MENU, self._on_duplicate, duplicate_item)
-        self.Bind(wx.EVT_MENU, self._on_export_excel, export_excel_item)
         self.Bind(wx.EVT_MENU, lambda e: self.Close(), exit_item)
         self.Bind(wx.EVT_CLOSE, self._on_close)
 
@@ -106,8 +99,12 @@ class MainFrame(wx.Frame):
         """Connecte les événements entre les panels"""
         self.editor_panel.on_operation_updated = self._on_operation_updated
         self.project_panel.on_quantities_changed = self._on_quantities_changed
-        self.project_panel.on_project_changed = self.editor_panel.update_root_label
-        # Note: _update_app_with_project is called in __init__, no need here
+        
+        def on_proj_changed():
+            self.editor_panel.update_root_label()
+            self._update_title()
+            
+        self.project_panel.on_project_changed = on_proj_changed
 
     def _update_app_with_project(self, project):
         """Met à jour tous les panels avec un nouveau projet"""
@@ -116,31 +113,51 @@ class MainFrame(wx.Frame):
         self.editor_panel.load_project(self.project)
         self.sales_panel.load_project(self.project)
         self.analysis_panel.load_project(self.project)
+        self._update_title()
 
-    def _on_operation_updated(self, operation):
-        """Appelé quand une opération est modifiée"""
-        # Ne pas recharger le project_panel (header) à chaque touche tapée dans un coût
-        # sauf si l'opération elle-même a été ajoutée/supprimée
-        if operation is not None:
-            self.project_panel.load_project(self.project)
+    def _update_title(self):
+        """Met à jour le titre de la fenêtre avec la référence ou le nom du projet."""
+        if not self.project:
+            self.SetTitle("MWQuote")
+            return
+            
+        ref = self.project.reference
+        name = self.project.name
         
-        self.sales_panel.refresh_data()
-        self.analysis_panel.refresh_data()
+        if ref and ref.strip():
+            title = f"MWQuote - {ref.strip()}"
+        else:
+            title = f"MWQuote - {name}"
+            
+        self.SetTitle(title)
+
+    def _on_operation_updated(self, operation, reload_header=False):
+        """Appelé quand une opération est modifiée.
+
+        Args:
+            operation: L'opération modifiée (peut être None pour refresh sans contexte)
+            reload_header: Si True, recharge aussi le project_panel (pour ajout/suppression d'opérations)
+        """
+        # Recharger le header seulement si explicitement demandé
+        if reload_header:
+            self.project_panel.load_project(self.project)
+
+        # Rafraîchir tous les panels de données
+        self._refresh_all_data_panels()
 
     def _on_quantities_changed(self, quantities):
-        """Appelé quand les quantités du projet sont modifiées"""
+        """Appelé quand les quantités du projet sont modifiées."""
+        # Rafraîchir tous les panels de données
+        self._refresh_all_data_panels()
+
+        # Rafraîchir les sélecteurs de quantités dans les sous-composants
+        self.editor_panel.refresh_quantities()
+        self.sales_panel.refresh_quantities()
+
+    def _refresh_all_data_panels(self):
+        """Rafraîchit tous les panels de données (grid, graphiques, etc.)."""
         self.sales_panel.refresh_data()
         self.analysis_panel.refresh_data()
-        
-        # Refresh all relevant result panels (some are nested in editors)
-        if hasattr(self.editor_panel, 'result_panel'):
-            self.editor_panel.result_panel._refresh_qty_choice()
-            
-        if hasattr(self.editor_panel, 'cost_editor') and self.editor_panel.cost_editor.IsShown():
-            self.editor_panel.cost_editor.result_panel._refresh_qty_choice()
-
-        if hasattr(self.sales_panel, 'cost_editor') and self.sales_panel.cost_editor.IsShown():
-            self.sales_panel.cost_editor.result_panel._refresh_qty_choice()
 
     def _on_new(self, event):
         """Réinitialise avec un nouveau projet"""
@@ -164,42 +181,10 @@ class MainFrame(wx.Frame):
             except Exception as e:
                 wx.MessageBox(f"Erreur lors du chargement : {str(e)}", "Erreur", wx.OK | wx.ICON_ERROR)
 
-    def _on_save(self, event):
-        """Enregistre le projet dans le fichier actuel ou propose 'Enregistrer sous' si inexistant"""
-        if self.current_path and os.path.exists(self.current_path):
-            try:
-                PersistenceService.save_project(self.project, self.current_path)
-                # Auto-index in DB
-                self.indexer.index_file(self.current_path)
-                wx.MessageBox("Projet enregistré avec succès !", "Information", wx.OK | wx.ICON_INFORMATION)
-            except Exception as e:
-                wx.MessageBox(f"Erreur lors de l'enregistrement : {str(e)}", "Erreur", wx.OK | wx.ICON_ERROR)
-        else:
-            self._on_save_as(event)
-
-    def _on_save_as(self, event):
-        """Propose un emplacement pour enregistrer le projet sous un nouveau nom"""
-        with wx.FileDialog(self, "Enregistrer le projet sous", 
-                          defaultFile=os.path.basename(self.current_path) if self.current_path else "",
-                          wildcard="Fichiers MWQuote (*.mwq)|*.mwq",
-                          style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fileDialog:
-            if fileDialog.ShowModal() == wx.ID_CANCEL:
-                return
-            
-            path = fileDialog.GetPath()
-            try:
-                PersistenceService.save_project(self.project, path)
-                self.current_path = path
-                # Auto-index in DB
-                self.indexer.index_file(path)
-                wx.MessageBox("Projet enregistré avec succès !", "Information", wx.OK | wx.ICON_INFORMATION)
-            except Exception as e:
-                wx.MessageBox(f"Erreur lors de l'enregistrement : {str(e)}", "Erreur", wx.OK | wx.ICON_ERROR)
-
     def _on_duplicate(self, event):
-        """Duplique le projet actuel (Save As sans changer le chemin courant d'édition)"""
+        """Duplique le projet actuel"""
         if not self.current_path:
-            self._on_save_as(event)
+            wx.MessageBox("Veuillez d'abord ouvrir un projet.", "Information", wx.OK | wx.ICON_INFORMATION)
             return
 
         base, ext = os.path.splitext(self.current_path)
@@ -219,64 +204,11 @@ class MainFrame(wx.Frame):
                 PersistenceService.save_project(cloned_project, path)
                 # Auto-index in DB
                 self.indexer.index_file(path)
-                wx.MessageBox("Copie créée avec succès (jalons remis à zéro) !", "Information", wx.OK | wx.ICON_INFORMATION)
+                wx.MessageBox("Projet dupliqué avec succès !", "Information", wx.OK | wx.ICON_INFORMATION)
             except Exception as e:
                 wx.MessageBox(f"Erreur lors de la duplication : {str(e)}", "Erreur", wx.OK | wx.ICON_ERROR)
 
-    def _on_export_excel(self, event):
-        """Exporte le projet vers Excel en utilisant le template"""
-        template_path = "TEMPLATE.xlsx"
-        if not os.path.exists(template_path):
-            wx.MessageBox(f"Template '{template_path}' introuvable.", "Erreur", wx.OK | wx.ICON_ERROR)
-            return
-
-        exporter = ExportService()
-        default_name = exporter.get_default_filename(self.project)
-
-        with wx.FileDialog(self, "Exporter l'offre Excel", 
-                          defaultFile=default_name,
-                          wildcard="Fichiers Excel (*.xlsx)|*.xlsx",
-                          style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fileDialog:
-            if fileDialog.ShowModal() == wx.ID_CANCEL:
-                return
-            
-            output_path = fileDialog.GetPath()
-            try:
-              
-                exporter = ExportService()
-                exporter.export_excel(
-                    self.project,
-                    template_path,
-                    output_path
-                )
-                # Automatically open the file after export (Windows specific but safe here)
-                try:
-                    os.startfile(output_path)
-                except Exception as e:
-                    logger.warning(f"Impossible d'ouvrir le fichier automatiquement: {e}")
-
-                wx.MessageBox("Offre Excel exportée avec succès !", "Information", wx.OK | wx.ICON_INFORMATION)
-            except Exception as e:
-                wx.MessageBox(f"Erreur lors de l'export : {str(e)}", "Erreur", wx.OK | wx.ICON_ERROR)
-
-
-
     def _on_close(self, event):
         """Appelé à la fermeture de la fenêtre principale"""
-        res = wx.MessageBox("Voulez-vous enregistrer les modifications avant de quitter ?", 
-                          "Quitter", wx.YES_NO | wx.CANCEL | wx.ICON_QUESTION)
-        
-        if res == wx.YES:
-            # Trigger save
-            self._on_save(None)
-            # Final clean and destroy
-            clear_logs_directory()
-            self.Destroy()
-        elif res == wx.NO:
-            # Exit without saving
-            clear_logs_directory()
-            self.Destroy()
-        else:
-            # Cancel: don't close
-            if event.CanVeto():
-                event.Veto()
+        clear_logs_directory()
+        self.Destroy()

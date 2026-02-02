@@ -127,6 +127,28 @@ class OperationCostEditorPanel(wx.Panel):
         self.project = project
         self._refresh_tree()
 
+    def refresh_data(self):
+        """Rafraîchit l'affichage sans recharger l'arbre (pour cohérence avec les autres panels)."""
+        # Rafraîchir le panel de résultats si visible
+        if self.result_panel.IsShown() and self.current_data:
+            if self.current_data["type"] == "operation":
+                self.result_panel.load_item(self.current_data["operation"], self.project)
+        # Rafraîchir l'éditeur de coût si visible
+        if self.cost_editor.IsShown() and self.current_data:
+            if self.current_data["type"] == "cost":
+                self.cost_editor.result_panel._refresh_qty_choice()
+        # Rafraîchir la grille de comparaison si visible
+        if self.comparison_grid.IsShown() and self.current_data:
+            if self.current_data["type"] == "operation":
+                self.comparison_grid.load_operation(self.current_data["operation"], self.project)
+
+    def refresh_quantities(self):
+        """Rafraîchit les sélecteurs de quantités dans les sous-composants."""
+        if self.result_panel.IsShown():
+            self.result_panel._refresh_qty_choice()
+        if self.cost_editor.IsShown():
+            self.cost_editor.result_panel._refresh_qty_choice()
+
     def update_root_label(self):
         """Update only the root item label based on the current project reference."""
         if self.project and self.root and self.root.IsOk():
@@ -329,7 +351,8 @@ class OperationCostEditorPanel(wx.Panel):
         op = Operation(code="NOUV", label="Nouvelle")
         self.project.add_operation(op)
         self._refresh_tree()
-        if self.on_operation_updated: self.on_operation_updated(op)
+        if self.on_operation_updated:
+            self.on_operation_updated(op, reload_header=True)
 
     def _on_add_cost_to_selected_op(self, event):
         item = self.tree.GetSelection()
@@ -360,7 +383,8 @@ class OperationCostEditorPanel(wx.Panel):
                 if new_item and new_item.IsOk():
                     self.tree.SelectItem(new_item)
             
-        if self.on_operation_updated: self.on_operation_updated(op)
+        if self.on_operation_updated:
+            self.on_operation_updated(op, reload_header=True)
 
     def _on_delete(self, event):
         item = self.tree.GetSelection()
@@ -387,7 +411,8 @@ class OperationCostEditorPanel(wx.Panel):
                         wx.MessageBox("Erreur : l'élément n'a pas pu être trouvé dans le dictionnaire des coûts.", "Erreur", wx.OK | wx.ICON_ERROR)
                         return
             self.tree.Delete(item)
-            if self.on_operation_updated: self.on_operation_updated(None)
+            if self.on_operation_updated:
+                self.on_operation_updated(None, reload_header=True)
         except Exception as e:
             wx.MessageBox(f"Une erreur est survenue lors de la suppression : {str(e)}", "Erreur", wx.OK | wx.ICON_ERROR)
 
