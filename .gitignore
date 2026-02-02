@@ -1,1 +1,4 @@
 *.xlsx
+.pyc
+.log
+.db
