@@ -1,0 +1,163 @@
+{
+    "name": "Projet Test 0",
+    "reference": "OPP-25-9808-7472",
+    "client": "MINITUBES",
+    "operations": [
+        {
+            "code": "Microd\u00e9coupe",
+            "label": "Operation 1: Microd\u00e9coupe",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 31.857809637988762,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.8549491698896929,
+                    "per_piece_time": 0.10084008857608708,
+                    "hourly_rate": 118.65610599594397,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 65.67440609855996,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.4070537792069079,
+                    "per_piece_time": 0.2372717936998024,
+                    "hourly_rate": 100.72002576939326,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Contr\u00f4le",
+            "label": "Operation 2: Contr\u00f4le",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 19.796616862999002,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.2013703725002616,
+                    "per_piece_time": 0.3422993273884468,
+                    "hourly_rate": 185.0820942084081,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 91.65698484379786,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.9746786601097441,
+                    "per_piece_time": 0.29533816357584314,
+                    "hourly_rate": 191.67069640175646,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Soudage",
+            "label": "Operation 3: Soudage",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 7.626046965820041,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.46262731597484175,
+                    "per_piece_time": 0.408662924143637,
+                    "hourly_rate": 54.28717473793708,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 19.739027580397927,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.7993706682628112,
+                    "per_piece_time": 0.041274175341951304,
+                    "hourly_rate": 181.82265354072243,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        }
+    ],
+    "drawing_filename": null,
+    "drawing_data": null,
+    "sale_quantities": [
+        1,
+        10,
+        50,
+        100,
+        500,
+        1000
+    ],
+    "tags": [
+        "test",
+        "generated",
+        "minitubes"
+    ]
+}

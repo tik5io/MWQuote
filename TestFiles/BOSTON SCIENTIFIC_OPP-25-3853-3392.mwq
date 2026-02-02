@@ -1,0 +1,210 @@
+{
+    "name": "Projet Test 1",
+    "reference": "OPP-25-3853-3392",
+    "client": "BOSTON SCIENTIFIC",
+    "operations": [
+        {
+            "code": "Emballage",
+            "label": "Operation 1: Emballage",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 12.011009551947437,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.2552130368205767,
+                    "per_piece_time": 0.09478599990300772,
+                    "hourly_rate": 73.24016195474447,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 72.32930530747679,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.5395581090884687,
+                    "per_piece_time": 0.24684667070939423,
+                    "hourly_rate": 77.81695510990515,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Contr\u00f4le",
+            "label": "Operation 2: Contr\u00f4le",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 84.45265373891084,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.2773388646874642,
+                    "per_piece_time": 0.27366871105282675,
+                    "hourly_rate": 126.23950956793132,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 79.87786282179613,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.5255406233197145,
+                    "per_piece_time": 0.38218935181627134,
+                    "hourly_rate": 114.77141872588909,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Nettoyage",
+            "label": "Operation 3: Nettoyage",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 11.430301195845967,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.2117277039010028,
+                    "per_piece_time": 0.41314464001411055,
+                    "hourly_rate": 63.279350907594065,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 98.00431282471992,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.22474554226210278,
+                    "per_piece_time": 0.15754593997668911,
+                    "hourly_rate": 77.48074269260695,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Microd\u00e9coupe",
+            "label": "Operation 4: Microd\u00e9coupe",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 20.637685198806754,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.7392009844197063,
+                    "per_piece_time": 0.4218226187394464,
+                    "hourly_rate": 178.37115966801645,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 61.01800968002494,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.31457715874052,
+                    "per_piece_time": 0.1284654654247665,
+                    "hourly_rate": 70.24207545351493,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        }
+    ],
+    "drawing_filename": null,
+    "drawing_data": null,
+    "sale_quantities": [
+        1,
+        10,
+        50,
+        100,
+        500,
+        1000
+    ],
+    "tags": [
+        "test",
+        "generated",
+        "boston scientific"
+    ]
+}

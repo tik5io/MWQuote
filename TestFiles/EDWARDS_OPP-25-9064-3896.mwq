@@ -1,0 +1,257 @@
+{
+    "name": "Projet Test 7",
+    "reference": "OPP-25-9064-3896",
+    "client": "EDWARDS",
+    "operations": [
+        {
+            "code": "Emballage",
+            "label": "Operation 1: Emballage",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 15.80515404121258,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.5125545816990735,
+                    "per_piece_time": 0.3560861565894793,
+                    "hourly_rate": 184.6340988587139,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 61.30690607722458,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.1516106198690634,
+                    "per_piece_time": 0.4758783457480445,
+                    "hourly_rate": 196.84821200136594,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Contr\u00f4le",
+            "label": "Operation 2: Contr\u00f4le",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 33.56827166950532,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.6113711073777134,
+                    "per_piece_time": 0.05072367748664889,
+                    "hourly_rate": 68.2186220002924,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 14.397056504035474,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.2192776237090085,
+                    "per_piece_time": 0.33958133220093417,
+                    "hourly_rate": 171.00130026919788,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Emballage",
+            "label": "Operation 3: Emballage",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 95.98533780014897,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.3489821702387115,
+                    "per_piece_time": 0.38256096051976446,
+                    "hourly_rate": 150.3283247748402,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 73.36876420488997,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.2429446724966726,
+                    "per_piece_time": 0.05503710095523727,
+                    "hourly_rate": 92.03003916773721,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Contr\u00f4le",
+            "label": "Operation 4: Contr\u00f4le",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 16.66855647576446,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.7734773862770699,
+                    "per_piece_time": 0.10354885614762224,
+                    "hourly_rate": 167.66669022326715,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 58.12193062744866,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.2592930941523695,
+                    "per_piece_time": 0.16587915985208124,
+                    "hourly_rate": 137.01208120717953,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Contr\u00f4le",
+            "label": "Operation 5: Contr\u00f4le",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 72.44020667640493,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.553029497830547,
+                    "per_piece_time": 0.03129394808161741,
+                    "hourly_rate": 104.85263322367939,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 88.92789197148969,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.8387645147220124,
+                    "per_piece_time": 0.024264600151948208,
+                    "hourly_rate": 80.30640712237715,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        }
+    ],
+    "drawing_filename": null,
+    "drawing_data": null,
+    "sale_quantities": [
+        1,
+        10,
+        50,
+        100,
+        500,
+        1000
+    ],
+    "tags": [
+        "test",
+        "generated",
+        "edwards"
+    ]
+}

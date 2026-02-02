@@ -1,0 +1,257 @@
+{
+    "name": "Projet Test 15",
+    "reference": "OPP-25-3585-5299",
+    "client": "MEDTRONIC",
+    "operations": [
+        {
+            "code": "Microd\u00e9coupe",
+            "label": "Operation 1: Microd\u00e9coupe",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 69.83754230755771,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.367238561299742,
+                    "per_piece_time": 0.24503125137450396,
+                    "hourly_rate": 170.53917921363242,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 46.70021354029304,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.49266428734109236,
+                    "per_piece_time": 0.45774753618685277,
+                    "hourly_rate": 138.10292411126892,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Microd\u00e9coupe",
+            "label": "Operation 2: Microd\u00e9coupe",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 56.567444124800645,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.4036931486114177,
+                    "per_piece_time": 0.29213781803383015,
+                    "hourly_rate": 149.46092318944574,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 80.64210121238206,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.6558697513942805,
+                    "per_piece_time": 0.3380409831745389,
+                    "hourly_rate": 156.13837371507435,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Nettoyage",
+            "label": "Operation 3: Nettoyage",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 69.73566381121962,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.3762035650216091,
+                    "per_piece_time": 0.4641471596742371,
+                    "hourly_rate": 138.0482306753931,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 57.23528427102423,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.5838959955541405,
+                    "per_piece_time": 0.2114962903633176,
+                    "hourly_rate": 158.30828544933019,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Nettoyage",
+            "label": "Operation 4: Nettoyage",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Mati\u00e8re",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 2.462351079699122,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.289162167218861,
+                    "per_piece_time": 0.013436581761246229,
+                    "hourly_rate": 192.6254705214537,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 83.41484667381553,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.31368829533943565,
+                    "per_piece_time": 0.43818447317552534,
+                    "hourly_rate": 85.40441521877234,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Nettoyage",
+            "label": "Operation 5: Nettoyage",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 14.278431237026188,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.4533469113782775,
+                    "per_piece_time": 0.1554527600151354,
+                    "hourly_rate": 186.5736878378814,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 38.94409360448082,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.6074227659965533,
+                    "per_piece_time": 0.16193565756627226,
+                    "hourly_rate": 129.8162989759465,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        }
+    ],
+    "drawing_filename": null,
+    "drawing_data": null,
+    "sale_quantities": [
+        1,
+        10,
+        50,
+        100,
+        500,
+        1000
+    ],
+    "tags": [
+        "test",
+        "generated",
+        "medtronic"
+    ]
+}

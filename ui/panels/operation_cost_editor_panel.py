@@ -1,351 +1,334 @@
 # ui/panels/operation_cost_editor_panel.py
 import wx
 import copy
-from domain.cost import CostType, PricingType, PricingStructure, PricingTier, CostItem
-from domain.operation import Operation
+import domain.cost as domain_cost
+from domain.operation import Operation, SUBCONTRACTING_TYPOLOGY
+from ui.components.result_summary_panel import ResultSummaryPanel
+from ui.components.cost_item_editor import CostItemEditor
+from ui.components.offers_comparison_grid import OffersComparisonGrid
+from infrastructure.configuration import ConfigurationService
 
 class OperationCostEditorPanel(wx.Panel):
-    """Panel for editing project structure (operations and costs) in a tree view."""
+    """Panel pour éditer les opérations du projet et leurs coûts associés."""
 
     def __init__(self, parent):
         super().__init__(parent)
         self.project = None
         self.on_operation_updated = None
         self.current_data = None
+        self.config_service = ConfigurationService()
         self._build_ui()
 
     def _build_ui(self):
-        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        main_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
-        # Title
-        self.title = wx.StaticText(self, label="Structure du projet")
-        self.title.SetFont(wx.Font(11, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        main_sizer.Add(self.title, 0, wx.ALL, 10)
+        # Left side: Tree
+        left_panel = wx.Panel(self)
+        left_sizer = wx.BoxSizer(wx.VERTICAL)
 
-        # Toolbar
-        toolbar_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.tree = wx.TreeCtrl(left_panel, style=wx.TR_HAS_BUTTONS | wx.TR_EDIT_LABELS)
+        self.root = self.tree.AddRoot("Projet")
+        left_sizer.Add(self.tree, 1, wx.EXPAND | wx.ALL, 5)
 
-        self.add_op_btn = wx.Button(self, label="+ Opération")
-        self.add_op_btn.SetToolTip("Ajouter une opération au projet")
-        self.add_op_btn.Bind(wx.EVT_BUTTON, self._on_add_operation)
-        toolbar_sizer.Add(self.add_op_btn, 0, wx.ALL, 2)
+        tree_toolbar = wx.BoxSizer(wx.HORIZONTAL)
+        add_op_btn = wx.Button(left_panel, label="+ Op", size=(40, -1))
+        add_op_btn.Bind(wx.EVT_BUTTON, self._on_add_operation)
+        tree_toolbar.Add(add_op_btn, 0, wx.ALL, 2)
 
-        self.add_cost_btn = wx.Button(self, label="+ Coût")
-        self.add_cost_btn.SetToolTip("Ajouter un coût à l'élément sélectionné")
-        self.add_cost_btn.Bind(wx.EVT_BUTTON, self._on_add_cost_to_selected_op)
-        self.add_cost_btn.Disable()
-        toolbar_sizer.Add(self.add_cost_btn, 0, wx.ALL, 2)
+        add_cost_btn = wx.Button(left_panel, label="+ Coût", size=(50, -1))
+        add_cost_btn.Bind(wx.EVT_BUTTON, self._on_add_cost_to_selected_op)
+        tree_toolbar.Add(add_cost_btn, 0, wx.ALL, 2)
 
-        toolbar_sizer.AddSpacer(10)
+        del_btn = wx.Button(left_panel, label="X", size=(30, -1))
+        del_btn.Bind(wx.EVT_BUTTON, self._on_delete)
+        tree_toolbar.Add(del_btn, 0, wx.ALL, 2)
 
-        self.delete_btn = wx.Button(self, label="Supprimer")
-        self.delete_btn.Bind(wx.EVT_BUTTON, self._on_delete)
-        toolbar_sizer.Add(self.delete_btn, 0, wx.ALL, 2)
+        up_btn = wx.Button(left_panel, label="↑", size=(30, -1))
+        up_btn.Bind(wx.EVT_BUTTON, lambda e: self._on_move_op(-1))
+        tree_toolbar.Add(up_btn, 0, wx.ALL, 2)
 
-        self.duplicate_btn = wx.Button(self, label="Dupliquer")
-        self.duplicate_btn.Bind(wx.EVT_BUTTON, self._on_duplicate)
-        toolbar_sizer.Add(self.duplicate_btn, 0, wx.ALL, 2)
+        down_btn = wx.Button(left_panel, label="↓", size=(30, -1))
+        down_btn.Bind(wx.EVT_BUTTON, lambda e: self._on_move_op(1))
+        tree_toolbar.Add(down_btn, 0, wx.ALL, 2)
 
-        toolbar_sizer.AddSpacer(10)
+        left_sizer.Add(tree_toolbar, 0, wx.EXPAND)
+        left_panel.SetSizer(left_sizer)
 
-        self.move_up_btn = wx.Button(self, label="↑", size=(30, -1))
-        self.move_up_btn.Bind(wx.EVT_BUTTON, self._on_move_up)
-        toolbar_sizer.Add(self.move_up_btn, 0, wx.ALL, 2)
-
-        self.move_down_btn = wx.Button(self, label="↓", size=(30, -1))
-        self.move_down_btn.Bind(wx.EVT_BUTTON, self._on_move_down)
-        toolbar_sizer.Add(self.move_down_btn, 0, wx.ALL, 2)
-
-        toolbar_sizer.AddStretchSpacer()
-
-        toolbar_sizer.Add(wx.StaticText(self, label="Qté projet:"), 0, wx.ALL | wx.ALIGN_CENTER, 5)
-        self.pieces_ctrl = wx.SpinCtrl(self, min=1, max=1000000, initial=1)
-        self.pieces_ctrl.Bind(wx.EVT_SPINCTRL, self._on_pieces_changed)
-        toolbar_sizer.Add(self.pieces_ctrl, 0, wx.ALL, 5)
-
-        main_sizer.Add(toolbar_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
-
-        # Splitter for Tree and Properties
-        splitter = wx.SplitterWindow(self, style=wx.SP_LIVE_UPDATE)
+        # Right side: Detail Panel
+        self.properties_panel = wx.ScrolledWindow(self, style=wx.VSCROLL)
+        self.properties_panel.SetScrollRate(0, 20)
+        self.properties_content = wx.BoxSizer(wx.VERTICAL)
         
-        # Tree control
-        self.tree = wx.TreeCtrl(splitter, style=wx.TR_DEFAULT_STYLE | wx.TR_EDIT_LABELS)
-        self.tree.Bind(wx.EVT_TREE_SEL_CHANGED, self._on_tree_selection_changed)
+        # 1. Operation specific properties
+        self.op_props_panel = wx.Panel(self.properties_panel)
+        self.op_props_sizer = wx.BoxSizer(wx.VERTICAL) # Changed to self.op_props_sizer
+        grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=10)
+        grid.AddGrowableCol(1, 1)
+        grid.Add(wx.StaticText(self.op_props_panel, label="Typologie:"))
+        self.prop_op_typology = wx.Choice(self.op_props_panel, choices=self.config_service.get_cost_typologies())
+        grid.Add(self.prop_op_typology, 1, wx.EXPAND)
+        grid.Add(wx.StaticText(self.op_props_panel, label="Libellé:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.prop_op_label = wx.TextCtrl(self.op_props_panel)
+        grid.Add(self.prop_op_label, 1, wx.EXPAND)
+        
+        grid.Add(wx.StaticText(self.op_props_panel, label="Commentaire Chiffrage:"), 0, wx.TOP, 5)
+        self.prop_op_comment = wx.TextCtrl(self.op_props_panel, style=wx.TE_MULTILINE, size=(-1, 100))
+        grid.Add(self.prop_op_comment, 1, wx.EXPAND)
+
+        self.op_props_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 10) # Changed to self.op_props_sizer
+        
+        # Summary
+        self.result_panel = ResultSummaryPanel(self.op_props_panel)
+        self.op_props_sizer.Add(self.result_panel, 0, wx.EXPAND | wx.ALL, 5)
+        # Comparison Grid
+        self.comparison_grid = OffersComparisonGrid(self.op_props_panel)
+        self.comparison_grid.Hide()
+        self.op_props_sizer.Add(self.comparison_grid, 1, wx.EXPAND | wx.ALL, 5)
+        
+        self.op_props_panel.SetSizer(self.op_props_sizer) # Changed to self.op_props_sizer
+        self.properties_content.Add(self.op_props_panel, 1, wx.EXPAND) # Proportions 1
+        self.op_props_panel.Hide()
+
+        # 2. Cost specific properties (Typology, Pricing, etc)
+        self.cost_editor = CostItemEditor(self.properties_panel)
+        self.cost_editor.on_changed = self._on_cost_changed
+        self.properties_content.Add(self.cost_editor, 1, wx.EXPAND) # Proportions 1
+        self.cost_editor.Hide()
+
+        # 3. Results feedback (Always at the bottom) - This is now part of op_props_panel
+        # self.result_panel = ResultSummaryPanel(self.properties_panel)
+        # self.properties_content.Add(self.result_panel, 0, wx.EXPAND | wx.ALL, 10)
+        # self.result_panel.Hide()
+
+        self.properties_placeholder = wx.StaticText(self.properties_panel, label="Sélectionnez un élément")
+        self.properties_content.Add(self.properties_placeholder, 0, wx.ALL, 20)
+
+        # Les changements sont maintenant appliqués "à la volée" (On-the-fly)
+        # On ne crée plus de bouton de sauvegarde globale.
+
+        self.properties_panel.SetSizer(self.properties_content)
+
+        main_sizer.Add(left_panel, 1, wx.EXPAND)
+        main_sizer.Add(self.properties_panel, 2, wx.EXPAND)
+        self.SetSizer(main_sizer)
+
+        self.tree.Bind(wx.EVT_TREE_SEL_CHANGED, self._on_selection_changed)
         self.tree.Bind(wx.EVT_TREE_END_LABEL_EDIT, self._on_tree_end_label_edit)
         self.tree.Bind(wx.EVT_TREE_ITEM_RIGHT_CLICK, self._on_tree_right_click)
 
-        # Properties panel
-        self.properties_panel = self._create_properties_panel(splitter)
-        
-        splitter.SplitVertically(self.tree, self.properties_panel, 700)
-        splitter.SetMinimumPaneSize(200)
-        main_sizer.Add(splitter, 1, wx.EXPAND | wx.ALL, 5)
-
-        # Totals area
-        totals_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        totals_sizer.SetMinSize((-1, 40))
-        self.base_total_lbl = wx.StaticText(self, label="Coût de base: 0.00 €")
-        totals_sizer.Add(self.base_total_lbl, 0, wx.ALL | wx.ALIGN_CENTER, 10)
-        
-        totals_sizer.AddSpacer(20)
-        self.margin_total_lbl = wx.StaticText(self, label="Marges: 0.00 €")
-        totals_sizer.Add(self.margin_total_lbl, 0, wx.ALL | wx.ALIGN_CENTER, 10)
-        
-        totals_sizer.AddSpacer(20)
-        self.total_with_margin_lbl = wx.StaticText(self, label="Total: 0.00 €")
-        self.total_with_margin_lbl.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        totals_sizer.Add(self.total_with_margin_lbl, 0, wx.ALL | wx.ALIGN_CENTER, 10)
-
-        main_sizer.Add(totals_sizer, 0, wx.EXPAND | wx.BG_STYLE_COLOUR, 0)
-
-        self.SetSizer(main_sizer)
-
-    def _create_properties_panel(self, parent):
-        panel = wx.Panel(parent)
-        panel.SetBackgroundColour(wx.Colour(245, 245, 245))
-        sizer = wx.BoxSizer(wx.VERTICAL)
-
-        header_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.properties_title = wx.StaticText(panel, label="Propriétés")
-        self.properties_title.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        header_sizer.Add(self.properties_title, 1, wx.ALL | wx.ALIGN_CENTER, 10)
-
-        self.save_properties_btn = wx.Button(panel, label="Appliquer")
-        self.save_properties_btn.Bind(wx.EVT_BUTTON, self._on_save_properties)
-        header_sizer.Add(self.save_properties_btn, 0, wx.ALL, 5)
-
-        sizer.Add(header_sizer, 0, wx.EXPAND)
-        sizer.Add(wx.StaticLine(panel), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
-
-        self.properties_content = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(self.properties_content, 1, wx.EXPAND)
-
-        panel.SetSizer(sizer)
-        return panel
+        # Bind events for the Operation properties
+        self.prop_op_typology.Bind(wx.EVT_CHOICE, self._on_op_field_changed)
+        self.prop_op_label.Bind(wx.EVT_TEXT, self._on_op_field_changed)
+        self.prop_op_comment.Bind(wx.EVT_TEXT, self._on_op_field_changed)
+        self.prop_op_label.Bind(wx.EVT_TEXT, self._on_op_field_changed)
+        self.prop_op_comment.Bind(wx.EVT_TEXT, self._on_op_field_changed)
 
     def load_project(self, project):
         self.project = project
-        self.title.SetLabel(f"Structure du projet – {project.name}")
         self._refresh_tree()
-        self._update_totals()
+
+    def update_root_label(self):
+        """Update only the root item label based on the current project reference."""
+        if self.project and self.root and self.root.IsOk():
+            ref = self.project.reference if self.project.reference else "Projet"
+            self.tree.SetItemText(self.root, ref)
 
     def _refresh_tree(self):
         self.tree.DeleteAllItems()
+        ref = self.project.reference if self.project and self.project.reference else "Projet"
+        self.root = self.tree.AddRoot(ref)
         if not self.project: return
-        self.root = self.tree.AddRoot(f"📁 {self.project.name} (Réf: {self.project.reference})")
-        for operation in self.project.operations:
-            self._add_operation_to_tree(operation, self.root)
-        self.tree.Expand(self.root)
+        for op in self.project.operations:
+            self._add_operation_to_tree(op, self.root)
+        self.tree.ExpandAll()
 
-    def _add_operation_to_tree(self, operation, parent):
-        op_item = self.tree.AppendItem(parent, f"🔧 {operation.code} | {operation.label}")
-        self.tree.SetItemData(op_item, {"type": "operation", "operation": operation})
-        for cost_name, cost in operation.costs.items():
-            self._add_cost_to_tree(cost, op_item, operation)
-        return op_item
+    def _add_operation_to_tree(self, op, parent):
+        if not parent or not parent.IsOk(): return None
+        item = self.tree.AppendItem(parent, f"🔧 {op.typology or 'Op'} | {op.label}")
+        self.tree.SetItemData(item, {"type": "operation", "operation": op})
+        for cost in op.costs.values():
+            self._add_cost_to_tree(cost, item, op)
+        return item
 
-    def _add_cost_to_tree(self, cost, parent, operation):
-        cost_icon = "💰" if cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING] else "⚙️" if cost.cost_type == CostType.INTERNAL_OPERATION else "📈"
-        cost_item = self.tree.AppendItem(parent, f"{cost_icon} {cost.name}")
-        self.tree.SetItemData(cost_item, {"type": "cost", "cost": cost, "operation": operation})
-        return cost_item
-
-    def _on_tree_selection_changed(self, event):
-        item = event.GetItem()
-        if item.IsOk() and item != self.root:
-            data = self.tree.GetItemData(item)
-            if data:
-                self._show_properties_for_item(data)
-                is_op = data.get("type") == "operation"
-                is_cost = data.get("type") == "cost"
-                self.add_cost_btn.Enable(is_op or is_cost)
-                return
-        self.properties_panel.Hide()
-        self.add_cost_btn.Disable()
-
-    def _show_properties_for_item(self, data):
-        self.properties_content.Clear(True)
-        self.current_data = data
-        self.properties_panel.Show()
-
-        if data["type"] == "operation":
-            op = data["operation"]
-            self.properties_title.SetLabel(f"Opération: {op.code}")
-            grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=5)
-            grid.AddGrowableCol(1, 1)
+    def _add_cost_to_tree(self, cost, parent, op):
+        if not parent or not parent.IsOk(): return None
+        cost_icon = "💰" if cost.cost_type in [domain_cost.CostType.MATERIAL, domain_cost.CostType.SUBCONTRACTING] else "⚙️" if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION else "📈"
+        label = f"{cost_icon} {cost.name}"
+        # from domain.operation import SUBCONTRACTING_TYPOLOGY # Already imported at top
+        if op.typology == SUBCONTRACTING_TYPOLOGY and not cost.is_active:
+            label = f"📁 [ARCHIVE] {cost.name}"
             
-            grid.Add(wx.StaticText(self.properties_panel, label="Code:"))
-            self.prop_op_code = wx.TextCtrl(self.properties_panel, value=str(op.code))
-            grid.Add(self.prop_op_code, 1, wx.EXPAND)
+        item = self.tree.AppendItem(parent, label)
+        if op.typology == SUBCONTRACTING_TYPOLOGY and not cost.is_active:
+            self.tree.SetItemTextColour(item, wx.Colour(150, 150, 150))
             
-            grid.Add(wx.StaticText(self.properties_panel, label="Libellé:"))
-            self.prop_op_label = wx.TextCtrl(self.properties_panel, value=str(op.label))
-            grid.Add(self.prop_op_label, 1, wx.EXPAND)
+        self.tree.SetItemData(item, {"type": "cost", "cost": cost, "operation": op})
+        return item
+
+    def _refresh_operation_items(self, op):
+        """Update only the hierarchy of a single operation in the tree."""
+        op_item = self._find_item_by_op(op, self.root)
+        if not op_item or not op_item.IsOk():
+            return
             
-            grid.Add(wx.StaticText(self.properties_panel, label="Pièces spéc.:"))
-            self.prop_op_pieces = wx.SpinCtrl(self.properties_panel, min=1, max=1000000, initial=op.total_pieces)
-            grid.Add(self.prop_op_pieces, 1, wx.EXPAND)
-            
-            self.properties_content.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
-
-        elif data["type"] == "cost":
-            cost = data["cost"]
-            self.properties_title.SetLabel(f"Coût: {cost.name}")
-            grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=5)
-            grid.AddGrowableCol(1, 1)
-            
-            grid.Add(wx.StaticText(self.properties_panel, label="Nom:"))
-            self.prop_cost_name = wx.TextCtrl(self.properties_panel, value=str(cost.name))
-            grid.Add(self.prop_cost_name, 1, wx.EXPAND)
-            
-            grid.Add(wx.StaticText(self.properties_panel, label="Type de coût:"))
-            self.prop_cost_type = wx.Choice(self.properties_panel, choices=[ct.value for ct in CostType])
-            self.prop_cost_type.SetStringSelection(cost.cost_type.value)
-            self.prop_cost_type.Bind(wx.EVT_CHOICE, self._on_cost_type_changed)
-            grid.Add(self.prop_cost_type, 1, wx.EXPAND)
-            
-            self.properties_content.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
-            
-            self.dynamic_fields_sizer = wx.BoxSizer(wx.VERTICAL)
-            self._update_cost_fields(cost)
-            self.properties_content.Add(self.dynamic_fields_sizer, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
-            
-            self.prop_comment = wx.TextCtrl(self.properties_panel, value=cost.comment or "", style=wx.TE_MULTILINE, size=(-1, 60))
-            self.properties_content.Add(wx.StaticText(self.properties_panel, label="Commentaire:"), 0, wx.LEFT | wx.TOP, 10)
-            self.properties_content.Add(self.prop_comment, 0, wx.EXPAND | wx.ALL, 10)
-
-        self.properties_panel.Layout()
-        self.Layout()
-
-    def _on_cost_type_changed(self, event):
-        cost = self.current_data["cost"]
-        new_val = self.prop_cost_type.GetStringSelection()
-        for ct in CostType:
-            if ct.value == new_val:
-                cost.cost_type = ct
-                break
-        if cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING] and not cost.pricing:
-            cost.pricing = PricingStructure(PricingType.FIXED)
-        self._update_cost_fields(cost)
-        self.properties_panel.Layout()
-
-    def _update_cost_fields(self, cost):
-        self.dynamic_fields_sizer.Clear(True)
-        grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=5)
-        grid.AddGrowableCol(1, 1)
-
-        match cost.cost_type:
-            case CostType.MATERIAL | CostType.SUBCONTRACTING:
-                grid.Add(wx.StaticText(self.properties_panel, label="Tarification:"))
-                self.prop_pricing_type = wx.Choice(self.properties_panel, choices=[pt.value for pt in PricingType])
-                self.prop_pricing_type.SetStringSelection(cost.pricing.pricing_type.value)
-                self.prop_pricing_type.Bind(wx.EVT_CHOICE, self._on_pricing_type_changed)
-                grid.Add(self.prop_pricing_type, 1, wx.EXPAND)
-
-                if cost.pricing.pricing_type == PricingType.PER_UNIT:
-                    grid.Add(wx.StaticText(self.properties_panel, label="Frais fixes (€):"))
-                    self.prop_fixed_price = wx.TextCtrl(self.properties_panel, value=f"{cost.pricing.fixed_price:.2f}")
-                    grid.Add(self.prop_fixed_price, 1, wx.EXPAND)
-                    
-                    grid.Add(wx.StaticText(self.properties_panel, label="Prix unitaire (€):"))
-                    self.prop_unit_price = wx.TextCtrl(self.properties_panel, value=f"{cost.pricing.unit_price:.2f}")
-                    grid.Add(self.prop_unit_price, 1, wx.EXPAND)
-                    grid.Add(wx.StaticText(self.properties_panel, label="Unité:"))
-                    self.prop_unit = wx.TextCtrl(self.properties_panel, value=cost.pricing.unit)
-                    grid.Add(self.prop_unit, 1, wx.EXPAND)
-                elif cost.pricing.pricing_type == PricingType.TIERED:
-                    grid.Add(wx.StaticText(self.properties_panel, label="Échelons:"))
-                    btn = wx.Button(self.properties_panel, label="Gérer les échelons...")
-                    btn.Bind(wx.EVT_BUTTON, self._on_manage_tiers)
-                    grid.Add(btn, 1, wx.EXPAND)
-
-                grid.Add(wx.StaticText(self.properties_panel, label="Réf. devis:"))
-                self.prop_supplier_ref = wx.TextCtrl(self.properties_panel, value=cost.supplier_quote_ref or "")
-                grid.Add(self.prop_supplier_ref, 1, wx.EXPAND)
-
-            case CostType.INTERNAL_OPERATION:
-                grid.Add(wx.StaticText(self.properties_panel, label="Temps fixe (h):"))
-                self.prop_fixed_time = wx.TextCtrl(self.properties_panel, value=f"{cost.fixed_time:.2f}")
-                grid.Add(self.prop_fixed_time, 1, wx.EXPAND)
-                grid.Add(wx.StaticText(self.properties_panel, label="Temps/pièce (h):"))
-                self.prop_per_piece_time = wx.TextCtrl(self.properties_panel, value=f"{cost.per_piece_time:.3f}")
-                grid.Add(self.prop_per_piece_time, 1, wx.EXPAND)
-
-            case CostType.MARGIN:
-                grid.Add(wx.StaticText(self.properties_panel, label="Marge (%):"))
-                self.prop_margin_pct = wx.TextCtrl(self.properties_panel, value=f"{cost.margin_percentage:.1f}")
-                grid.Add(self.prop_margin_pct, 1, wx.EXPAND)
-
-        # Conversion section
-        if cost.cost_type != CostType.MARGIN:
-            grid.Add(wx.StaticLine(self.properties_panel), 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 5)
-            grid.Add(wx.StaticLine(self.properties_panel), 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 5)
-            
-            lbl_mult = wx.StaticText(self.properties_panel, label="Multiplier (unit/pc):")
-            lbl_mult.SetToolTip("Facteur de conversion. Ex: mètres par pièce.")
-            grid.Add(lbl_mult, 0, wx.ALIGN_CENTER_VERTICAL)
-            self.prop_multiplier = wx.TextCtrl(self.properties_panel, value=f"{cost.quantity_multiplier:.4f}")
-            grid.Add(self.prop_multiplier, 1, wx.EXPAND)
-
-        self.dynamic_fields_sizer.Add(grid, 1, wx.EXPAND)
-        self.dynamic_fields_sizer.Layout()
-
-    def _on_pricing_type_changed(self, event):
-        cost = self.current_data["cost"]
-        new_val = self.prop_pricing_type.GetStringSelection()
-        for pt in PricingType:
-            if pt.value == new_val:
-                cost.pricing.pricing_type = pt
-                break
-        self._update_cost_fields(cost)
-        self.properties_panel.Layout()
-
-    def _on_save_properties(self, event):
-        data = self.current_data
-        if not data: return
-        try:
-            if data["type"] == "operation":
-                op = data["operation"]
-                op.code = self.prop_op_code.GetValue()
-                op.label = self.prop_op_label.GetValue()
-                op.total_pieces = self.prop_op_pieces.GetValue()
-                item = self.tree.GetSelection()
-                self.tree.SetItemText(item, f"🔧 {op.code} | {op.label}")
-            elif data["type"] == "cost":
+        # 1. Update Op label
+        self.tree.SetItemText(op_item, f"🔧 {op.typology or 'Op'} | {op.label}")
+        
+        # 2. Update Costs (labels/colors/icons)
+        child, cookie = self.tree.GetFirstChild(op_item)
+        while child.IsOk():
+            data = self.tree.GetItemData(child)
+            if data and data["type"] == "cost":
                 cost = data["cost"]
-                cost.name = self.prop_cost_name.GetValue()
-                cost.comment = self.prop_comment.GetValue() or None
-                if cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING]:
-                    if cost.pricing.pricing_type == PricingType.PER_UNIT:
-                        cost.pricing.fixed_price = float(self.prop_fixed_price.GetValue())
-                        cost.pricing.unit_price = float(self.prop_unit_price.GetValue())
-                        cost.pricing.unit = self.prop_unit.GetValue()
-                    cost.supplier_quote_ref = self.prop_supplier_ref.GetValue() or None
-                elif cost.cost_type == CostType.INTERNAL_OPERATION:
-                    cost.fixed_time = float(self.prop_fixed_time.GetValue())
-                    cost.per_piece_time = float(self.prop_per_piece_time.GetValue())
-                elif cost.cost_type == CostType.MARGIN:
-                    cost.margin_percentage = float(self.prop_margin_pct.GetValue())
                 
-                # Save conversion factors
-                if cost.cost_type != CostType.MARGIN:
-                    cost.quantity_multiplier = float(self.prop_multiplier.GetValue())
-                
-                item = self.tree.GetSelection()
-                cost_icon = "💰" if cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING] else "⚙️" if cost.cost_type == CostType.INTERNAL_OPERATION else "📈"
-                self.tree.SetItemText(item, f"{cost_icon} {cost.name}")
+                icons = {
+                    domain_cost.CostType.MATERIAL: "💰",
+                    domain_cost.CostType.SUBCONTRACTING: "💰",
+                    domain_cost.CostType.INTERNAL_OPERATION: "⚙️"
+                }
+                cost_icon = icons.get(cost.cost_type, "📈")
+                label = f"{cost_icon} {cost.name}"
+                # from domain.operation import SUBCONTRACTING_TYPOLOGY # Already imported at top
+                if op.typology == SUBCONTRACTING_TYPOLOGY and not cost.is_active:
+                    label = f"📁 [ARCHIVE] {cost.name}"
+                    self.tree.SetItemTextColour(child, wx.Colour(150, 150, 150))
+                else:
+                    self.tree.SetItemTextColour(child, wx.BLACK)
+                self.tree.SetItemText(child, label)
+            
+            child, cookie = self.tree.GetNextChild(op_item, cookie)
 
-            self._update_totals()
+    def _on_selection_changed(self, event):
+        item = event.GetItem()
+        if not item.IsOk() or item == self.root:
+            self._clear_properties()
+            return
+        data = self.tree.GetItemData(item)
+        self.current_data = data
+        self._show_properties(data)
+
+    def _clear_properties(self):
+        self.current_data = None
+        self.cost_editor.Hide()
+        self.op_props_panel.Hide()
+        self.properties_placeholder.Show()
+        self.properties_panel.Layout()
+
+    def _show_properties(self, data):
+        self.properties_placeholder.Hide()
+        
+        if data["type"] == "operation":
+            self.cost_editor.Hide()
+            self.op_props_panel.Show()
+            op = data["operation"]
+            
+            if op.typology == SUBCONTRACTING_TYPOLOGY:
+                self.result_panel.Hide()
+                self.comparison_grid.Show()
+                self.comparison_grid.load_operation(op, self.project)
+            else:
+                self.comparison_grid.Hide()
+                self.result_panel.Show()
+                self.result_panel.load_item(op, self.project)
+                
+            # Freeze to avoid flickers during value setting
+            self.op_props_panel.Freeze()
+            if op.typology:
+                self.prop_op_typology.SetStringSelection(op.typology)
+            else:
+                self.prop_op_typology.SetSelection(0)
+            self.prop_op_label.ChangeValue(op.label or "")
+            self.prop_op_comment.ChangeValue(op.comment or "")
+            self.op_props_panel.Thaw() # Restore Thaw
+            
+            self.result_panel.Show()
+            self.result_panel.load_item(op, self.project)
+        else:
+            self.op_props_panel.Hide()
+            self.result_panel.Hide() # Hide parent's result panel for costs
+            self.cost_editor.Show()
+            self.cost_editor.load_cost(data["cost"], self.project)
+        
+        # Ensure sizer and panel are correctly recalculated to avoid overlaps
+        self.properties_content.Layout()
+        self.properties_panel.Layout()
+
+    def _on_cost_changed(self, temp_cost):
+        """Callback from CostItemEditor when any field changes (real-time)."""
+        data = self.current_data
+        if not data or data["type"] != "cost":
+            return
+            
+        cost = data["cost"]
+        op = data["operation"]
+        
+        # 1. Handle Renaming safely
+        new_name = self.cost_editor.prop_name.GetValue().strip()
+        if new_name and new_name != cost.name:
+            # We must use the domain's rename logic to update the dictionary key
+            op.rename_cost(cost.name, new_name)
+            
+        # ALWAYS update tree label to match current state (handles typing)
+        if self.cost_editor.apply_changes():
+            # 2.1 Exclusive activation for Subcontracting
+            from domain.operation import SUBCONTRACTING_TYPOLOGY
+            if op.typology == SUBCONTRACTING_TYPOLOGY and cost.is_active:
+                for other_cost in op.costs.values():
+                    if other_cost != cost:
+                        other_cost.is_active = False
+                
+                # Optimized: update only current operation subtree
+                self._refresh_operation_items(op)
+            else:
+                # Update only current label to match current state (handles typing)
+                item = self.tree.GetSelection()
+                if item and item.IsOk():
+                    icons = {
+                        domain_cost.CostType.MATERIAL: "💰",
+                        domain_cost.CostType.SUBCONTRACTING: "💰",
+                        domain_cost.CostType.INTERNAL_OPERATION: "⚙️"
+                    }
+                    cost_icon = icons.get(cost.cost_type, "📈")
+                    label = f"{cost_icon} {cost.name}"
+                    if op.typology == SUBCONTRACTING_TYPOLOGY and not cost.is_active:
+                        label = f"📁 [ARCHIVE] {cost.name}"
+                        self.tree.SetItemTextColour(item, wx.Colour(150, 150, 150))
+                    else:
+                        self.tree.SetItemTextColour(item, wx.BLACK)
+                    self.tree.SetItemText(item, label)
+
+            # 4. Notify main frame to refresh other panels (totals, graphs, sales grid)
             if self.on_operation_updated:
-                self.on_operation_updated(data.get("operation"))
-        except Exception as e:
-            wx.MessageBox(f"Erreur lors de l'enregistrement: {str(e)}", "Erreur")
+                self.on_operation_updated(None) # None means project header is NOT reloaded (performance)
+
+    def _on_op_field_changed(self, event):
+        """Handle real-time updates for Operation fields."""
+        data = self.current_data
+        if not data or data["type"] != "operation":
+            return
+            
+        op = data["operation"]
+        op.typology = self.prop_op_typology.GetStringSelection()
+        op.code = op.typology # Match legacy typology/code link
+        op.label = self.prop_op_label.GetValue().strip()
+        op.comment = self.prop_op_comment.GetValue()
+        
+        # Update Tree Label
+        item = self.tree.GetSelection()
+        if item.IsOk():
+            self.tree.SetItemText(item, f"🔧 {op.typology or 'Op'} | {op.label}")
+            
+        # Update preview
+        self.result_panel.update_results(op)
+        
+        # Notify main frame
+        if self.on_operation_updated:
+            self.on_operation_updated(None)
 
     def _on_add_operation(self, event):
-        op = Operation(code="NOUV", label="Nouvelle opération")
+        op = Operation(code="NOUV", label="Nouvelle")
         self.project.add_operation(op)
-        item = self._add_operation_to_tree(op, self.root)
-        self.tree.SelectItem(item)
+        self._refresh_tree()
         if self.on_operation_updated: self.on_operation_updated(op)
 
     def _on_add_cost_to_selected_op(self, event):
@@ -355,277 +338,175 @@ class OperationCostEditorPanel(wx.Panel):
         op = data["operation"] if data else None
         if not op: return
         
-        choices = [ct.value for ct in CostType]
-        dlg = wx.SingleChoiceDialog(self, "Type de Coût", "Nouveau coût", choices)
-        if dlg.ShowModal() == wx.ID_OK:
-            ct = list(CostType)[dlg.GetSelection()]
-            name = f"Nouveau {ct.value.lower()}"
-            i = 1
-            while name in op.costs:
-                name = f"Nouveau {ct.value.lower()} {i}"
-                i += 1
+        # Generate unique name
+        base_name = "Nouveau coût"
+        name = base_name
+        counter = 1
+        while name in op.costs:
+            name = f"{base_name} {counter}"
+            counter += 1
+
+        ct = domain_cost.CostType.INTERNAL_OPERATION
+        pricing = domain_cost.PricingStructure(domain_cost.PricingType.PER_UNIT)
+        cost = domain_cost.CostItem(name, ct, pricing)
+        op.costs[name] = cost
+        
+        self._refresh_tree()
+        # After refresh_tree, the 'item' handle is invalid. Must re-find.
+        if self.root and self.root.IsOk():
+            op_item = self._find_item_by_op(op, self.root)
+            if op_item and op_item.IsOk():
+                new_item = self._find_item_by_cost(cost, op_item)
+                if new_item and new_item.IsOk():
+                    self.tree.SelectItem(new_item)
             
-            pricing = PricingStructure(PricingType.PER_UNIT)
-            cost = CostItem(name, ct, pricing)
-            op.costs[name] = cost
-            
-            op_item = item if data["type"] == "operation" else self.tree.GetItemParent(item)
-            cost_item = self._add_cost_to_tree(cost, op_item, op)
-            self.tree.Expand(op_item)
-            self.tree.SelectItem(cost_item)
-            if self.on_operation_updated: self.on_operation_updated(op)
+        if self.on_operation_updated: self.on_operation_updated(op)
 
     def _on_delete(self, event):
         item = self.tree.GetSelection()
         if not item.IsOk() or item == self.root: return
         data = self.tree.GetItemData(item)
-        if wx.MessageBox("Confirmer la suppression ?", "Confirmation", wx.YES_NO) != wx.YES: return
-        
-        if data["type"] == "operation":
-            self.project.operations.remove(data["operation"])
-        else:
-            del data["operation"].costs[data["cost"].name]
-        
-        self.tree.Delete(item)
-        self._update_totals()
-        if self.on_operation_updated: self.on_operation_updated(None)
-
-    def _on_duplicate(self, event):
-        item = self.tree.GetSelection()
-        if not item.IsOk() or item == self.root: return
-        data = self.tree.GetItemData(item)
-        
-        if data["type"] == "operation":
-            op = data["operation"]
-            new_op = Operation(code=f"{op.code}_copie", label=f"{op.label} (copie)", total_pieces=op.total_pieces)
-            new_op.costs = copy.deepcopy(op.costs)
-            self.project.add_operation(new_op)
-            new_item = self._add_operation_to_tree(new_op, self.root)
-            self.tree.SelectItem(new_item)
-        else:
-            op = data["operation"]
-            cost = data["cost"]
-            new_cost = copy.deepcopy(cost)
-            new_name = f"{cost.name} (copie)"
-            i = 1
-            while new_name in op.costs:
-                new_name = f"{cost.name} (copie {i})"
-                i += 1
-            new_cost.name = new_name
-            op.costs[new_name] = new_cost
-            new_item = self._add_cost_to_tree(new_cost, self.tree.GetItemParent(item), op)
-            self.tree.SelectItem(new_item)
-        self._update_totals()
-
-    def _on_move_up(self, event):
-        item = self.tree.GetSelection()
-        if not item.IsOk() or item == self.root: return
-        data = self.tree.GetItemData(item)
-        
-        if data["type"] == "operation":
-            ops = self.project.operations
-            op = data["operation"]
-            idx = ops.index(op)
-            if idx > 0:
-                ops[idx], ops[idx-1] = ops[idx-1], ops[idx]
-                self._refresh_tree_and_select(op)
-        else:
-            op = data["operation"]
-            cost = data["cost"]
-            costs_list = list(op.costs.items())
-            idx = -1
-            for i, (name, c) in enumerate(costs_list):
-                if c == cost:
-                    idx = i
-                    break
-            if idx > 0:
-                costs_list[idx], costs_list[idx-1] = costs_list[idx-1], costs_list[idx]
-                op.costs = dict(costs_list)
-                self._refresh_tree_and_select(cost)
-
-    def _on_move_down(self, event):
-        item = self.tree.GetSelection()
-        if not item.IsOk() or item == self.root: return
-        data = self.tree.GetItemData(item)
-        
-        if data["type"] == "operation":
-            ops = self.project.operations
-            op = data["operation"]
-            idx = ops.index(op)
-            if idx < len(ops) - 1:
-                ops[idx], ops[idx+1] = ops[idx+1], ops[idx]
-                self._refresh_tree_and_select(op)
-        else:
-            op = data["operation"]
-            cost = data["cost"]
-            costs_list = list(op.costs.items())
-            idx = -1
-            for i, (name, c) in enumerate(costs_list):
-                if c == cost:
-                    idx = i
-                    break
-            if idx < len(costs_list) - 1:
-                costs_list[idx], costs_list[idx+1] = costs_list[idx+1], costs_list[idx]
-                op.costs = dict(costs_list)
-                self._refresh_tree_and_select(cost)
-
-    def _refresh_tree_and_select(self, target_obj):
-        self._refresh_tree()
-        self._select_object(self.root, target_obj)
-
-    def _select_object(self, parent_item, target_obj):
-        child, cookie = self.tree.GetFirstChild(parent_item)
-        while child.IsOk():
-            data = self.tree.GetItemData(child)
-            if data:
-                if (data["type"] == "operation" and data["operation"] == target_obj) or \
-                   (data["type"] == "cost" and data["cost"] == target_obj):
-                    self.tree.SelectItem(child)
-                    self.tree.EnsureVisible(child)
-                    return True
-            if self._select_object(child, target_obj):
-                return True
-            child, cookie = self.tree.GetNextChild(parent_item, cookie)
-        return False
-
-    def _on_pieces_changed(self, event):
-        val = self.pieces_ctrl.GetValue()
-        for op in self.project.operations:
-            op.total_pieces = val
-        self._update_totals()
-        if self.on_operation_updated: self.on_operation_updated(None)
-
-    def _update_totals(self):
-        if not self.project: return
-        base = sum(op.total_cost() for op in self.project.operations)
-        total = sum(op.total_with_margins() for op in self.project.operations)
-        self.base_total_lbl.SetLabel(f"Coût de base: {base:.2f} €")
-        self.margin_total_lbl.SetLabel(f"Marges: {total-base:.2f} €")
-        self.total_with_margin_lbl.SetLabel(f"Total: {total:.2f} €")
-
-    def _on_manage_tiers(self, event):
-        cost = self.current_data["cost"]
-        dlg = TiersEditorDialog(self, cost.pricing.tiers)
-        if dlg.ShowModal() == wx.ID_OK:
-            cost.pricing.tiers = dlg.get_tiers()
-            self._update_totals()
-        dlg.Destroy()
+        if wx.MessageBox("Confirmer ?", "Supprimer", wx.YES_NO) != wx.YES: return
+        try:
+            if data["type"] == "operation": 
+                self.project.operations.remove(data["operation"])
+            else: 
+                op = data["operation"]
+                cost = data["cost"]
+                if cost.name in op.costs:
+                    del op.costs[cost.name]
+                else:
+                    # Fallback if names are out of sync
+                    found = False
+                    for k, v in list(op.costs.items()):
+                        if v == cost:
+                            del op.costs[k]
+                            found = True
+                            break
+                    if not found:
+                        wx.MessageBox("Erreur : l'élément n'a pas pu être trouvé dans le dictionnaire des coûts.", "Erreur", wx.OK | wx.ICON_ERROR)
+                        return
+            self.tree.Delete(item)
+            if self.on_operation_updated: self.on_operation_updated(None)
+        except Exception as e:
+            wx.MessageBox(f"Une erreur est survenue lors de la suppression : {str(e)}", "Erreur", wx.OK | wx.ICON_ERROR)
 
     def _on_tree_end_label_edit(self, event):
         if event.IsEditCancelled(): return
         item = event.GetItem()
-        new_label = event.GetLabel()
         data = self.tree.GetItemData(item)
-        if data["type"] == "operation":
+        new_label = event.GetLabel().strip()
+        if not new_label:
+            event.Veto()
+            return
+
+        if data["type"] == "operation": 
             data["operation"].label = new_label
-        else:
-            data["cost"].name = new_label
+        else: 
+            op = data["operation"]
+            cost = data["cost"]
+            if not op.rename_cost(cost.name, new_label):
+                event.Veto()
+                wx.MessageBox("Nom déjà utilisé ou invalide.", "Erreur")
+                return
         if self.on_operation_updated: self.on_operation_updated(None)
 
     def _on_tree_right_click(self, event):
         item = event.GetItem()
         if item.IsOk() and item != self.root:
             self.tree.SelectItem(item)
+            data = self.tree.GetItemData(item)
             menu = wx.Menu()
             ren = menu.Append(wx.ID_ANY, "Renommer")
             self.Bind(wx.EVT_MENU, lambda e: self.tree.EditLabel(item), ren)
             del_item = menu.Append(wx.ID_ANY, "Supprimer")
             self.Bind(wx.EVT_MENU, self._on_delete, del_item)
+            
+            if data and data["type"] == "operation":
+                menu.AppendSeparator()
+                move_up = menu.Append(wx.ID_ANY, "Monter")
+                self.Bind(wx.EVT_MENU, lambda e: self._on_move_op(-1), move_up)
+                move_down = menu.Append(wx.ID_ANY, "Descendre")
+                self.Bind(wx.EVT_MENU, lambda e: self._on_move_op(1), move_down)
+            
+            if data and data["type"] == "cost":
+                menu.AppendSeparator()
+                from domain.operation import SUBCONTRACTING_TYPOLOGY
+                op = data["operation"]
+                cost = data["cost"]
+                if op.typology == SUBCONTRACTING_TYPOLOGY:
+                    act = menu.Append(wx.ID_ANY, "Définir comme offre active")
+                    self.Bind(wx.EVT_MENU, lambda e: self._on_activate_cost(cost, op), act)
+                    menu.AppendSeparator()
+                    
+                move_up = menu.Append(wx.ID_ANY, "Monter")
+                self.Bind(wx.EVT_MENU, lambda e: self._on_move_op(-1), move_up)
+                move_down = menu.Append(wx.ID_ANY, "Descendre")
+                self.Bind(wx.EVT_MENU, lambda e: self._on_move_op(1), move_down)
+                
             self.PopupMenu(menu)
             menu.Destroy()
 
-class TiersEditorDialog(wx.Dialog):
-    def __init__(self, parent, tiers):
-        super().__init__(parent, title="Gestion des échelons", size=(500, 400))
-        self.tiers = copy.deepcopy(tiers)
-        self._init_ui()
-
-    def _init_ui(self):
-        sizer = wx.BoxSizer(wx.VERTICAL)
-        self.list = wx.ListCtrl(self, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
-        self.list.InsertColumn(0, "Qté Min", width=80)
-        self.list.InsertColumn(1, "Qté Max", width=80)
-        self.list.InsertColumn(2, "Fixe (€)", width=100)
-        self.list.InsertColumn(3, "Unitaire (€)", width=100)
-        self._refresh_list()
-        sizer.Add(self.list, 1, wx.EXPAND | wx.ALL, 10)
-
-        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        add_btn = wx.Button(self, label="Ajouter")
-        add_btn.Bind(wx.EVT_BUTTON, self._on_add)
-        btn_sizer.Add(add_btn, 0, wx.ALL, 5)
+    def _on_activate_cost(self, cost, op):
+        """Manually activate a cost via right-click."""
+        cost.is_active = True
+        for other_cost in op.costs.values():
+            if other_cost != cost:
+                other_cost.is_active = False
         
-        del_btn = wx.Button(self, label="Supprimer")
-        del_btn.Bind(wx.EVT_BUTTON, self._on_delete)
-        btn_sizer.Add(del_btn, 0, wx.ALL, 5)
-        
-        sizer.Add(btn_sizer, 0, wx.ALIGN_CENTER)
-        
-        line = wx.StaticLine(self)
-        sizer.Add(line, 0, wx.EXPAND | wx.ALL, 5)
-        
-        db_sizer = self.CreateButtonSizer(wx.OK | wx.CANCEL)
-        sizer.Add(db_sizer, 0, wx.ALIGN_CENTER | wx.ALL, 10)
-        self.SetSizer(sizer)
+        self._refresh_operation_items(op)
+        # Also refresh property editor if it was showing this cost
+        if self.current_data and self.current_data.get("cost") == cost:
+            self.cost_editor.load_cost(cost, self.project)
+            
+        if self.on_operation_updated:
+            self.on_operation_updated(None)
 
-    def _refresh_list(self):
-        self.list.DeleteAllItems()
-        self.tiers.sort(key=lambda t: t.min_quantity)
-        for i, t in enumerate(self.tiers):
-            self.list.InsertItem(i, str(t.min_quantity))
-            self.list.SetItem(i, 1, str(t.max_quantity) if t.max_quantity else "∞")
-            self.list.SetItem(i, 2, f"{t.fixed_price:.2f}")
-            self.list.SetItem(i, 3, f"{t.unit_price:.2f}")
-
-    def _on_add(self, event):
-        dlg = SingleTierDialog(self)
-        if dlg.ShowModal() == wx.ID_OK:
-            self.tiers.append(dlg.get_tier())
-            self._refresh_list()
-        dlg.Destroy()
-
-    def _on_delete(self, event):
-        idx = self.list.GetFirstSelected()
-        if idx != -1:
-            del self.tiers[idx]
-            self._refresh_list()
-
-    def get_tiers(self):
-        return self.tiers
-
-class SingleTierDialog(wx.Dialog):
-    def __init__(self, parent, tier=None):
-        super().__init__(parent, title="Détail de l'échelon", size=(350, 250))
-        self.tier = tier
-        grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=10)
+    def _on_move_op(self, direction):
+        item = self.tree.GetSelection()
+        if not item.IsOk(): return
+        data = self.tree.GetItemData(item)
+        if not data: return
         
-        grid.Add(wx.StaticText(self, label="Quantité Min:"))
-        self.min_q = wx.SpinCtrl(self, min=0, max=1000000, initial=tier.min_quantity if tier else 0)
-        grid.Add(self.min_q, 1, wx.EXPAND)
-        
-        grid.Add(wx.StaticText(self, label="Quantité Max:"))
-        val_max = str(tier.max_quantity) if tier and tier.max_quantity else ""
-        self.max_q = wx.TextCtrl(self, value=val_max)
-        grid.Add(self.max_q, 1, wx.EXPAND)
+        if data["type"] == "operation":
+            op = data["operation"]
+            try:
+                idx = self.project.operations.index(op)
+                if self.project.move_operation(idx, direction):
+                    self._refresh_tree()
+                    new_item = self._find_item_by_op(op, self.root)
+                    if new_item: self.tree.SelectItem(new_item)
+                    if self.on_operation_updated: self.on_operation_updated(None)
+            except ValueError: pass
+        elif data["type"] == "cost":
+            op = data["operation"]
+            cost = data["cost"]
+            if op.move_cost(cost.name, direction):
+                self._refresh_tree()
+                # Find the parent op item first, then find the cost item under it
+                op_item = self._find_item_by_op(op, self.root)
+                if op_item:
+                    new_cost_item = self._find_item_by_cost(cost, op_item)
+                    if new_cost_item:
+                        self.tree.SelectItem(new_cost_item)
+                if self.on_operation_updated: self.on_operation_updated(op)
 
-        grid.Add(wx.StaticText(self, label="Frais fixes (€):"))
-        self.fixed = wx.TextCtrl(self, value=f"{tier.fixed_price:.2f}" if tier else "0.0")
-        grid.Add(self.fixed, 1, wx.EXPAND)
-        
-        grid.Add(wx.StaticText(self, label="Prix Unitaire (€):"))
-        self.price = wx.TextCtrl(self, value=f"{tier.unit_price:.2f}" if tier else "0.0")
-        grid.Add(self.price, 1, wx.EXPAND)
-        
-        sizer = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(grid, 1, wx.EXPAND | wx.ALL, 15)
-        sizer.Add(self.CreateButtonSizer(wx.OK | wx.CANCEL), 0, wx.ALIGN_CENTER | wx.ALL, 10)
-        self.SetSizer(sizer)
+    def _find_item_by_op(self, op, root_item):
+        if not root_item or not root_item.IsOk(): return None
+        child, cookie = self.tree.GetFirstChild(root_item)
+        while child.IsOk():
+            data = self.tree.GetItemData(child)
+            if data and data.get("operation") == op and data["type"] == "operation":
+                return child
+            child, cookie = self.tree.GetNextChild(root_item, cookie)
+        return None
 
-    def get_tier(self):
-        mq = self.max_q.GetValue().strip()
-        return PricingTier(
-            min_quantity=self.min_q.GetValue(),
-            max_quantity=int(mq) if mq else None,
-            fixed_price=float(self.fixed.GetValue()),
-            unit_price=float(self.price.GetValue())
-        )
+    def _find_item_by_cost(self, cost, op_item):
+        if not op_item or not op_item.IsOk(): return None
+        child, cookie = self.tree.GetFirstChild(op_item)
+        while child.IsOk():
+            data = self.tree.GetItemData(child)
+            if data and data.get("cost") == cost:
+                return child
+            child, cookie = self.tree.GetNextChild(op_item, cookie)
+        return None

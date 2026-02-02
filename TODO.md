@@ -1,24 +1,11 @@
 # MWQuote App Development TODO List
 
-## Completed Tasks ✅
-
-- [x] Set up project structure with domain and ui packages
-- [x] Implement domain models (Project, Operation, CostItem, PricingEngine)
-- [x] Create main application entry point (app.py)
-- [x] Build UI panels (MainFrame, OperationsPanel, OperationEditorPanel, ProjectPanel)
-- [x] Implement operation management (add, select, edit operations)
-- [x] Implement cost editing functionality in operation editor
-- [x] Integrate UI components with callbacks and event handling
-- [x] Add sample project creation for testing
-- [x] Test application launch and basic functionality
-- [x] Verify wxPython integration and UI responsiveness
-
-## Future Enhancements 🔄
-
-- [ ] Add project saving/loading functionality
-- [ ] Implement pricing engine with margins and coefficients
-- [ ] Add data validation and error handling
-- [ ] Create project templates
-- [ ] Add export functionality (PDF, Excel)
-- [ ] Implement undo/redo functionality
-- [ ] Add user preferences and settings
+##Quoteeditor
+    - Le popup crétion de nouveau cout est inutile : "opération interne par défailt"
+      Add project date field into project data
+    - Dans le types de cout "sous-traitance" ajouter l'import de l'offre pdf sur le meme modèle que le plan projet. 
+    - Ajouter un champ "référence de l'offre" dans le type de cout "sous-traitance"
+    - Type de cout sous traitance : les champs (Désignation) de son pas mis à jour dans l'arbre de structure
+    - Le tx de marge n'est pas pris en compte dans le calcul
+    -Un type d'opération Sous-traitance est à ajouter
+    -Dans la fenetre d'édition il faut un rappel des quantité paramétrée dans les échelons

@@ -1,0 +1,116 @@
+{
+    "name": "Projet Test 8",
+    "reference": "OPP-25-1751-5198",
+    "client": "MEDTRONIC",
+    "operations": [
+        {
+            "code": "Microd\u00e9coupe",
+            "label": "Operation 1: Microd\u00e9coupe",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 21.61217520639198,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.6156645715260219,
+                    "per_piece_time": 0.3621647689953837,
+                    "hourly_rate": 183.8916653904386,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 86.87388688203721,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.7807340138138923,
+                    "per_piece_time": 0.45874578313421677,
+                    "hourly_rate": 132.07749471461705,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        },
+        {
+            "code": "Emballage",
+            "label": "Operation 2: Emballage",
+            "typology": "",
+            "comment": "",
+            "costs": {
+                "Cost1": {
+                    "name": "Setup",
+                    "cost_type": "Op\u00e9ration interne",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 81.17235526170064,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 0.3569173268836878,
+                    "per_piece_time": 0.29378870578250443,
+                    "hourly_rate": 146.72110270390692,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                },
+                "Cost2": {
+                    "name": "Run",
+                    "cost_type": "Sous-traitance",
+                    "pricing": {
+                        "pricing_type": "Par unit\u00e9",
+                        "fixed_price": 0.0,
+                        "unit_price": 26.27664293668874,
+                        "unit": "pi\u00e8ce",
+                        "tiers": []
+                    },
+                    "fixed_time": 1.2426106032109585,
+                    "per_piece_time": 0.38294076906394103,
+                    "hourly_rate": 57.889251807831776,
+                    "conversion_type": "Multiplier",
+                    "conversion_factor": 1.0,
+                    "margin_rate": 0.0,
+                    "supplier_quote_ref": null,
+                    "comment": null
+                }
+            },
+            "total_pieces": 1
+        }
+    ],
+    "drawing_filename": null,
+    "drawing_data": null,
+    "sale_quantities": [
+        1,
+        10,
+        50,
+        100,
+        500,
+        1000
+    ],
+    "tags": [
+        "test",
+        "generated",
+        "medtronic"
+    ]
+}

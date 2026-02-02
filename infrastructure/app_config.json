@@ -1,0 +1,21 @@
+{
+    "cost_typologies": [
+        "Matière Première",
+        "Consommable",
+        "Soudage",
+        "Microdécoupe",
+        "Marquage",
+        "Mécanique",
+        "Contrôle",
+        "Conditionnement",
+        "Sous-traitance"
+    ],
+    "project_tags": [
+        "Aéronautique",
+        "Médical",
+        "Automobile",
+        "Coupe à longueur",
+        "Découpe Tube",
+        "Prototype"
+    ]
+}

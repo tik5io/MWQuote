@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from typing import List
 from .operation import Operation
+from .document import Document
 
 @dataclass
 class Project:
@@ -9,11 +10,43 @@ class Project:
     reference: str
     client: str
     operations: List[Operation] = field(default_factory=list)
-    drawing_filename: str = None
-    drawing_data: str = None  # Base64 string
+    documents: List[Document] = field(default_factory=list)
+    project_date: str = None  # ISO format date (YYYY-MM-DD)
+    sale_quantities: List[int] = field(default_factory=lambda: [1, 10, 50, 100])
+    tags: List[str] = field(default_factory=list)
+    
+    # Milestones & Tracking
+    status: str = "En construction" # options: "En construction", "Finalisée", "Transmise"
+    status_dates: dict = field(default_factory=dict) # key: status, value: ISO date
+
+    @property
+    def drawing_filename(self):
+        """Legacy compatibility: returns the first document filename."""
+        return self.documents[0].filename if self.documents else None
+
+    @property
+    def drawing_data(self):
+        """Legacy compatibility: returns the first document data."""
+        return self.documents[0].data if self.documents else None
 
     def total_price(self, quantity: int = None) -> float:
         return sum(op.total_with_margins(quantity) for op in self.operations)
 
     def add_operation(self, operation: Operation) -> None:
         self.operations.append(operation)
+
+    def move_operation(self, index: int, direction: int) -> bool:
+        """direction: -1 for up, 1 for down"""
+        new_index = index + direction
+        if 0 <= new_index < len(self.operations):
+            self.operations[index], self.operations[new_index] = self.operations[new_index], self.operations[index]
+            return True
+        return False
+
+    def clone(self):
+        """Returns a deep copy of the project with reset milestones."""
+        import copy
+        new_project = copy.deepcopy(self)
+        new_project.status = "En construction"
+        new_project.status_dates = {}
+        return new_project
