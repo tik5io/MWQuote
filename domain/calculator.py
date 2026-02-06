@@ -1,7 +1,11 @@
 # domain/calculator.py
 from dataclasses import dataclass
+import math
 from typing import Dict, Any, List
 from .cost import CostItem, CostType, PricingType, ConversionType
+from infrastructure.logging_service import get_module_logger
+
+logger = get_module_logger("Calculator", "calculator.log")
 
 @dataclass
 class CalculationResult:
@@ -35,34 +39,54 @@ class Calculator:
     
     @staticmethod
     def calculate_item(cost_item: CostItem, total_pieces: int) -> CalculationResult:
+        logger.debug(
+            f"calc_item start | item={getattr(cost_item, 'name', '?')} "
+            f"type={getattr(cost_item, 'cost_type', '?')} qty={total_pieces} "
+            f"conv={cost_item.conversion_type.value if cost_item else '?'} "
+            f"factor={getattr(cost_item, 'conversion_factor', '?')} "
+            f"margin={getattr(cost_item, 'margin_rate', '?')}"
+        )
         if total_pieces <= 0:
             return Calculator._empty_result(total_pieces, cost_item)
 
         # 1. Quantities
-        unit_consumption = cost_item.quantity_per_piece if cost_item.quantity_per_piece is not None else 1.0
-        quote_qty_needed = total_pieces * unit_consumption
+        if cost_item.quantity_per_piece_is_inverse:
+            pieces_per_unit = cost_item.quantity_per_piece if cost_item.quantity_per_piece not in (None, 0) else 1.0
+            unit_consumption = 1.0 / pieces_per_unit
+            # Must order whole units when expressed in pieces/unit
+            quote_qty_needed = math.ceil(total_pieces / pieces_per_unit)
+        else:
+            unit_consumption = cost_item.quantity_per_piece if cost_item.quantity_per_piece is not None else 1.0
+            quote_qty_needed = total_pieces * unit_consumption
         
         moq = cost_item.get_moq()
         quote_qty_ordered = max(quote_qty_needed, moq) if cost_item.cost_type == CostType.SUBCONTRACTING else quote_qty_needed
 
         # 2. Supplier Batch Pricing
-        if cost_item.cost_type == CostType.INTERNAL_OPERATION and not (cost_item.pricing and (cost_item.pricing.unit_price != 0 or cost_item.pricing.fixed_price != 0 or cost_item.pricing.tiers)):
-            # Special case for legacy time-based internal operation
+        if cost_item.cost_type == CostType.INTERNAL_OPERATION:
+            # Internal operations are always time-based
+            hourly_rate = cost_item.hourly_rate or 0.0
             total_time = cost_item.fixed_time + (cost_item.per_piece_time * total_pieces)
-            batch_supplier_cost = total_time * cost_item.hourly_rate
-            supplier_unit_price = cost_item.hourly_rate
-            supplier_fixed_price = 0.0 # Time-based is mixed
-            f_batch = cost_item.fixed_time * cost_item.hourly_rate
-            v_batch = cost_item.per_piece_time * total_pieces * cost_item.hourly_rate
+            batch_supplier_cost = total_time * hourly_rate
+            supplier_unit_price = hourly_rate
+            supplier_fixed_price = 0.0  # Time-based is mixed
+            f_batch = cost_item.fixed_time * hourly_rate
+            v_batch = cost_item.per_piece_time * total_pieces * hourly_rate
         else:
             # Standard PricingStructure usage
-            batch_supplier_cost = cost_item.pricing.calculate_price(quote_qty_ordered)
-            f_batch, v_batch = cost_item.pricing.calculate_components(quote_qty_ordered)
-            
-            # Extract unit price from tier/structure for documentation
-            tier = cost_item.pricing.get_applicable_tier(quote_qty_ordered) if cost_item.pricing.pricing_type == PricingType.TIERED else None
-            supplier_unit_price = tier.unit_price if tier else cost_item.pricing.unit_price
-            supplier_fixed_price = cost_item.pricing.fixed_price
+            if not cost_item.pricing:
+                batch_supplier_cost = 0.0
+                f_batch, v_batch = 0.0, 0.0
+                supplier_unit_price = 0.0
+                supplier_fixed_price = 0.0
+            else:
+                batch_supplier_cost = cost_item.pricing.calculate_price(quote_qty_ordered)
+                f_batch, v_batch = cost_item.pricing.calculate_components(quote_qty_ordered)
+                
+                # Extract unit price from tier/structure for documentation
+                tier = cost_item.pricing.get_applicable_tier(quote_qty_ordered) if cost_item.pricing.pricing_type == PricingType.TIERED else None
+                supplier_unit_price = tier.unit_price if tier else cost_item.pricing.unit_price
+                supplier_fixed_price = cost_item.pricing.fixed_price
 
         # 3. Unit Cost Bruts (Per produced piece)
         unit_cost_brut = batch_supplier_cost / total_pieces
@@ -84,7 +108,7 @@ class Calculator:
         m_factor = 1.0 / (1.0 - m_rate / 100.0)
         unit_sale_price = unit_cost_converted * m_factor
 
-        return CalculationResult(
+        result = CalculationResult(
             production_qty=total_pieces,
             unit_consumption=unit_consumption,
             quote_qty_needed=quote_qty_needed,
@@ -102,6 +126,14 @@ class Calculator:
             conversion_factor=conv_factor,
             conversion_type=cost_item.conversion_type
         )
+        logger.debug(
+            f"calc_item done | item={getattr(cost_item, 'name', '?')} "
+            f"unit_cost={result.unit_cost_converted:.4f} "
+            f"unit_sale={result.unit_sale_price:.4f} "
+            f"batch={result.batch_supplier_cost:.4f} "
+            f"quote_qty={result.quote_qty_ordered:.4f}"
+        )
+        return result
 
     @staticmethod
     def _empty_result(qty: int, item: CostItem) -> CalculationResult:

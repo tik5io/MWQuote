@@ -4,7 +4,14 @@ from typing import List, Dict, Optional
 import os
 
 class Database:
-    def __init__(self, db_path: str = "mwquote_index.db"):
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            app_data = os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local'))
+            db_dir = os.path.join(app_data, "MWQuote")
+            if not os.path.exists(db_dir):
+                os.makedirs(db_dir, exist_ok=True)
+            db_path = os.path.join(db_dir, "mwquote_index.db")
+        
         self.db_path = db_path
         self.init_db()
 

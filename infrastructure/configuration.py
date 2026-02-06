@@ -17,8 +17,12 @@ class ConfigurationService:
 
     def __init__(self, config_path: str = None):
         if config_path is None:
-            base_dir = os.path.dirname(__file__)
-            config_path = os.path.join(base_dir, "app_config.json")
+            # Persistent config in AppData
+            app_data = os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local'))
+            db_dir = os.path.join(app_data, "MWQuote")
+            os.makedirs(db_dir, exist_ok=True)
+            config_path = os.path.join(db_dir, "app_config.json")
+        
         self.config_path = config_path
         self.config = self._load_config()
 
@@ -30,18 +34,36 @@ class ConfigurationService:
             "auto_migrate_on_root_change": True,
             "use_uuid_for_filenames": True
         }
-        if not os.path.exists(self.config_path):
-            return defaults
+        
+        # 1. Try to load from persistent AppData path
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                    # Merge with basic defaults
+                    for key, value in defaults.items():
+                        if key not in loaded:
+                            loaded[key] = value
+                    return loaded
+            except Exception:
+                pass
+
+        # 2. If AppData config missing or invalid, try to load from bundled assets
         try:
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
-                # Merge with defaults
-                for key, value in defaults.items():
-                    if key not in loaded:
-                        loaded[key] = value
-                return loaded
+            from core.app_icon import get_bundled_config_path
+            bundled_path = get_bundled_config_path()
+            if bundled_path.exists():
+                with open(bundled_path, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                    # Save a copy to AppData for persistence and later modification
+                    self.config = loaded
+                    self.save()
+                    return loaded
         except Exception:
-            return defaults
+            pass
+
+        # 3. Last resort - use hardcoded defaults
+        return defaults
 
     def save(self):
         """Save configuration to file."""
@@ -58,8 +80,16 @@ class ConfigurationService:
         return self.config.get("project_tags", [])
 
     def get_quotes_root_folder(self) -> Optional[str]:
-        """Get the configured root folder for quotes."""
-        return self.config.get("quotes_root_folder")
+        """Get the configured root folder for quotes. Defaults to AppData if not set."""
+        folder = self.config.get("quotes_root_folder")
+        if not folder:
+            # Default to AppData/Local/MWQuote/Quotes
+            app_data = os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local'))
+            folder = os.path.join(app_data, "MWQuote", "Quotes")
+            # We don't save it to config yet, just return it as default
+            # But we ensure it exists
+            os.makedirs(folder, exist_ok=True)
+        return folder
 
     def set_quotes_root_folder(self, folder: str):
         """Set the root folder for quotes."""

@@ -254,6 +254,7 @@ class PersistenceService:
             conversion_factor=cost_data.get('conversion_factor', cost_data.get('quantity_multiplier', 1.0)),
             conversion_type=ConversionType(cost_data.get('conversion_type', "Multiplier")),
             quantity_per_piece=cost_data.get('quantity_per_piece', 1.0),
+            quantity_per_piece_is_inverse=cost_data.get('quantity_per_piece_is_inverse', False),
             is_active=cost_data.get('is_active', True)
         )
 

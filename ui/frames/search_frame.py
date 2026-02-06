@@ -2,6 +2,7 @@ import wx
 import os
 import sys
 import shutil
+import io
 from datetime import date
 from infrastructure.database import Database
 from infrastructure.indexer import Indexer
@@ -14,6 +15,7 @@ from infrastructure.logging_service import get_module_logger
 from ui.panels.search_project_details_panel import ProjectDetailsPanel
 from ui.panels.comparison_panel import ComparisonPanel
 import QuoteEditor_app
+from core.app_icon import get_icon_path, load_icon_from_sheet, get_template_path
 
 logger = get_module_logger("SearchFrame", "search_frame.log")
 
@@ -30,6 +32,7 @@ class SearchFrame(wx.Frame):
         
         self._build_ui()
         self._build_menu()
+        self._set_app_icon()
         # Sorting state (must be before _refresh_list)
         self.sort_col = "last_modified"
         self.sort_ascending = False
@@ -41,6 +44,14 @@ class SearchFrame(wx.Frame):
         
         self.Bind(wx.EVT_CLOSE, self._on_close)
         self.Bind(wx.EVT_ACTIVATE, self._on_activate)
+
+    def _set_app_icon(self):
+        try:
+            icon_path = get_icon_path()
+            if icon_path.exists():
+                self.SetIcon(wx.Icon(str(icon_path), wx.BITMAP_TYPE_ICO))
+        except Exception:
+            pass
 
     def _on_activate(self, event):
         """Refresh list when window gets focus (return from editor)"""
@@ -57,7 +68,7 @@ class SearchFrame(wx.Frame):
         top_bar = wx.BoxSizer(wx.HORIZONTAL)
 
         # New Quote Button
-        new_btn = wx.Button(top_bar_container, label="+ Nouvelle Quote")
+        new_btn = wx.Button(top_bar_container, label="Nouvelle Quote")
         new_btn.SetBackgroundColour(wx.Colour(70, 130, 180))
         new_btn.SetForegroundColour(wx.WHITE)
         new_btn.Bind(wx.EVT_BUTTON, self._on_new_quote)
@@ -83,7 +94,7 @@ class SearchFrame(wx.Frame):
         search_btn.Bind(wx.EVT_BUTTON, self._on_search)
         
         # Reset button
-        reset_btn = wx.Button(top_bar_container, label="X", size=(30, -1))
+        reset_btn = wx.Button(top_bar_container, label="X", size=(40, -1))
         reset_btn.Bind(wx.EVT_BUTTON, self._on_reset)
         reset_btn.SetToolTip("Effacer les filtres")
 
@@ -882,11 +893,11 @@ class SearchFrame(wx.Frame):
             return
         
         # Check for template
-        template_path = "TEMPLATE.xlsx"
+        template_path = str(get_template_path())
         if not os.path.exists(template_path):
             wx.MessageBox(
-                f"Le template '{template_path}' est introuvable.\n\n"
-                f"Veuillez placer le fichier TEMPLATE.xlsx dans le répertoire racine de l'application.",
+                f"Le template est introuvable à l'adresse :\n{template_path}\n\n"
+                f"Veuillez vérifier que le fichier TEMPLATE.xlsx est présent dans le dossier 'assets' de l'application.",
                 "Template manquant",
                 wx.OK | wx.ICON_ERROR
             )

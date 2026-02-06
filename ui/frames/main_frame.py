@@ -1,6 +1,7 @@
 # ui/main_frame.py
 import wx
 import os
+import io
 from domain.project import Project
 from ui.panels.project_panel import ProjectPanel
 from ui.panels.operation_cost_editor_panel import OperationCostEditorPanel
@@ -11,6 +12,9 @@ from infrastructure.logging_service import clear_logs_directory
 from infrastructure.export_service import ExportService
 from infrastructure.database import Database
 from infrastructure.indexer import Indexer
+from infrastructure.configuration import ConfigurationService
+from infrastructure.file_manager import FileManager
+from core.app_icon import get_icon_path, load_icon_from_sheet
 
 
 
@@ -28,19 +32,30 @@ class MainFrame(wx.Frame):
 
         self.project = project or Project(name="Nouveau Projet", reference="", client="")
         self.current_path = filepath
+        self._dirty = False
         
         # Services
         self.db = Database()
         self.indexer = Indexer(self.db)
+        self.config = ConfigurationService.get_instance()
         
         self._build_ui()
         self._create_menu_bar()
         self._connect_events()
+        self._set_app_icon()
         
         if self.project:
             self._update_app_with_project(self.project)
         
         self.Show()
+
+    def _set_app_icon(self):
+        try:
+            icon_path = get_icon_path()
+            if icon_path.exists():
+                self.SetIcon(wx.Icon(str(icon_path), wx.BITMAP_TYPE_ICO))
+        except Exception:
+            pass
 
     def _create_menu_bar(self):
         """Crée la barre de menu"""
@@ -49,6 +64,8 @@ class MainFrame(wx.Frame):
         file_menu = wx.Menu()
         new_item = file_menu.Append(wx.ID_NEW, "&Nouveau\tCtrl+N")
         open_item = file_menu.Append(wx.ID_OPEN, "&Ouvrir...\tCtrl+O")
+        save_item = file_menu.Append(wx.ID_SAVE, "&Enregistrer\tCtrl+S")
+        save_as_item = file_menu.Append(wx.ID_SAVEAS, "Enregistrer &sous...\tCtrl+Shift+S")
         file_menu.AppendSeparator()
         duplicate_item = file_menu.Append(wx.ID_DUPLICATE, "&Dupliquer")
         file_menu.AppendSeparator()
@@ -60,6 +77,8 @@ class MainFrame(wx.Frame):
         # Bindings
         self.Bind(wx.EVT_MENU, self._on_new, new_item)
         self.Bind(wx.EVT_MENU, self._on_open, open_item)
+        self.Bind(wx.EVT_MENU, self._on_save, save_item)
+        self.Bind(wx.EVT_MENU, self._on_save_as, save_as_item)
         self.Bind(wx.EVT_MENU, self._on_duplicate, duplicate_item)
         self.Bind(wx.EVT_MENU, lambda e: self.Close(), exit_item)
         self.Bind(wx.EVT_CLOSE, self._on_close)
@@ -103,6 +122,8 @@ class MainFrame(wx.Frame):
         def on_proj_changed():
             self.editor_panel.update_root_label()
             self._update_title()
+            self._mark_dirty()
+            self._auto_save_if_possible()
             
         self.project_panel.on_project_changed = on_proj_changed
 
@@ -144,6 +165,8 @@ class MainFrame(wx.Frame):
 
         # Rafraîchir tous les panels de données
         self._refresh_all_data_panels()
+        self._mark_dirty()
+        self._auto_save_if_possible()
 
     def _on_quantities_changed(self, quantities):
         """Appelé quand les quantités du projet sont modifiées."""
@@ -153,6 +176,10 @@ class MainFrame(wx.Frame):
         # Rafraîchir les sélecteurs de quantités dans les sous-composants
         self.editor_panel.refresh_quantities()
         self.sales_panel.refresh_quantities()
+        
+        # Trigger background save to update Search list and analysis
+        self._mark_dirty()
+        self._auto_save_if_possible()
 
     def _refresh_all_data_panels(self):
         """Rafraîchit tous les panels de données (grid, graphiques, etc.)."""
@@ -165,6 +192,8 @@ class MainFrame(wx.Frame):
                         "Nouveau projet", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
             new_project = Project(name="Nouveau projet", reference="", client="")
             self._update_app_with_project(new_project)
+            self.current_path = None
+            self._dirty = False
 
     def _on_open(self, event):
         """Ouvre un projet depuis un fichier"""
@@ -178,6 +207,7 @@ class MainFrame(wx.Frame):
                 project = PersistenceService.load_project(path)
                 self.current_path = path
                 self._update_app_with_project(project)
+                self._dirty = False
             except Exception as e:
                 wx.MessageBox(f"Erreur lors du chargement : {str(e)}", "Erreur", wx.OK | wx.ICON_ERROR)
 
@@ -210,5 +240,76 @@ class MainFrame(wx.Frame):
 
     def _on_close(self, event):
         """Appelé à la fermeture de la fenêtre principale"""
+        if self._dirty:
+            res = wx.MessageBox(
+                "Des modifications n'ont pas été enregistrées. Voulez-vous enregistrer ?",
+                "Modifications non enregistrées",
+                wx.YES_NO | wx.CANCEL | wx.ICON_WARNING
+            )
+            if res == wx.CANCEL:
+                event.Veto()
+                return
+            if res == wx.YES:
+                if not self._save_project(allow_dialog=True):
+                    event.Veto()
+                    return
         clear_logs_directory()
         self.Destroy()
+
+    def _mark_dirty(self):
+        self._dirty = True
+
+    def _auto_save_if_possible(self):
+        """Auto-save without prompting if we can resolve a path."""
+        self._save_project(allow_dialog=False)
+
+    def _save_project(self, allow_dialog: bool) -> bool:
+        if not self.project:
+            return False
+
+        # If no path, try root folder auto-save
+        if not self.current_path:
+            root = self.config.get_quotes_root_folder()
+            if root:
+                mwq_uuid = getattr(self.project, "mwq_uuid", None)
+                if not mwq_uuid:
+                    mwq_uuid = FileManager.generate_uuid()
+                    self.project.mwq_uuid = mwq_uuid
+                try:
+                    self.current_path = FileManager.get_mwq_path(
+                        root, mwq_uuid, self.project.reference, self.project.name
+                    )
+                except Exception:
+                    self.current_path = None
+            
+            # If still no current_path and we allow dialog, ask (last resort/legacy)
+            if not self.current_path and allow_dialog:
+                with wx.FileDialog(
+                    self, "Enregistrer le projet",
+                    wildcard="Fichiers MWQuote (*.mwq)|*.mwq",
+                    style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
+                ) as fileDialog:
+                    if fileDialog.ShowModal() == wx.ID_CANCEL:
+                        return False
+                    self.current_path = fileDialog.GetPath()
+            else:
+                return False
+
+        try:
+            PersistenceService.save_project(self.project, self.current_path)
+            self.indexer.index_file(self.current_path)
+            self._dirty = False
+            return True
+        except Exception as e:
+            wx.MessageBox(f"Erreur lors de l'enregistrement : {str(e)}", "Erreur", wx.OK | wx.ICON_ERROR)
+            return False
+
+    def _on_save(self, event):
+        self._save_project(allow_dialog=True)
+
+    def _on_save_as(self, event):
+        # Force a Save As dialog
+        old_path = self.current_path
+        self.current_path = None
+        if not self._save_project(allow_dialog=True):
+            self.current_path = old_path

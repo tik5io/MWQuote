@@ -19,6 +19,7 @@ Configuration:
 import logging
 from pathlib import Path
 import sys
+import os
 
 # Constantes
 ROOT_LOGGER_NAME = "MWQuote"
@@ -27,14 +28,15 @@ ROOT_LOGGER_NAME = "MWQuote"
 IS_DIST = hasattr(sys, "_MEIPASS")
 
 # Variable globale pour désactiver TOUS les logs (y compris console)
-_LOGGING_DISABLED = IS_DIST  # Par défaut, désactivé si exécutable
+_LOGGING_DISABLED = False  # Enable by default to help debugging
+
+# Get persistent log directory
+app_data = os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local'))
+PERSISTENT_LOG_DIR = Path(app_data) / "MWQuote" / "logs"
 
 class ModuleFileLogger:
     """
     Logger qui écrit dans un fichier dédié + log principal.
-
-    Permet de séparer les logs verbeux (itérations, mappings) dans des fichiers
-    dédiés tout en gardant les événements importants dans le log principal.
     """
 
     def __init__(self, module_name: str, detail_filename: str):
@@ -44,44 +46,41 @@ class ModuleFileLogger:
         # Si logging désactivé globalement, utiliser des NullHandlers partout
         if _LOGGING_DISABLED:
             self.main_logger = logging.getLogger(ROOT_LOGGER_NAME)
-            self.main_logger.setLevel(logging.CRITICAL + 1)  # Bloquer tout
+            self.main_logger.setLevel(logging.CRITICAL + 1)
             if not self.main_logger.hasHandlers():
                 self.main_logger.addHandler(logging.NullHandler())
 
             self.detail_logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.{module_name}.detail")
-            self.detail_logger.setLevel(logging.CRITICAL + 1)  # Bloquer tout
+            self.detail_logger.setLevel(logging.CRITICAL + 1)
             self.detail_logger.propagate = False
             if not self.detail_logger.hasHandlers():
                 self.detail_logger.addHandler(logging.NullHandler())
             return
 
-        # Logger principal (toujours actif si logging enabled)
+        # Logger principal
         self.main_logger = logging.getLogger(ROOT_LOGGER_NAME)
         self.main_logger.setLevel(logging.DEBUG)
         if not self.main_logger.hasHandlers():
-            # Création d'un handler console SEULEMENT pour WARNING et au-dessus
             console_handler = logging.StreamHandler()
             console_handler.setFormatter(
                 logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s', '%H:%M:%S')
             )
-            console_handler.setLevel(logging.WARNING)  # Seulement WARNING, ERROR, CRITICAL
+            console_handler.setLevel(logging.WARNING)
             self.main_logger.addHandler(console_handler)
 
-        # Logger détaillé (désactivé en version distribuée)
+        # Logger détaillé
         self.detail_logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.{module_name}.detail")
         self.detail_logger.setLevel(logging.DEBUG)
         self.detail_logger.propagate = False
 
-        if not IS_DIST:
-            # Créer le dossier de logs si nécessaire
-            log_dir = Path("logs")
-            log_dir.mkdir(exist_ok=True)
+        # Create persistent log folder
+        PERSISTENT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-            # Utiliser uniquement le nom du fichier (pas de sous-dossiers)
-            log_filename = Path(detail_filename).name
-            log_path = log_dir / log_filename
+        log_filename = Path(detail_filename).name
+        log_path = PERSISTENT_LOG_DIR / log_filename
 
-            # Handler pour fichier détaillé
+        # Handler pour fichier détaillé
+        try:
             detail_handler = logging.FileHandler(str(log_path), mode='w', encoding='utf-8')
             detail_formatter = logging.Formatter(
                 '%(asctime)s [%(levelname)s]: %(message)s',
@@ -92,8 +91,8 @@ class ModuleFileLogger:
 
             if not self.detail_logger.hasHandlers():
                 self.detail_logger.addHandler(detail_handler)
-        else:
-            # Version dist: désactive complètement les logs détaillés
+        except Exception:
+            # Fallback to null handler if file cannot be opened
             self.detail_logger.addHandler(logging.NullHandler())
 
     def detail(self, message: str):

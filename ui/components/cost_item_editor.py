@@ -7,6 +7,9 @@ import tempfile
 from domain.cost import CostItem, CostType, PricingType, PricingStructure, ConversionType, PricingTier
 from ui.components.document_list_panel import DocumentListPanel
 from infrastructure.configuration import ConfigurationService
+from infrastructure.logging_service import get_module_logger
+
+logger = get_module_logger("CostItemEditor", "cost_item_editor.log")
 
 class CostItemEditor(wx.Panel):
     """Component for editing a CostItem and showing its real-time calculations."""
@@ -101,6 +104,7 @@ class CostItemEditor(wx.Panel):
         self._is_loading = True
         self._update_timer.Stop() # Prevent pending updates from previous cost
         try:
+            logger.info(f"load_cost | name={getattr(cost, 'name', '?')} type={getattr(cost, 'cost_type', '?')}")
             self.cost = cost
             self.project = project
             self.prop_name.ChangeValue(cost.name or "")
@@ -212,11 +216,21 @@ class CostItemEditor(wx.Panel):
                 # SECTION 2: CONSOMMATION PRODUCTION
                 production_sizer, production_grid = create_box_grid("CONSOMMATION PRODUCTION")
                 unit = cost.pricing.unit or "unité"
-                self.label_conso = wx.StaticText(self.left_column, label=f"Consommation ({unit}/pièce):")
+                if cost.quantity_per_piece_is_inverse:
+                    label_conso = f"Consommation (pièce/{unit}):"
+                else:
+                    label_conso = f"Consommation ({unit}/pièce):"
+                self.label_conso = wx.StaticText(self.left_column, label=label_conso)
                 production_grid.Add(self.label_conso, 0, wx.ALIGN_CENTER_VERTICAL)
                 self.prop_qty_per_piece = wx.TextCtrl(self.left_column, value=f"{cost.quantity_per_piece or 1.0:g}")
                 self.prop_qty_per_piece.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
                 production_grid.Add(self.prop_qty_per_piece, 1, wx.EXPAND)
+                
+                self.prop_qty_inverse = wx.CheckBox(self.left_column, label="Interpréter en pièces/unité")
+                self.prop_qty_inverse.SetValue(bool(cost.quantity_per_piece_is_inverse))
+                self.prop_qty_inverse.Bind(wx.EVT_CHECKBOX, lambda e: self.notify_change())
+                production_grid.Add(self.prop_qty_inverse, 0, wx.ALIGN_CENTER_VERTICAL)
+                production_grid.Add(wx.StaticText(self.left_column, label=""), 1, wx.EXPAND)
                 self.dynamic_sizer.Add(production_sizer, 0, wx.EXPAND | wx.BOTTOM, 10)
 
             case CostType.INTERNAL_OPERATION:
@@ -323,6 +337,7 @@ class CostItemEditor(wx.Panel):
                 return default
 
         try:
+            logger.debug(f"apply_changes start | name={getattr(self.cost, 'name', '?')}")
             self.cost.name = self.prop_name.GetValue().strip()
             if self.cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING]:
                 # Save shared unit first
@@ -334,6 +349,8 @@ class CostItemEditor(wx.Panel):
                     self.cost.pricing.unit_price = safe_float(self.prop_unit_price.GetValue())
                 if hasattr(self, 'prop_qty_per_piece'):
                     self.cost.quantity_per_piece = safe_float(self.prop_qty_per_piece.GetValue(), 1.0)
+                if hasattr(self, 'prop_qty_inverse'):
+                    self.cost.quantity_per_piece_is_inverse = self.prop_qty_inverse.GetValue()
                 
                 # Save supplier quote reference for SUBCONTRACTING
                 if self.cost.cost_type == CostType.SUBCONTRACTING and hasattr(self, 'prop_supplier_quote_ref'):
@@ -358,8 +375,14 @@ class CostItemEditor(wx.Panel):
             cv_val = self.prop_conv_type.GetStringSelection()
             self.cost.is_active = self.prop_active.GetValue()
             self.cost.conversion_type = ConversionType.MULTIPLY if cv_val == "Multiplier" else ConversionType.DIVIDE
+            logger.debug(
+                f"apply_changes done | name={self.cost.name} type={self.cost.cost_type} "
+                f"conv={self.cost.conversion_type.value} factor={self.cost.conversion_factor} "
+                f"margin={self.cost.margin_rate}"
+            )
             return True
         except Exception:
+            logger.exception("apply_changes failed")
             return False
 
     def notify_change(self):
@@ -378,6 +401,7 @@ class CostItemEditor(wx.Panel):
                 return default
 
         try:
+            logger.debug(f"recalc_preview start | name={getattr(self.cost, 'name', '?')}")
             # We must be careful about which UI elements exist
             ptype = self.cost.pricing.pricing_type if self.cost.pricing else PricingType.PER_UNIT
             temp_pricing = PricingStructure(ptype)
@@ -408,6 +432,8 @@ class CostItemEditor(wx.Panel):
             # Include quantity per piece
             if hasattr(self, 'prop_qty_per_piece'):
                 temp_cost.quantity_per_piece = safe_float(self.prop_qty_per_piece.GetValue(), 1.0)
+            if hasattr(self, 'prop_qty_inverse'):
+                temp_cost.quantity_per_piece_is_inverse = self.prop_qty_inverse.GetValue()
             
             # Include supplier quote reference and documents for SUBCONTRACTING
             if self.cost.cost_type == CostType.SUBCONTRACTING:
@@ -428,13 +454,19 @@ class CostItemEditor(wx.Panel):
             # Update dynamic consumption label context if needed
             if hasattr(self, 'label_conso') and hasattr(self, 'prop_unit'):
                 u = self.prop_unit.GetValue().strip() or "unité"
-                self.label_conso.SetLabel(f"Consommation ({u}/pièce):")
+                inverse = self.prop_qty_inverse.GetValue() if hasattr(self, 'prop_qty_inverse') else False
+                if inverse:
+                    self.label_conso.SetLabel(f"Consommation (pièce/{u}):")
+                else:
+                    self.label_conso.SetLabel(f"Consommation ({u}/pièce):")
                 self.left_sizer.Layout()
 
             self._update_quantity_reminder(temp_cost) # Pass temp_cost for preview
             self.result_panel.update_results(temp_cost)
             self.on_changed(temp_cost)
+            logger.debug(f"recalc_preview done | name={getattr(self.cost, 'name', '?')}")
         except Exception: 
+            logger.exception("recalc_preview failed")
             pass
 
     def _on_manage_tiers(self, event):
@@ -494,9 +526,9 @@ class CostItemEditor(wx.Panel):
             st_need.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
             grid.Add(st_need, 1, wx.EXPAND)
             
-            # Unit Cost
+            # Unit Cost (converted by factor)
             grid.Add(wx.StaticText(card, label="Coût Amorti:"), 0, wx.ALIGN_LEFT)
-            st_cost = wx.StaticText(card, label=f"{res.unit_cost_brut:.2f} €/pc")
+            st_cost = wx.StaticText(card, label=f"{res.unit_cost_converted:.2f} €/pc")
             st_cost.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
             st_cost.SetForegroundColour(wx.Colour(0, 100, 0)) # Green
             grid.Add(st_cost, 1, wx.EXPAND)

@@ -5,6 +5,9 @@ from domain.project import Project
 from domain.cost import ConversionType, CostItem, CostType, PricingType
 from ui.components.cost_item_editor import CostItemEditor
 from ui.components.result_summary_panel import ResultSummaryPanel
+from infrastructure.logging_service import get_module_logger
+
+logger = get_module_logger("SalesPricing", "sales_pricing.log")
 
 class SalesPricingPanel(wx.Panel):
     """Grid display of pricing results with a sidebar for full item properties."""
@@ -83,6 +86,7 @@ class SalesPricingPanel(wx.Panel):
 
     def refresh_data(self):
         if not self.project: return
+        logger.debug("refresh_data start")
         self.grid.BeginBatch()
         if self.grid.GetNumberRows() > 0:
             self.grid.DeleteRows(0, self.grid.GetNumberRows())
@@ -162,6 +166,7 @@ class SalesPricingPanel(wx.Panel):
 
         self.grid.AutoSizeColumns()
         self.grid.EndBatch()
+        logger.debug("refresh_data done")
 
     def _on_select_cell(self, event):
         row = event.GetRow()
@@ -203,9 +208,20 @@ class SalesPricingPanel(wx.Panel):
         """Callback appelé quand un coût est modifié en temps réel."""
         if not self.current_cost or not self.current_op:
             return
-        # Rafraîchir la grille pour refléter les changements
-        self.refresh_data()
-        self._notify_main_frame()
+        logger.debug(f"on_cost_changed | op={self.current_op.code} cost={self.current_cost.name}")
+        new_name = self.cost_editor.prop_name.GetValue().strip()
+        if new_name and new_name != self.current_cost.name:
+            if not self.current_op.rename_cost(self.current_cost.name, new_name):
+                # Revert invalid rename to avoid desync
+                logger.warning(f"rename_cost rejected | old={self.current_cost.name} new={new_name}")
+                self.cost_editor.prop_name.ChangeValue(self.current_cost.name)
+                return
+        if self.cost_editor.apply_changes():
+            # Rafraîchir la grille pour refléter les changements
+            self.refresh_data()
+            self._notify_main_frame()
+        else:
+            logger.warning("apply_changes returned False")
 
     def _notify_main_frame(self):
         """Notifie le MainFrame des changements pour rafraîchir les autres panels."""

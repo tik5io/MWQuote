@@ -107,5 +107,6 @@ if __name__ == "__main__":
     initialize_app()
 
     app = wx.App()
+    wx.InitAllImageHandlers()
     open_new_quote()
     app.MainLoop()

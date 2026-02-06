@@ -53,20 +53,24 @@ class PricingStructure:
             case PricingType.PER_UNIT:
                 return self.fixed_price, self.unit_price * total_quantity
             case PricingType.TIERED:
+                tiers_list = [t for t in (self.tiers or []) if t is not None]
+                if not tiers_list:
+                    return self.fixed_price, 0.0
                 tier = self.get_applicable_tier(total_quantity)
                 if not tier:
-                    tier = sorted(self.tiers, key=lambda t: abs(t.min_quantity - total_quantity))[0]
+                    tier = sorted(tiers_list, key=lambda t: abs(t.min_quantity - total_quantity))[0]
                 return self.fixed_price, tier.unit_price * total_quantity
 
     def _calculate_tiered_price(self, total_quantity: Union[int, float]) -> float:
         """Calcule le prix avec tarification par échelons"""
-        if not self.tiers:
-            return 0.0
+        tiers_list = [t for t in (self.tiers or []) if t is not None]
+        if not tiers_list:
+            return self.fixed_price
 
         tier = self.get_applicable_tier(total_quantity)
         if not tier:
             # Si aucun échelon ne correspond, prendre le plus proche
-            tier = sorted(self.tiers, key=lambda t: abs(t.min_quantity - total_quantity))[0]
+            tier = sorted(tiers_list, key=lambda t: abs(t.min_quantity - total_quantity))[0]
 
         return self.fixed_price + (tier.unit_price * total_quantity)
 
@@ -94,6 +98,7 @@ class CostItem:
     conversion_factor: float = 1.0  # units per piece (if MULTIPLY) or pieces per unit (if DIVIDE)
     # Quantity per piece (for MATERIAL/SUBCONTRACTING)
     quantity_per_piece: float = 1.0  # How many quote units used per produced piece (e.g., 0.1m/piece)
+    quantity_per_piece_is_inverse: bool = False  # If True, value is pieces per quote unit (e.g., pieces/plate)
     # Margin
     margin_rate: float = 0.0  # Percentage (e.g. 20 for 20%)
     # Documents (for SUBCONTRACTING/Quotes)
@@ -131,7 +136,12 @@ class CostItem:
         if moq == 0:
             return False
         # Check if quote quantity needed is below MOQ
-        quote_qty_needed = total_pieces * self.quantity_per_piece
+        if self.quantity_per_piece_is_inverse:
+            import math
+            conv = self.quantity_per_piece if self.quantity_per_piece not in (None, 0) else 1.0
+            quote_qty_needed = math.ceil(total_pieces / conv)
+        else:
+            quote_qty_needed = total_pieces * self.quantity_per_piece
         return quote_qty_needed < moq
 
     def calculate_value(self, total_pieces: int = 1) -> float:

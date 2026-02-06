@@ -7,6 +7,9 @@ from ui.components.result_summary_panel import ResultSummaryPanel
 from ui.components.cost_item_editor import CostItemEditor
 from ui.components.offers_comparison_grid import OffersComparisonGrid
 from infrastructure.configuration import ConfigurationService
+from infrastructure.logging_service import get_module_logger
+
+logger = get_module_logger("OperationCostEditor", "operation_cost_editor.log")
 
 class OperationCostEditorPanel(wx.Panel):
     """Panel pour éditer les opérations du projet et leurs coûts associés."""
@@ -125,6 +128,7 @@ class OperationCostEditorPanel(wx.Panel):
 
     def load_project(self, project):
         self.project = project
+        logger.info(f"load_project | ops={len(project.operations) if project else 0}")
         self._refresh_tree()
 
     def refresh_data(self):
@@ -168,11 +172,11 @@ class OperationCostEditorPanel(wx.Panel):
         if not parent or not parent.IsOk(): return None
         item = self.tree.AppendItem(parent, f"🔧 {op.typology or 'Op'} | {op.label}")
         self.tree.SetItemData(item, {"type": "operation", "operation": op})
-        for cost in op.costs.values():
-            self._add_cost_to_tree(cost, item, op)
+        for cost_name, cost in op.costs.items():
+            self._add_cost_to_tree(cost, item, op, cost_name)
         return item
 
-    def _add_cost_to_tree(self, cost, parent, op):
+    def _add_cost_to_tree(self, cost, parent, op, cost_key=None):
         if not parent or not parent.IsOk(): return None
         cost_icon = "💰" if cost.cost_type in [domain_cost.CostType.MATERIAL, domain_cost.CostType.SUBCONTRACTING] else "⚙️" if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION else "📈"
         label = f"{cost_icon} {cost.name}"
@@ -184,7 +188,7 @@ class OperationCostEditorPanel(wx.Panel):
         if op.typology == SUBCONTRACTING_TYPOLOGY and not cost.is_active:
             self.tree.SetItemTextColour(item, wx.Colour(150, 150, 150))
             
-        self.tree.SetItemData(item, {"type": "cost", "cost": cost, "operation": op})
+        self.tree.SetItemData(item, {"type": "cost", "cost": cost, "operation": op, "cost_key": cost_key or cost.name})
         return item
 
     def _refresh_operation_items(self, op):
@@ -283,15 +287,23 @@ class OperationCostEditorPanel(wx.Panel):
             
         cost = data["cost"]
         op = data["operation"]
+        logger.debug(f"on_cost_changed | op={op.code if op else '?'} cost={getattr(cost, 'name', '?')}")
         
         # 1. Handle Renaming safely
         new_name = self.cost_editor.prop_name.GetValue().strip()
-        if new_name and new_name != cost.name:
+        old_key = data.get("cost_key", cost.name)
+        if new_name and new_name != old_key:
             # We must use the domain's rename logic to update the dictionary key
-            op.rename_cost(cost.name, new_name)
+            if not op.rename_cost(old_key, new_name):
+                # Revert UI if rename is invalid to avoid desync
+                logger.warning(f"rename_cost rejected | old={old_key} new={new_name}")
+                self.cost_editor.prop_name.ChangeValue(old_key)
+                return
+            data["cost_key"] = new_name
             
         # ALWAYS update tree label to match current state (handles typing)
         if self.cost_editor.apply_changes():
+            data["cost_key"] = cost.name
             # 2.1 Exclusive activation for Subcontracting
             from domain.operation import SUBCONTRACTING_TYPOLOGY
             if op.typology == SUBCONTRACTING_TYPOLOGY and cost.is_active:
@@ -322,6 +334,8 @@ class OperationCostEditorPanel(wx.Panel):
             # 4. Notify main frame to refresh other panels (totals, graphs, sales grid)
             if self.on_operation_updated:
                 self.on_operation_updated(None) # None means project header is NOT reloaded (performance)
+        else:
+            logger.warning("apply_changes returned False")
 
     def _on_op_field_changed(self, event):
         """Handle real-time updates for Operation fields."""
@@ -330,6 +344,7 @@ class OperationCostEditorPanel(wx.Panel):
             return
             
         op = data["operation"]
+        logger.debug(f"on_op_field_changed | op={op.code if op else '?'}")
         op.typology = self.prop_op_typology.GetStringSelection()
         op.code = op.typology # Match legacy typology/code link
         op.label = self.prop_op_label.GetValue().strip()
@@ -397,8 +412,9 @@ class OperationCostEditorPanel(wx.Panel):
             else: 
                 op = data["operation"]
                 cost = data["cost"]
-                if cost.name in op.costs:
-                    del op.costs[cost.name]
+                cost_key = data.get("cost_key", cost.name)
+                if cost_key in op.costs:
+                    del op.costs[cost_key]
                 else:
                     # Fallback if names are out of sync
                     found = False
@@ -430,10 +446,12 @@ class OperationCostEditorPanel(wx.Panel):
         else: 
             op = data["operation"]
             cost = data["cost"]
-            if not op.rename_cost(cost.name, new_label):
+            old_key = data.get("cost_key", cost.name)
+            if not op.rename_cost(old_key, new_label):
                 event.Veto()
                 wx.MessageBox("Nom déjà utilisé ou invalide.", "Erreur")
                 return
+            data["cost_key"] = new_label
         if self.on_operation_updated: self.on_operation_updated(None)
 
     def _on_tree_right_click(self, event):
@@ -506,7 +524,8 @@ class OperationCostEditorPanel(wx.Panel):
         elif data["type"] == "cost":
             op = data["operation"]
             cost = data["cost"]
-            if op.move_cost(cost.name, direction):
+            cost_key = data.get("cost_key", cost.name)
+            if op.move_cost(cost_key, direction):
                 self._refresh_tree()
                 # Find the parent op item first, then find the cost item under it
                 op_item = self._find_item_by_op(op, self.root)
