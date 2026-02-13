@@ -16,6 +16,7 @@ class SalesPricingPanel(wx.Panel):
         super().__init__(parent)
         self.project = None
         self.current_cost = None
+        self.on_operation_updated = None
         self._build_ui()
 
     def _build_ui(self):
@@ -225,11 +226,8 @@ class SalesPricingPanel(wx.Panel):
 
     def _notify_main_frame(self):
         """Notifie le MainFrame des changements pour rafraîchir les autres panels."""
-        parent = self.GetParent()
-        while parent and not hasattr(parent, 'on_operation_updated'):
-            parent = parent.GetParent()
-        if parent and hasattr(parent, 'on_operation_updated') and parent.on_operation_updated:
-            parent.on_operation_updated(None)
+        if self.on_operation_updated:
+            self.on_operation_updated(None)
 
     def refresh_quantities(self):
         """Rafraîchit les sélecteurs de quantités dans les sous-composants."""

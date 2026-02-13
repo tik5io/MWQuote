@@ -1,6 +1,7 @@
 # ui/panels/operation_cost_editor_panel.py
 import wx
 import copy
+from datetime import datetime
 import domain.cost as domain_cost
 from domain.operation import Operation, SUBCONTRACTING_TYPOLOGY
 from ui.components.result_summary_panel import ResultSummaryPanel
@@ -477,6 +478,11 @@ class OperationCostEditorPanel(wx.Panel):
                 from domain.operation import SUBCONTRACTING_TYPOLOGY
                 op = data["operation"]
                 cost = data["cost"]
+
+                calc_note = menu.Append(wx.ID_ANY, "Note de calcul tarifaire...")
+                self.Bind(wx.EVT_MENU, lambda e: self._show_tariff_calculation_note(cost, op), calc_note)
+                menu.AppendSeparator()
+
                 if op.typology == SUBCONTRACTING_TYPOLOGY:
                     act = menu.Append(wx.ID_ANY, "Définir comme offre active")
                     self.Bind(wx.EVT_MENU, lambda e: self._on_activate_cost(cost, op), act)
@@ -489,6 +495,145 @@ class OperationCostEditorPanel(wx.Panel):
                 
             self.PopupMenu(menu)
             menu.Destroy()
+    
+    def _show_tariff_calculation_note(self, cost, op):
+        """Show a detailed calculation note for the selected cost item."""
+        note_text = self._build_tariff_calculation_note(cost, op)
+
+        dlg = wx.Dialog(self, title="Note de calcul tarifaire", size=(900, 700))
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        txt = wx.TextCtrl(
+            dlg,
+            value=note_text,
+            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL
+        )
+        main_sizer.Add(txt, 1, wx.EXPAND | wx.ALL, 10)
+
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        copy_btn = wx.Button(dlg, label="Copier")
+        close_btn = wx.Button(dlg, wx.ID_OK, "Fermer")
+        btn_sizer.Add(copy_btn, 0, wx.RIGHT, 8)
+        btn_sizer.Add(close_btn, 0)
+        main_sizer.Add(btn_sizer, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        def on_copy(_):
+            if wx.TheClipboard.Open():
+                wx.TheClipboard.SetData(wx.TextDataObject(note_text))
+                wx.TheClipboard.Close()
+                wx.MessageBox("Note copiée dans le presse-papiers.", "Information", wx.OK | wx.ICON_INFORMATION)
+
+        copy_btn.Bind(wx.EVT_BUTTON, on_copy)
+        dlg.SetSizer(main_sizer)
+        dlg.ShowModal()
+        dlg.Destroy()
+
+    def _build_tariff_calculation_note(self, cost, op):
+        from domain.calculator import Calculator
+
+        def euros(value):
+            return f"{value:.4f} EUR"
+
+        def number(value):
+            return f"{value:.4f}"
+
+        quantities = []
+        if self.project and getattr(self.project, "sale_quantities", None):
+            quantities = sorted([q for q in self.project.sale_quantities if q and q > 0])
+        if not quantities:
+            quantities = [1]
+
+        unit_label = cost.pricing.unit if cost.pricing and cost.pricing.unit else "unite"
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        lines = []
+        lines.append("NOTE DE CALCUL TARIFAIRE")
+        lines.append("")
+        lines.append(f"Date generation: {now_str}")
+        lines.append(f"Projet: {self.project.reference if self.project else '-'} | {self.project.name if self.project else '-'}")
+        lines.append(f"Operation: {op.typology or '-'} | {op.label}")
+        lines.append(f"Poste de cout: {cost.name}")
+        lines.append(f"Type de cout: {cost.cost_type.value}")
+        lines.append(f"Conversion: {cost.conversion_type.value} x facteur {number(cost.conversion_factor if cost.conversion_factor else 1.0)}")
+        lines.append(f"Marge appliquee: {number(cost.margin_rate)} %")
+        lines.append("")
+
+        if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION:
+            lines.append("Parametres operation interne")
+            lines.append(f"- Taux horaire: {euros(cost.hourly_rate)} / h")
+            lines.append(f"- Temps fixe: {number(cost.fixed_time)} h")
+            lines.append(f"- Temps par piece: {number(cost.per_piece_time)} h/pc")
+            lines.append("")
+        else:
+            ptype = cost.pricing.pricing_type.value if cost.pricing else "-"
+            lines.append("Parametres achat/fournisseur")
+            lines.append(f"- Unite de devis: {unit_label}")
+            lines.append(f"- Type tarif fournisseur: {ptype}")
+            if cost.pricing:
+                lines.append(f"- Frais fixes fournisseur: {euros(cost.pricing.fixed_price)}")
+                lines.append(f"- Prix unitaire fournisseur: {euros(cost.pricing.unit_price)} / {unit_label}")
+                if cost.pricing.pricing_type == domain_cost.PricingType.TIERED and cost.pricing.tiers:
+                    lines.append("- Echelons:")
+                    for tier in sorted(cost.pricing.tiers, key=lambda t: t.min_quantity):
+                        lines.append(f"  * Q >= {tier.min_quantity}: {euros(tier.unit_price)} / {unit_label}")
+            lines.append("")
+
+        for qty in quantities:
+            res = Calculator.calculate_item(cost, qty)
+            lines.append("=" * 72)
+            lines.append(f"QUANTITE DE VENTE: {qty} pc")
+            lines.append("Etape 1 - Quantite de devis necessaire")
+            if cost.quantity_per_piece_is_inverse:
+                val = cost.quantity_per_piece if cost.quantity_per_piece not in (None, 0) else 1.0
+                lines.append(f"- Mode inverse (pieces/{unit_label}) = {number(val)}")
+                lines.append(f"- Q devis necessaire = ceil({qty} / {number(val)}) = {number(res.quote_qty_needed)} {unit_label}")
+            else:
+                val = cost.quantity_per_piece if cost.quantity_per_piece is not None else 1.0
+                lines.append(f"- Consommation ({unit_label}/piece) = {number(val)}")
+                lines.append(f"- Q devis necessaire = {qty} x {number(val)} = {number(res.quote_qty_needed)} {unit_label}")
+
+            lines.append("Etape 2 - Application MOQ / quantite commandee")
+            lines.append(f"- MOQ = {number(res.moq)} {unit_label}")
+            lines.append(f"- Q commandee = max(Q necessaire, MOQ) = {number(res.quote_qty_ordered)} {unit_label}")
+
+            lines.append("Etape 3 - Cout lot fournisseur")
+            if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION:
+                total_time = cost.fixed_time + (cost.per_piece_time * qty)
+                lines.append(f"- Temps total = {number(cost.fixed_time)} + ({number(cost.per_piece_time)} x {qty}) = {number(total_time)} h")
+                lines.append(f"- Cout lot = Temps total x taux horaire = {number(total_time)} x {euros(cost.hourly_rate)} = {euros(res.batch_supplier_cost)}")
+            else:
+                if cost.pricing and cost.pricing.pricing_type == domain_cost.PricingType.TIERED and cost.pricing.tiers:
+                    tier = cost.pricing.get_applicable_tier(res.quote_qty_ordered)
+                    if tier:
+                        lines.append(f"- Echelon applique: Q >= {tier.min_quantity}, PU = {euros(tier.unit_price)} / {unit_label}")
+                    else:
+                        lines.append("- Echelon applique: aucun (repli sur plus proche)")
+                lines.append(f"- Cout lot fournisseur = {euros(res.batch_supplier_cost)}")
+                lines.append(f"  dont fixe = {euros(res.supplier_fixed_price)}")
+                variable = res.batch_supplier_cost - res.supplier_fixed_price
+                lines.append(f"  dont variable = {euros(variable)}")
+
+            lines.append("Etape 4 - Cout unitaire brut")
+            lines.append(f"- Cout unitaire brut = Cout lot / quantite vente = {euros(res.batch_supplier_cost)} / {qty} = {euros(res.unit_cost_brut)} /pc")
+
+            lines.append("Etape 5 - Conversion")
+            factor = res.conversion_factor if res.conversion_factor else 1.0
+            if res.conversion_type == domain_cost.ConversionType.DIVIDE:
+                lines.append(f"- Cout unitaire converti = {euros(res.unit_cost_brut)} / {number(factor)} = {euros(res.unit_cost_converted)} /pc")
+            else:
+                lines.append(f"- Cout unitaire converti = {euros(res.unit_cost_brut)} x {number(factor)} = {euros(res.unit_cost_converted)} /pc")
+
+            lines.append("Etape 6 - Application marge (prix de vente)")
+            margin = min(cost.margin_rate, 99.9)
+            margin_factor = 1.0 / (1.0 - margin / 100.0)
+            lines.append(f"- Coef marge = 1 / (1 - {number(margin)} / 100) = {number(margin_factor)}")
+            lines.append(f"- Prix de vente unitaire = {euros(res.unit_cost_converted)} x {number(margin_factor)} = {euros(res.unit_sale_price)} /pc")
+            lines.append(f"- Prix de vente lot ({qty} pc) = {euros(res.unit_sale_price * qty)}")
+            lines.append("")
+
+        lines.append("Conclusion")
+        lines.append("- Cette note detaille les calculs intermediaires pour verification et revue de chiffrage.")
+        return "\n".join(lines)
 
     def _on_activate_cost(self, cost, op):
         """Manually activate a cost via right-click."""

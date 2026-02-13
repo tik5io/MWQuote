@@ -117,6 +117,7 @@ class MainFrame(wx.Frame):
     def _connect_events(self):
         """Connecte les événements entre les panels"""
         self.editor_panel.on_operation_updated = self._on_operation_updated
+        self.sales_panel.on_operation_updated = self._on_operation_updated
         self.project_panel.on_quantities_changed = self._on_quantities_changed
         
         def on_proj_changed():

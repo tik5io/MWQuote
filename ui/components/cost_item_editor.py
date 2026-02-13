@@ -26,8 +26,49 @@ class CostItemEditor(wx.Panel):
         # Debounce timer for UI refresh
         self._update_timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self._on_timer_refresh, self._update_timer)
+        self.Bind(wx.EVT_WINDOW_DESTROY, self._on_destroy)
         
         self._build_ui()
+
+    def _on_destroy(self, event):
+        # Prevent delayed timer callbacks from running during panel teardown.
+        if event.GetEventObject() is self and hasattr(self, "_update_timer") and self._update_timer:
+            self._update_timer.Stop()
+        event.Skip()
+
+    def _ctrl_get_value(self, attr_name, default="", strip=False):
+        """Safely read a wx control value; returns default if control is absent or deleted."""
+        ctrl = getattr(self, attr_name, None)
+        if not ctrl:
+            return default
+        try:
+            value = ctrl.GetValue()
+        except RuntimeError:
+            return default
+        if strip and isinstance(value, str):
+            return value.strip()
+        return value
+
+    def _ctrl_get_selection(self, attr_name, default=""):
+        """Safely read a wx choice selection; returns default if control is absent or deleted."""
+        ctrl = getattr(self, attr_name, None)
+        if not ctrl:
+            return default
+        try:
+            return ctrl.GetStringSelection()
+        except RuntimeError:
+            return default
+
+    def _ctrl_set_label(self, attr_name, label):
+        """Safely set a wx static text label; returns False if control is absent or deleted."""
+        ctrl = getattr(self, attr_name, None)
+        if not ctrl:
+            return False
+        try:
+            ctrl.SetLabel(label)
+            return True
+        except RuntimeError:
+            return False
 
     def _build_ui(self):
         # Main layout is HORIZONTAL
@@ -139,6 +180,8 @@ class CostItemEditor(wx.Panel):
         self._refresh_dynamic_fields()
 
     def _refresh_dynamic_fields(self):
+        self._update_timer.Stop()
+        self.label_conso = None
         # We want to keep some components alive if possible (e.g. DocListPanel)
         # to avoid recursive re-creation loops during layout events.
         saved_doc_list = self.doc_list
@@ -407,12 +450,9 @@ class CostItemEditor(wx.Panel):
             temp_pricing = PricingStructure(ptype)
             
             if self.cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING]:
-                if hasattr(self, 'prop_unit'):
-                    temp_pricing.unit = self.prop_unit.GetValue().strip()
-                if hasattr(self, 'prop_fixed_price'):
-                    temp_pricing.fixed_price = safe_float(self.prop_fixed_price.GetValue())
-                if hasattr(self, 'prop_unit_price'):
-                    temp_pricing.unit_price = safe_float(self.prop_unit_price.GetValue())
+                temp_pricing.unit = self._ctrl_get_value('prop_unit', temp_pricing.unit, strip=True)
+                temp_pricing.fixed_price = safe_float(str(self._ctrl_get_value('prop_fixed_price', temp_pricing.fixed_price)))
+                temp_pricing.unit_price = safe_float(str(self._ctrl_get_value('prop_unit_price', temp_pricing.unit_price)))
                 if self.cost.pricing:
                     temp_pricing.tiers = self.cost.pricing.tiers
             else:
@@ -421,45 +461,38 @@ class CostItemEditor(wx.Panel):
                 temp_pricing.fixed_price = 0
                 temp_pricing.tiers = []
 
-            temp_cost = CostItem(self.prop_name.GetValue().strip(), self.cost.cost_type, temp_pricing)
-            temp_cost.conversion_factor = safe_float(self.prop_conv_factor.GetValue(), 1.0)
-            temp_cost.margin_rate = safe_float(self.prop_margin_rate.GetValue())
-            temp_cost.comment = self.prop_comment.GetValue()
-            cv_val = self.prop_conv_type.GetStringSelection()
-            temp_cost.is_active = self.prop_active.GetValue()
+            temp_cost = CostItem(self._ctrl_get_value('prop_name', "", strip=True), self.cost.cost_type, temp_pricing)
+            temp_cost.conversion_factor = safe_float(str(self._ctrl_get_value('prop_conv_factor', 1.0)), 1.0)
+            temp_cost.margin_rate = safe_float(str(self._ctrl_get_value('prop_margin_rate', 0.0)))
+            temp_cost.comment = self._ctrl_get_value('prop_comment', "")
+            cv_val = self._ctrl_get_selection('prop_conv_type', "Multiplier")
+            temp_cost.is_active = bool(self._ctrl_get_value('prop_active', False))
             temp_cost.conversion_type = ConversionType.MULTIPLY if cv_val == "Multiplier" else ConversionType.DIVIDE
             
             # Include quantity per piece
-            if hasattr(self, 'prop_qty_per_piece'):
-                temp_cost.quantity_per_piece = safe_float(self.prop_qty_per_piece.GetValue(), 1.0)
-            if hasattr(self, 'prop_qty_inverse'):
-                temp_cost.quantity_per_piece_is_inverse = self.prop_qty_inverse.GetValue()
+            temp_cost.quantity_per_piece = safe_float(str(self._ctrl_get_value('prop_qty_per_piece', 1.0)), 1.0)
+            temp_cost.quantity_per_piece_is_inverse = bool(self._ctrl_get_value('prop_qty_inverse', False))
             
             # Include supplier quote reference and documents for SUBCONTRACTING
             if self.cost.cost_type == CostType.SUBCONTRACTING:
-                if hasattr(self, 'prop_supplier_quote_ref'):
-                    temp_cost.supplier_quote_ref = self.prop_supplier_quote_ref.GetValue().strip()
+                temp_cost.supplier_quote_ref = self._ctrl_get_value('prop_supplier_quote_ref', "", strip=True)
                 if hasattr(self, 'doc_list'):
                     temp_cost.documents = self.doc_list.documents
             
             # Internal operation fields
             if self.cost.cost_type == CostType.INTERNAL_OPERATION:
-                if hasattr(self, 'prop_internal_rate'):
-                    temp_cost.hourly_rate = safe_float(self.prop_internal_rate.GetValue())
-                if hasattr(self, 'prop_fixed_h'):
-                    temp_cost.fixed_time = safe_float(self.prop_fixed_h.GetValue())
-                if hasattr(self, 'prop_piece_h'):
-                    temp_cost.per_piece_time = safe_float(self.prop_piece_h.GetValue())
+                temp_cost.hourly_rate = safe_float(str(self._ctrl_get_value('prop_internal_rate', 0.0)))
+                temp_cost.fixed_time = safe_float(str(self._ctrl_get_value('prop_fixed_h', 0.0)))
+                temp_cost.per_piece_time = safe_float(str(self._ctrl_get_value('prop_piece_h', 0.0)))
 
             # Update dynamic consumption label context if needed
-            if hasattr(self, 'label_conso') and hasattr(self, 'prop_unit'):
-                u = self.prop_unit.GetValue().strip() or "unité"
-                inverse = self.prop_qty_inverse.GetValue() if hasattr(self, 'prop_qty_inverse') else False
-                if inverse:
-                    self.label_conso.SetLabel(f"Consommation (pièce/{u}):")
-                else:
-                    self.label_conso.SetLabel(f"Consommation ({u}/pièce):")
-                self.left_sizer.Layout()
+            if hasattr(self, 'prop_unit'):
+                u = self._ctrl_get_value('prop_unit', "unité", strip=True) or "unité"
+                inverse = bool(self._ctrl_get_value('prop_qty_inverse', False))
+                label = f"Consommation (pièce/{u}):" if inverse else f"Consommation ({u}/pièce):"
+                label_updated = self._ctrl_set_label('label_conso', label)
+                if label_updated:
+                    self.left_sizer.Layout()
 
             self._update_quantity_reminder(temp_cost) # Pass temp_cost for preview
             self.result_panel.update_results(temp_cost)
