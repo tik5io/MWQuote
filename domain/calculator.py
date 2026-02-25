@@ -29,7 +29,8 @@ class CalculationResult:
     # Components for graph
     fixed_part: float  # Per piece
     variable_part: float # Per piece
-    
+    internal_time_hours: float  # Converted internal hours for the lot at this quantity
+
     margin_rate: float
     conversion_factor: float
     conversion_type: ConversionType
@@ -48,6 +49,8 @@ class Calculator:
         )
         if total_pieces <= 0:
             return Calculator._empty_result(total_pieces, cost_item)
+
+        conv_factor = cost_item.conversion_factor if cost_item.conversion_factor != 0 else 1.0
 
         # 1. Quantities
         if cost_item.quantity_per_piece_is_inverse:
@@ -72,6 +75,10 @@ class Calculator:
             supplier_fixed_price = 0.0  # Time-based is mixed
             f_batch = cost_item.fixed_time * hourly_rate
             v_batch = cost_item.per_piece_time * total_pieces * hourly_rate
+            if cost_item.conversion_type == ConversionType.DIVIDE:
+                internal_time_hours = total_time / conv_factor
+            else:
+                internal_time_hours = total_time * conv_factor
         else:
             # Standard PricingStructure usage
             if not cost_item.pricing:
@@ -87,6 +94,7 @@ class Calculator:
                 tier = cost_item.pricing.get_applicable_tier(quote_qty_ordered) if cost_item.pricing.pricing_type == PricingType.TIERED else None
                 supplier_unit_price = tier.unit_price if tier else cost_item.pricing.unit_price
                 supplier_fixed_price = cost_item.pricing.fixed_price
+            internal_time_hours = 0.0
 
         # 3. Unit Cost Bruts (Per produced piece)
         unit_cost_brut = batch_supplier_cost / total_pieces
@@ -94,7 +102,6 @@ class Calculator:
         variable_part_brut = v_batch / total_pieces
 
         # 4. Conversion & Margin
-        conv_factor = cost_item.conversion_factor if cost_item.conversion_factor != 0 else 1.0
         if cost_item.conversion_type == ConversionType.DIVIDE:
             unit_cost_converted = unit_cost_brut / conv_factor
             unit_f = fixed_part_brut / conv_factor
@@ -122,6 +129,7 @@ class Calculator:
             unit_sale_price=unit_sale_price,
             fixed_part=unit_f * m_factor,
             variable_part=unit_v * m_factor,
+            internal_time_hours=internal_time_hours,
             margin_rate=cost_item.margin_rate,
             conversion_factor=conv_factor,
             conversion_type=cost_item.conversion_type
@@ -141,6 +149,6 @@ class Calculator:
             production_qty=qty, unit_consumption=1.0, quote_qty_needed=0, moq=0, quote_qty_ordered=0,
             supplier_unit_price=0, supplier_fixed_price=0, batch_supplier_cost=0,
             unit_cost_brut=0, unit_cost_converted=0, unit_sale_price=0,
-            fixed_part=0, variable_part=0,
+            fixed_part=0, variable_part=0, internal_time_hours=0,
             margin_rate=item.margin_rate, conversion_factor=item.conversion_factor, conversion_type=item.conversion_type
         )

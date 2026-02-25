@@ -1,6 +1,7 @@
 # ui/panels/graph_analysis_panel.py
 import wx
 import math
+from datetime import datetime
 
 class GraphAnalysisPanel(wx.Panel):
     """Visual analysis of price decomposition and evolution."""
@@ -21,6 +22,9 @@ class GraphAnalysisPanel(wx.Panel):
         self.qty_choice = wx.Choice(self)
         self.qty_choice.Bind(wx.EVT_CHOICE, lambda e: self.Refresh())
         tool_sizer.Add(self.qty_choice, 0, wx.ALL, 3)
+        note_btn = wx.Button(self, label="Note de calcul projet...")
+        note_btn.Bind(wx.EVT_BUTTON, self._on_show_project_calculation_note)
+        tool_sizer.Add(note_btn, 0, wx.ALL, 3)
 
         main_sizer.Add(tool_sizer, 0, wx.EXPAND | wx.LEFT | wx.TOP, 5)
 
@@ -107,7 +111,7 @@ class GraphAnalysisPanel(wx.Panel):
                 cost_sales = res.unit_sale_price * qty
 
                 if cost.cost_type == CostType.INTERNAL_OPERATION:
-                    total_h += cost.fixed_time + (cost.per_piece_time * qty)
+                    total_h += res.internal_time_hours
                     prod_sales += cost_sales
                 else:
                     purchase_cost += res.batch_supplier_cost
@@ -361,3 +365,153 @@ class GraphAnalysisPanel(wx.Panel):
             text = f"Q{qtys[0]}: {prices[0]:.2f}€"
             tw, th = gc.GetTextExtent(text)
             gc.DrawText(text, px - tw / 2, py + 10)
+
+    def _on_show_project_calculation_note(self, _event):
+        if not self.project:
+            wx.MessageBox("Aucun projet chargé.", "Information", wx.OK | wx.ICON_INFORMATION)
+            return
+        self._show_project_calculation_note()
+
+    def _show_project_calculation_note(self):
+        note_text = self._build_project_calculation_note()
+
+        dlg = wx.Dialog(self, title="Note de calcul projet", size=(960, 720))
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        txt = wx.TextCtrl(
+            dlg,
+            value=note_text,
+            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL
+        )
+        main_sizer.Add(txt, 1, wx.EXPAND | wx.ALL, 10)
+
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        copy_btn = wx.Button(dlg, label="Copier")
+        close_btn = wx.Button(dlg, wx.ID_OK, "Fermer")
+        btn_sizer.Add(copy_btn, 0, wx.RIGHT, 8)
+        btn_sizer.Add(close_btn, 0)
+        main_sizer.Add(btn_sizer, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        def on_copy(_):
+            if wx.TheClipboard.Open():
+                wx.TheClipboard.SetData(wx.TextDataObject(note_text))
+                wx.TheClipboard.Close()
+                wx.MessageBox("Note copiée dans le presse-papiers.", "Information", wx.OK | wx.ICON_INFORMATION)
+
+        copy_btn.Bind(wx.EVT_BUTTON, on_copy)
+        dlg.SetSizer(main_sizer)
+        dlg.ShowModal()
+        dlg.Destroy()
+
+    def _build_project_calculation_note(self):
+        from domain.calculator import Calculator
+        from domain.cost import CostType
+
+        def euros(value):
+            return f"{value:.4f} EUR"
+
+        def number(value):
+            return f"{value:.4f}"
+
+        quantities = []
+        if self.project and getattr(self.project, "sale_quantities", None):
+            quantities = sorted([q for q in self.project.sale_quantities if q and q > 0])
+        if not quantities:
+            quantities = [1]
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        lines = []
+        lines.append("NOTE DE CALCUL PROJET")
+        lines.append("")
+        lines.append(f"Date generation: {now_str}")
+        lines.append(f"Projet: {self.project.reference or '-'} | {self.project.name or '-'}")
+        lines.append(f"Client: {self.project.client or '-'}")
+        lines.append(f"Nombre operations: {len(self.project.operations)}")
+        lines.append(f"Quantites analysees: {', '.join(str(q) for q in quantities)}")
+        lines.append("")
+
+        for qty in quantities:
+            unit_sale_base = sum(op.total_with_margins(qty) for op in self.project.operations)
+            volume_rate = self.project.volume_margin_rates.get(qty, 1.0)
+            unit_sale_final = self.project.total_price(qty)
+            lot_total = unit_sale_final * qty
+
+            purchase_cost = 0.0
+            purchase_sales = 0.0
+            total_h = 0.0
+            internal_sales = 0.0
+
+            lines.append("=" * 90)
+            lines.append(f"QUANTITE: {qty}")
+            lines.append("-" * 90)
+            lines.append(f"Prix unitaire base (somme operations): {euros(unit_sale_base)} / pc")
+            lines.append(f"Taux marge volume applique: x {number(volume_rate)}")
+            lines.append(f"Prix unitaire final projet: {euros(unit_sale_final)} / pc")
+            lines.append(f"Chiffre d'affaires lot: {euros(lot_total)}")
+            lines.append("")
+            lines.append("DETAIL PAR OPERATION")
+
+            for op in self.project.operations:
+                op_unit_sale = 0.0
+                op_batch_supplier = 0.0
+                op_fixed_sale = 0.0
+                op_variable_sale = 0.0
+
+                active_costs = list(op._get_active_costs())
+                lines.append(f"  Operation: {op.typology or '-'} | {op.label or op.code} ({len(active_costs)} cout(s))")
+
+                if not active_costs:
+                    lines.append("    - Aucun cout actif")
+                    continue
+
+                for cost in active_costs:
+                    res = Calculator.calculate_item(cost, qty)
+                    op_unit_sale += res.unit_sale_price
+                    op_batch_supplier += res.batch_supplier_cost
+                    op_fixed_sale += res.fixed_part
+                    op_variable_sale += res.variable_part
+
+                    if cost.cost_type == CostType.INTERNAL_OPERATION:
+                        total_h += res.internal_time_hours
+                        internal_sales += res.unit_sale_price * qty
+                    else:
+                        purchase_cost += res.batch_supplier_cost
+                        purchase_sales += res.unit_sale_price * qty
+
+                    lines.append(
+                        "    - "
+                        f"{cost.name}: unit_vte={euros(res.unit_sale_price)} | "
+                        f"unit_revient={euros(res.unit_cost_converted)} | "
+                        f"lot_achat={euros(res.batch_supplier_cost)} | "
+                        f"qte_devis={number(res.quote_qty_ordered)} | "
+                        f"marge={number(cost.margin_rate)}%"
+                    )
+
+                lines.append(
+                    "    > Synthese operation: "
+                    f"unit_vte={euros(op_unit_sale)} | "
+                    f"unit_fixe_vte={euros(op_fixed_sale)} | "
+                    f"unit_variable_vte={euros(op_variable_sale)} | "
+                    f"lot_vte={euros(op_unit_sale * qty)} | "
+                    f"lot_achat={euros(op_batch_supplier)}"
+                )
+                lines.append("")
+
+            eff_prod_eur_per_h = (internal_sales / total_h) if total_h > 0 else 0.0
+            purchase_margin_pct = ((purchase_sales - purchase_cost) / purchase_sales * 100.0) if purchase_sales > 0 else 0.0
+
+            lines.append("INDICATEURS MACRO")
+            lines.append(f"- Temps interne total: {number(total_h)} h")
+            lines.append(f"- Productif interne (vente lot): {euros(internal_sales)}")
+            lines.append(f"- Achats fournisseurs (cout lot): {euros(purchase_cost)}")
+            lines.append(f"- Ventes sur achats (lot): {euros(purchase_sales)}")
+            lines.append(f"- Efficacite productive: {euros(eff_prod_eur_per_h)} / h")
+            lines.append(f"- Marge achats: {number(purchase_margin_pct)} %")
+            lines.append("")
+
+        lines.append("=" * 90)
+        lines.append("NOTE")
+        lines.append("- Cette note detaille les calculs projet pour verification et revue.")
+        lines.append("- Les prix unitaires sont exprimes par piece (pc).")
+
+        return "\n".join(lines)

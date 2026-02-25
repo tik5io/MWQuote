@@ -160,7 +160,7 @@ class ResultSummaryPanel(wx.Panel):
                 
                 # Update specific metrics
                 if item.cost_type == CostType.INTERNAL_OPERATION:
-                    total_h = item.fixed_time + (item.per_piece_time * qty)
+                    total_h = res.internal_time_hours
                     prod_sales = val_total
                 else: # Material or Subcontracting
                     purchase_cost = res.batch_supplier_cost
@@ -174,7 +174,7 @@ class ResultSummaryPanel(wx.Panel):
                 for cost in item._get_active_costs():
                     res = Calculator.calculate_item(cost, qty)
                     if cost.cost_type == CostType.INTERNAL_OPERATION:
-                        total_h += cost.fixed_time + (cost.per_piece_time * qty)
+                        total_h += res.internal_time_hours
                         prod_sales += res.unit_sale_price * qty
                     else:
                         purchase_cost += res.batch_supplier_cost
