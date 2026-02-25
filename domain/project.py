@@ -51,9 +51,11 @@ class Project:
         return False
 
     def clone(self):
-        """Returns a deep copy of the project with reset milestones."""
+        """Returns a deep copy of the project with reset tracking data."""
         import copy
         new_project = copy.deepcopy(self)
         new_project.status = "En construction"
         new_project.status_dates = {}
+        # Reset XLSX export history so duplicated project restarts at sub-version index 1.
+        new_project.export_history = []
         return new_project

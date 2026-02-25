@@ -94,9 +94,10 @@ class ExportService:
             
         return base_ref
 
-    def get_default_filename(self, project):
+    def get_default_filename(self, project, devis_ref: str = None):
         """Génère le nom de fichier par défaut : DEVIS_REF-PART_REF-xQTYmin-xQTYmax.xlsx"""
-        devis_ref = self.get_devis_reference(project)
+        if devis_ref is None:
+            devis_ref = self.get_devis_reference(project)
         part_ref = self._get_part_reference(project)
         # Supprimer les espaces et caractères spéciaux du part_ref pour le nom de fichier
         clean_part_ref = "".join(c for c in part_ref if c.isalnum() or c in ('-', '_')).strip()
@@ -136,7 +137,7 @@ class ExportService:
     # =========================
     # PUBLIC
     # =========================
-    def export_excel(self, project, template_path, output_path, project_save_path=None):
+    def export_excel(self, project, template_path, output_path, project_save_path=None, devis_ref=None):
         try:
             wb = load_workbook(template_path)
             ws = wb.active
@@ -149,7 +150,8 @@ class ExportService:
             if not hasattr(project, 'export_history'):
                 project.export_history = []
             
-            devis_ref = self.get_devis_reference(project)
+            if devis_ref is None:
+                devis_ref = self.get_devis_reference(project)
             
             # THE CRITICAL STEP: Add to history NOW so placeholders use THE SAME reference
             project.export_history.append({

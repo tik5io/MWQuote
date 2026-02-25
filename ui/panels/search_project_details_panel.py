@@ -65,6 +65,18 @@ class ProjectDetailsPanel(wx.Panel):
             self._update_display()
         except Exception as e:
             wx.MessageBox(f"Erreur de chargement: {e}", "Erreur", wx.OK | wx.ICON_ERROR)
+
+    def reset_view(self, title: str = "Aucun projet sélectionné"):
+        """Reset details panel state when nothing should be displayed."""
+        self.project = None
+        self.title_lbl.SetLabel(title)
+        self.tree.DeleteAllItems()
+        self.tree.AddRoot("Root")
+        self.analysis_panel.Show()
+        self.comparison_grid.Hide()
+        self.bottom_sizer.Layout()
+        self.bottom_container.Layout()
+        self.Layout()
             
     def _update_display(self):
         if not self.project:

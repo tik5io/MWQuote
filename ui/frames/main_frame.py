@@ -235,7 +235,11 @@ class MainFrame(wx.Frame):
                 PersistenceService.save_project(cloned_project, path)
                 # Auto-index in DB
                 self.indexer.index_file(path)
-                wx.MessageBox("Projet dupliqué avec succès !", "Information", wx.OK | wx.ICON_INFORMATION)
+                wx.MessageBox(
+                    "Projet dupliqué avec succès !\n(Jalons et exports XLSX remis à zéro)",
+                    "Information",
+                    wx.OK | wx.ICON_INFORMATION
+                )
             except Exception as e:
                 wx.MessageBox(f"Erreur lors de la duplication : {str(e)}", "Erreur", wx.OK | wx.ICON_ERROR)
 

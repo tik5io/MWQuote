@@ -299,7 +299,7 @@ class SearchFrame(wx.Frame):
         elif count > 4:
             self.details_panel.Show()
             self.comparison_panel.Hide()
-            self.details_panel.content_txt.SetValue("Selection trop importante (max 4 pour comparaison).")
+            self.details_panel.reset_view("Selection trop importante (max 4 pour comparaison).")
             self.right_container.Layout()
 
     def _on_item_activated(self, event):
@@ -362,7 +362,12 @@ class SearchFrame(wx.Frame):
             # Re-index the new file
             self.indexer.index_file(dst_path)
             self._refresh_list()
-            wx.MessageBox(f"Projet dupliqué vers :\n{os.path.basename(dst_path)}\n(Jalons remis à zéro)", "Succès", wx.OK | wx.ICON_INFORMATION)
+            wx.MessageBox(
+                f"Projet dupliqué vers :\n{os.path.basename(dst_path)}\n"
+                f"(Jalons et exports XLSX remis à zéro)",
+                "Succès",
+                wx.OK | wx.ICON_INFORMATION
+            )
         except Exception as e:
             wx.MessageBox(f"Erreur lors de la duplication : {e}", "Erreur", wx.OK | wx.ICON_ERROR)
 
@@ -427,8 +432,7 @@ class SearchFrame(wx.Frame):
                                  "Erreur fichier", wx.OK | wx.ICON_ERROR)
             
             self._refresh_list()
-            self.details_panel.content_txt.SetValue("Projet supprimé.")
-            self.details_panel.title_lbl.SetLabel("Aucun projet sélectionné")
+            self.details_panel.reset_view("Aucun projet sélectionné")
             
             wx.MessageBox("Projet supprimé avec succès.", "Succès", wx.OK | wx.ICON_INFORMATION)
             
@@ -500,7 +504,7 @@ class SearchFrame(wx.Frame):
         
         # Refresh and show summary
         self._refresh_list()
-        self.details_panel.content_txt.SetValue(f"{deleted_count} projets supprimés.")
+        self.details_panel.reset_view(f"{deleted_count} projets supprimés.")
         
         msg = f"Suppression terminée!\n\n{deleted_count}/{count} projets supprimés."
         if file_errors:
@@ -937,7 +941,7 @@ class SearchFrame(wx.Frame):
                         try:
                             project = PersistenceService.load_project(p_data['filepath'])
                             reference = self.export_service.get_devis_reference(project=project)
-                            default_filename = self.export_service.get_default_filename(project)
+                            default_filename = self.export_service.get_default_filename(project, devis_ref=reference)
                             output_path = os.path.join(output_dir, default_filename)
                             
                             # Update progress
@@ -948,7 +952,8 @@ class SearchFrame(wx.Frame):
                                 project,
                                 template_path,
                                 output_path,
-                                project_save_path=p_data['filepath']
+                                project_save_path=p_data['filepath'],
+                                devis_ref=reference
                             )
                             
                             # Update DB
@@ -994,7 +999,7 @@ class SearchFrame(wx.Frame):
             reference = self.export_service.get_devis_reference(project=project)
             
             # Propose save location with suggested name using export service
-            default_filename = self.export_service.get_default_filename(project)
+            default_filename = self.export_service.get_default_filename(project, devis_ref=reference)
             
             with wx.FileDialog(
                 self,
@@ -1023,7 +1028,8 @@ class SearchFrame(wx.Frame):
                         project,
                         template_path,
                         output_path,
-                        project_save_path=p_data['filepath']
+                        project_save_path=p_data['filepath'],
+                        devis_ref=reference
                     )
                     
                     progress.Destroy()
