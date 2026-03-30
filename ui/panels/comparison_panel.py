@@ -11,6 +11,9 @@ class ComparisonPanel(wx.Panel):
         super().__init__(parent)
         
         self.projects = []
+        self.offer_checks = []
+        self.chart_elements = []
+        self.current_tooltip = None
         self._build_ui()
 
     def _build_ui(self):
@@ -73,7 +76,14 @@ class ComparisonPanel(wx.Panel):
         self.chart_panel = wx.Panel(self.main_splitter, size=(-1, 400))
         self.chart_panel.SetMinSize((-1, 200))
         self.chart_panel.Bind(wx.EVT_PAINT, self._on_paint_charts)
-        
+        self.chart_panel.Bind(wx.EVT_LEFT_UP, self._on_chart_click)
+        self.chart_panel.Bind(wx.EVT_MOTION, lambda e: self._on_chart_motion(e, self.chart_panel, None))
+        self.chart_panel.Bind(wx.EVT_LEAVE_WINDOW, lambda e: self._on_chart_leave(self.chart_panel))
+
+        # Toggle offres (visibilité)
+        self.offer_checkbox_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        main_sizer.Add(self.offer_checkbox_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
         # Split!
         self.main_splitter.SplitHorizontally(self.scroll, self.chart_panel, -300)
         self.main_splitter.SetSashGravity(1.0)
@@ -84,7 +94,9 @@ class ComparisonPanel(wx.Panel):
 
     def load_projects(self, filepaths):
         self.projects = []
-        for fp in filepaths:
+        # Limit to 2 projects for comparison
+        max_projects = 2
+        for fp in filepaths[:max_projects]:
             try:
                 p = PersistenceService.load_project(fp)
                 self.projects.append(p)
@@ -93,6 +105,14 @@ class ComparisonPanel(wx.Panel):
         
         if not self.projects:
             return
+        
+        # Show warning if more than 2 projects selected
+        if len(filepaths) > 2:
+            wx.MessageBox(
+                f"Only the first 2 projects will be compared.\nSelected: {len(filepaths)}, Using: {len(self.projects)}",
+                "Comparison Limited",
+                wx.OK | wx.ICON_INFORMATION
+            )
 
         # Refresh quantities
         all_qtys = set()
@@ -117,6 +137,7 @@ class ComparisonPanel(wx.Panel):
                 self.qty_choice.SetSelection(0)
                 
         self._update_comparison_grid()
+        self._refresh_offer_checkboxes()
         self.Refresh()
 
     def _on_qty_change(self, event):
@@ -223,6 +244,24 @@ class ComparisonPanel(wx.Panel):
         self.scroll.Layout()
         self.Layout()
 
+    def _refresh_offer_checkboxes(self):
+        self.offer_checks = []
+        self.offer_checkbox_sizer.Clear(True)
+
+        for idx, proj in enumerate(self.projects):
+            label = f"[x] Offre {idx + 1}: {proj.reference[:20]}"
+            cb = wx.CheckBox(self, label=label)
+            cb.SetValue(True)
+            cb.Bind(wx.EVT_CHECKBOX, self._on_toggle_offer)
+            self.offer_checkbox_sizer.Add(cb, 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 10)
+            self.offer_checks.append(cb)
+
+        self.offer_checkbox_sizer.Layout()
+        self.Layout()
+
+    def _on_toggle_offer(self, event):
+        self.Refresh()
+
     def _on_paint_charts(self, event):
         dc = wx.PaintDC(self.chart_panel)
         gc = wx.GraphicsContext.Create(dc)
@@ -236,47 +275,399 @@ class ComparisonPanel(wx.Panel):
         gc.DrawRectangle(0, 0, w, h)
         if not self.projects: return
 
-        margin = 40
-        chart_w = w - 2*margin
+        self.chart_elements = []
+
+        # Draw stacked cost evolution instead of simple bars
+        self._draw_stacked_cost_evolution_comparison(gc, w, h, dlg=None)
+
+    def _draw_stacked_cost_evolution_comparison(self, gc, w, h, is_enlarged=False, dlg=None):
+        """Draw stacked cost evolution across quantities for multiple offers.
+        
+        X-axis: Quantities
+        Y-axis: Cumulative cost per piece (€/pc)
+        Stacked operations with different colors
+        Overlaid projects with different line styles
+        """
+        margin = 80 if is_enlarged else 40
+        title_font = 14 if is_enlarged else 10
+        axis_label_font = 8 if is_enlarged else 7
+        axis_value_font = 8 if is_enlarged else 6
+        legend_font = 7 if is_enlarged else 6
+        qty_str = self.qty_choice.GetStringSelection()
+        
+        # Get common quantities from all projects
+        all_qtys = set()
+        for proj in self.projects:
+            all_qtys.update(proj.sale_quantities)
+        qtys = sorted(list(all_qtys))
+
+        if not qtys:
+            gc.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL), wx.Colour(150, 150, 150))
+            text = "Aucune quantité commune"
+            tw, th = gc.GetTextExtent(text)
+            gc.DrawText(text, w / 2 - tw / 2, h / 2)
+            return
+
+        # Collect all unique operations across all projects
+        all_ops_codes = {}
+        for proj in self.projects:
+            for op in proj.operations:
+                if op.code not in all_ops_codes:
+                    all_ops_codes[op.code] = op
+
+        ops_list = list(all_ops_codes.values())
+        if not ops_list:
+            return
+
+        from domain.calculator import Calculator
+
+        # Build data: for each project, for each quantity, cumulative costs per operation
+        projects_data = []
+        max_cost = 0
+
+        for proj in self.projects:
+            qty_data = []
+            for qty in qtys:
+                # Stack costs per operation
+                cumulative_costs = []
+                cumsum = 0.0
+                for op_code in [op.code for op in ops_list]:
+                    op = None
+                    for o in proj.operations:
+                        if o.code == op_code:
+                            op = o
+                            break
+                    
+                    if op:
+                        op_unit_cost = 0.0
+                        for cost in op._get_active_costs():
+                            res = Calculator.calculate_item(cost, qty)
+                            op_unit_cost += res.unit_sale_price
+                        cumsum += op_unit_cost
+                        cumulative_costs.append(cumsum)
+                    else:
+                        cumulative_costs.append(cumsum)
+
+                qty_data.append(cumulative_costs)
+                if cumsum > max_cost:
+                    max_cost = cumsum
+
+            projects_data.append((proj.name or proj.reference, proj.reference, qty_data))
+
+        if max_cost == 0:
+            max_cost = 1
+
+        chart_w = w - 2 * margin
         chart_h = h - 60
-        
-        data = []
-        max_p = 0; max_e = 0
-        for p in self.projects:
-            # Smart match for charts too!
-            up = p.total_price(qty)
-            th = 0; ps = 0
-            for op in p.operations:
-                for cost in op._get_active_costs():
-                    if cost.cost_type == CostType.INTERNAL_OPERATION:
-                        res = Calculator.calculate_item(cost, qty)
-                        th += cost.fixed_time + (cost.per_piece_time * qty)
-                        ps += res.unit_sale_price * qty
-            eff = ps / th if th > 0 else 0
-            data.append((p.reference, up, eff))
-            max_p = max(max_p, up); max_e = max(max_e, eff)
 
-        if not data: return
-        
-        bw = (chart_w / len(data)) * 0.35
-        col1 = wx.Colour(0, 102, 204); col2 = wx.Colour(255, 128, 0)
-        
-        for i, (ref, up, eff) in enumerate(data):
-            gx = margin + i * (chart_w / len(data))
-            hp = (up/max_p*chart_h) if max_p > 0 else 0
-            he = (eff/max_e*chart_h) if max_e > 0 else 0
-            
-            gc.SetBrush(wx.Brush(col1))
-            gc.DrawRectangle(gx + 5, h - 30 - hp, bw, hp)
-            gc.SetBrush(wx.Brush(col2))
-            gc.DrawRectangle(gx + bw + 10, h - 30 - he, bw, he)
-            
-            gc.SetFont(wx.Font(7, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD), wx.BLACK)
-            gc.DrawText(ref, gx + 5, h - 25)
+        # Operation colors - Colorblind-safe palette (Tol palette adapted)
+        # Darker shades for better line contrast while maintaining accessibility
+        op_colors = [
+            wx.Colour(0, 102, 204),      # Dark Blue
+            wx.Colour(204, 85, 0),        # Dark Orange (burnt orange)
+            wx.Colour(0, 153, 102),       # Dark Teal/Green
+            wx.Colour(153, 51, 102),      # Dark Magenta
+            wx.Colour(153, 102, 0),       # Dark Brown/Gold
+            wx.Colour(102, 102, 153),     # Dark Purple-Gray
+            wx.Colour(102, 0, 102),       # Deep Purple
+            wx.Colour(204, 0, 102),       # Dark Crimson
+        ]
 
-        gc.SetBrush(wx.Brush(col1))
-        gc.DrawRectangle(margin, 5, 12, 12)
-        gc.DrawText("Prix Unit.", margin + 15, 5)
-        gc.SetBrush(wx.Brush(col2))
-        gc.DrawRectangle(margin + 100, 5, 12, 12)
-        gc.DrawText("Ef. (€/h)", margin + 115, 5)
+        # Project visualization (1st: solid line, 2nd: colored area)
+        # Only 2 projects max
+        project_styles = [
+            {"type": "line", "width": 2},  # First project: solid line
+            {"type": "area", "width": 2},  # Second project: filled area
+        ]
+
+        # Title
+        gc.SetFont(wx.Font(title_font, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD), wx.Colour(50, 50, 50))
+        gc.DrawText("Évolution des Coûts par Opération (€/pièce)", margin, 5)
+
+        # Grid
+        gc.SetPen(wx.Pen(wx.Colour(240, 240, 240), 1))
+        for i in range(3):
+            gy = 30 + (i + 1) * (chart_h / 3)
+            gc.StrokeLine(margin, gy, margin + chart_w, gy)
+
+        # Axes
+        gc.SetPen(wx.Pen(wx.Colour(180, 180, 180), 1))
+        gc.StrokeLine(margin, 30 + chart_h, margin + chart_w, 30 + chart_h)
+        gc.StrokeLine(margin, 30, margin, 30 + chart_h)
+
+        # Y-axis scale labels
+        gc.SetFont(wx.Font(axis_value_font, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL), wx.Colour(100, 100, 100))
+        for i in range(4):
+            val = max_cost * i / 3
+            label = f"{val:.2f}€"
+            gy = 30 + chart_h - (i / 3) * chart_h
+            lw, lh = gc.GetTextExtent(label)
+            gc.DrawText(label, margin - lw - 5, gy - lh / 2)
+
+        # Draw each project's stacked visualization (1st as line, 2nd as colored area)
+        # First pass: Draw filled areas (from highest to lowest operation for proper layering)
+        for proj_idx, (proj_name, proj_ref, qty_data) in enumerate(projects_data):
+            if proj_idx >= len(project_styles):
+                break
+            if self.offer_checks and proj_idx < len(self.offer_checks) and not self.offer_checks[proj_idx].GetValue():
+                continue
+            
+            proj_style = project_styles[proj_idx]
+            
+            # Only draw filled areas for second project (colored areas)
+            if proj_style["type"] != "area":
+                continue
+            
+            # Draw operations in reverse order (highest first) so lower ops appear on top
+            for op_idx in range(len(ops_list) - 1, -1, -1):
+                op_code = ops_list[op_idx].code
+                color = op_colors[op_idx % len(op_colors)]
+                
+                # Build path for this operation across all quantities
+                points = []
+
+                for q_idx, qty in enumerate(qtys):
+                    if q_idx < len(qty_data) and op_idx < len(qty_data[q_idx]):
+                        cost_val = qty_data[q_idx][op_idx]
+                        px = margin + (q_idx / (len(qtys) - 1) if len(qtys) > 1 else 0.5) * chart_w
+                        py = 30 + chart_h - (cost_val / max_cost) * chart_h
+                        points.append((px, py))
+
+                # Fill area
+                if len(points) > 1:
+                    # Close path to create filled area
+                    area_path = gc.CreatePath()
+                    area_path.MoveToPoint(points[0][0], points[0][1])
+                    for px, py in points[1:]:
+                        area_path.AddLineToPoint(px, py)
+                    # Line back down to baseline
+                    area_path.AddLineToPoint(points[-1][0], 30 + chart_h)
+                    area_path.AddLineToPoint(points[0][0], 30 + chart_h)
+                    area_path.CloseSubpath()
+                    
+                    light_color = wx.Colour(
+                        min(255, int(color.Red() * 1.3)),
+                        min(255, int(color.Green() * 1.3)),
+                        min(255, int(color.Blue() * 1.3))
+                    )
+                    gc.SetBrush(wx.Brush(light_color))
+                    gc.SetPen(wx.TRANSPARENT_PEN)
+                    gc.FillPath(area_path)
+
+        # Second pass: Draw all lines (from lowest to highest operation for proper visibility)
+        for proj_idx, (proj_name, proj_ref, qty_data) in enumerate(projects_data):
+            if proj_idx >= len(project_styles):
+                break
+            if self.offer_checks and proj_idx < len(self.offer_checks) and not self.offer_checks[proj_idx].GetValue():
+                continue
+            
+            proj_style = project_styles[proj_idx]
+            
+            # Draw operations in reverse order (highest first = lowest index visually on top)
+            for op_idx in range(len(ops_list) - 1, -1, -1):
+                op_code = ops_list[op_idx].code
+                color = op_colors[op_idx % len(op_colors)]
+                
+                # Build path for this operation across all quantities
+                path = gc.CreatePath()
+                first_point = True
+
+                for q_idx, qty in enumerate(qtys):
+                    if q_idx < len(qty_data) and op_idx < len(qty_data[q_idx]):
+                        cost_val = qty_data[q_idx][op_idx]
+                        px = margin + (q_idx / (len(qtys) - 1) if len(qtys) > 1 else 0.5) * chart_w
+                        py = 30 + chart_h - (cost_val / max_cost) * chart_h
+
+                        if first_point:
+                            path.MoveToPoint(px, py)
+                            first_point = False
+                        else:
+                            path.AddLineToPoint(px, py)
+                        
+                        # Store element data for tooltip
+                        elem_data = {
+                            'x': px,
+                            'y': py,
+                            'op_code': op_code,
+                            'op_idx': op_idx,
+                            'cost_val': cost_val,
+                            'proj_name': proj_name,
+                            'proj_ref': proj_ref,
+                            'qty': qty,
+                            'color': color
+                        }
+                        if dlg is not None:
+                            dlg.chart_elements.append(elem_data)
+                        else:
+                            self.chart_elements.append(elem_data)
+
+                # Draw line
+                gc.SetPen(wx.Pen(color, int(proj_style["width"]), wx.PENSTYLE_SOLID))
+                gc.StrokePath(path)
+                
+                # Draw outline for second project area
+                if proj_style["type"] == "area":
+                    gc.SetPen(wx.Pen(color, int(proj_style["width"]), wx.PENSTYLE_SOLID))
+                    gc.StrokePath(path)
+
+        # Quantity labels
+        gc.SetFont(wx.Font(axis_label_font, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD), wx.Colour(80, 80, 80))
+        for q_idx, qty in enumerate(qtys):
+            px = margin + (q_idx / (len(qtys) - 1) if len(qtys) > 1 else 0.5) * chart_w
+            q_text = f"Q{qty}"
+            qw, qh = gc.GetTextExtent(q_text)
+            gc.DrawText(q_text, px - qw / 2, 30 + chart_h + 5)
+
+        # Legend - operation colors
+        legend_x = margin + chart_w - (200 if is_enlarged else 160)
+        legend_y = 35
+        gc.SetFont(wx.Font(legend_font, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL), wx.Colour(60, 60, 60))
+        
+        op_legend_y = legend_y
+        for op_idx, op_code in enumerate([op.code for op in ops_list]):
+            if op_idx > 4:
+                break
+            color = op_colors[op_idx % len(op_colors)]
+            gc.SetBrush(wx.Brush(color))
+            gc.SetPen(wx.TRANSPARENT_PEN)
+            gc.DrawRectangle(legend_x, op_legend_y + op_idx * 11, 8, 8)
+            gc.DrawText(f"Op {op_code[:3]}", legend_x + 12, op_legend_y + op_idx * 11 - 2)
+        
+        # Legend - project line styles/areas (repositioned to avoid truncation)
+        op_legend_y += (min(5, len(ops_list)) + 1) * 11
+        
+        # Reposition if needed to avoid truncation
+        if op_legend_y + len(projects_data) * 14 + 30 > h - 40:
+            legend_x = margin + 10
+            op_legend_y = h - 50 - (len(projects_data) * 14)
+        
+        gc.SetFont(wx.Font(legend_font, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD), wx.Colour(50, 50, 50))
+        gc.DrawText("Offers:", legend_x, op_legend_y)
+        op_legend_y += 12
+        
+        for proj_idx, (proj_name, proj_ref, _) in enumerate(projects_data):
+            if proj_idx >= len(project_styles):
+                break
+            style = project_styles[proj_idx]
+            if style["type"] == "line":
+                # Solid line
+                gc.SetPen(wx.Pen(wx.Colour(0, 0, 0), int(style["width"]), wx.PENSTYLE_SOLID))
+                gc.StrokeLine(legend_x, op_legend_y + proj_idx * 14, legend_x + 30, op_legend_y + proj_idx * 14)
+            else:
+                # Colored area
+                gc.SetBrush(wx.Brush(wx.Colour(150, 150, 150)))
+                gc.SetPen(wx.TRANSPARENT_PEN)
+                gc.DrawRectangle(legend_x, op_legend_y + proj_idx * 14 - 6, 30, 10)
+            
+            gc.SetFont(wx.Font(legend_font, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL), wx.Colour(60, 60, 60))
+            label = f"Offer {proj_idx + 1}: {proj_ref[:12]}" if len(proj_ref) > 12 else f"Offer {proj_idx + 1}: {proj_ref}"
+            gc.DrawText(label, legend_x + 35, op_legend_y + proj_idx * 14 - 3)
+        
+        # Click hint (only in non-enlarged mode)
+        if not is_enlarged:
+            gc.SetFont(wx.Font(7, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL), wx.Colour(150, 150, 150))
+            gc.DrawText("(Click to expand)", margin + 5, h - 35)
+
+    def _on_chart_click(self, event):
+        """Handle click on chart to open enlarged view."""
+        if self.projects:
+            self._show_enlarged_chart()
+
+    def _on_chart_motion(self, event, panel, dlg=None):
+        """Handle mouse motion to show tooltips on chart elements."""
+        elements = dlg.chart_elements if (dlg is not None and hasattr(dlg, 'chart_elements')) else self.chart_elements
+        if not elements:
+            return
+
+        x, y = event.GetPosition()
+        hover_distance = 15  # pixels
+
+        # Find closest element
+        closest_elem = None
+        closest_dist = hover_distance
+        for elem in elements:
+            dist = ((elem['x'] - x) ** 2 + (elem['y'] - y) ** 2) ** 0.5
+            if dist < closest_dist:
+                closest_dist = dist
+                closest_elem = elem
+
+        current = dlg.current_tooltip if dlg is not None and hasattr(dlg, 'current_tooltip') else self.current_tooltip
+        if closest_elem:
+            if current != closest_elem:
+                if dlg is not None and hasattr(dlg, 'current_tooltip'):
+                    dlg.current_tooltip = closest_elem
+                else:
+                    self.current_tooltip = closest_elem
+                self._show_tooltip(panel, dlg, closest_elem, x, y)
+        else:
+            if current is not None:
+                if dlg is not None and hasattr(dlg, 'current_tooltip'):
+                    dlg.current_tooltip = None
+                else:
+                    self.current_tooltip = None
+                panel.SetToolTip(None)
+
+    def _on_chart_leave(self, panel_or_dlg):
+        """Hide tooltip when mouse leaves chart area."""
+        if isinstance(panel_or_dlg, wx.Window):
+            panel_or_dlg.SetToolTip(None)
+            self.current_tooltip = None
+        elif hasattr(panel_or_dlg, 'current_tooltip'):
+            panel_or_dlg.current_tooltip = None
+
+
+    def _show_tooltip(self, panel, dlg, elem, x, y):
+        """Display tooltip for chart element."""
+        op_code = elem['op_code']
+        cost_val = elem['cost_val']
+        proj_name = elem['proj_name']
+        qty = elem['qty']
+        
+        # Format tooltip text
+        tooltip_text = (
+            f"Operation: {op_code}\n"
+            f"Cost: {cost_val:.2f} €/pc\n"
+            f"Quantity: {qty}\n"
+            f"Offer: {proj_name}"
+        )
+        
+        panel.SetToolTip(wx.ToolTip(tooltip_text))
+
+    def _show_enlarged_chart(self):
+        """Open a full-screen or large window with the stacked cost evolution chart."""
+        dlg = wx.Dialog(self, title="Stacked Cost Evolution - Full View", size=(1200, 800),
+                       style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        
+        # Store chart elements for tooltip handling
+        dlg.chart_elements = []
+        dlg.current_tooltip = None
+        
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        # Chart panel
+        chart_panel = wx.Panel(dlg)
+        chart_panel.Bind(wx.EVT_PAINT, lambda e: self._on_enlarged_paint(e, chart_panel, dlg))
+        chart_panel.Bind(wx.EVT_MOTION, lambda e: self._on_chart_motion(e, chart_panel, dlg))
+        chart_panel.Bind(wx.EVT_LEAVE_WINDOW, lambda e: self._on_chart_leave(dlg))
+        
+        main_sizer.Add(chart_panel, 1, wx.EXPAND)
+        
+        # Close button
+        close_btn = wx.Button(dlg, wx.ID_CLOSE, "Close")
+        close_btn.Bind(wx.EVT_BUTTON, lambda e: dlg.EndModal(wx.ID_CLOSE))
+        main_sizer.Add(close_btn, 0, wx.ALIGN_CENTER | wx.ALL, 10)
+        
+        dlg.SetSizer(main_sizer)
+        dlg.ShowModal()
+        dlg.Destroy()
+
+    def _on_enlarged_paint(self, event, panel, dlg):
+        """Paint enlarged chart on the panel."""
+        dc = wx.PaintDC(panel)
+        gc = wx.GraphicsContext.Create(dc)
+        if not gc or not self.projects:
+            return
+        
+        w, h = panel.GetSize()
+        dlg.chart_elements = []  # Clear previous elements
+        self._draw_stacked_cost_evolution_comparison(gc, w, h, is_enlarged=True, dlg=dlg)

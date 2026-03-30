@@ -96,6 +96,13 @@ class PersistenceService:
                 if path:
                     project_doc_paths.append({'filename': doc.filename, '_path': path})
 
+            # Process preview image if present
+            project_preview = None
+            if getattr(project, 'preview_image', None) and project.preview_image.filename and project.preview_image.data:
+                preview_path = add_document(project.preview_image, "previews/")
+                if preview_path:
+                    project_preview = {'filename': project.preview_image.filename, '_path': preview_path}
+
             # Process operation cost documents
             ops_data = []
             for op in project.operations:
@@ -113,8 +120,10 @@ class PersistenceService:
 
             # Build project JSON (without embedded data)
             project_dict = dataclasses.asdict(project)
+            # Remove embedded binary content from project JSON (stored separately in ZIP)
             project_dict['documents'] = project_doc_paths
             project_dict['operations'] = ops_data
+            project_dict['preview_image'] = project_preview
             project_dict['_mwq_version'] = MWQ_VERSION
             project_dict['_content_hash'] = PersistenceService.compute_content_hash(project)
 
@@ -160,6 +169,20 @@ class PersistenceService:
                     # Reference exists but file missing - keep reference with no data
                     proj_docs.append(Document(filename=doc_ref['filename'], data=None))
 
+            # Load preview image
+            preview_image = None
+            preview_ref = data.get('preview_image')
+            if preview_ref and preview_ref.get('_path'):
+                preview_path = preview_ref.get('_path')
+                if preview_path in zf.namelist():
+                    binary_data = zf.read(preview_path)
+                    preview_image = Document(
+                        filename=preview_ref.get('filename'),
+                        data=base64.b64encode(binary_data).decode('ascii')
+                    )
+                else:
+                    preview_image = Document(filename=preview_ref.get('filename'), data=None)
+
             # Load operations with their documents
             operations = []
             for op_data in data.get('operations', []):
@@ -188,6 +211,10 @@ class PersistenceService:
                     label=op_data['label'],
                     typology=op_data.get('typology', ""),
                     comment=op_data.get('comment', ""),
+                    template_id=op_data.get('template_id'),
+                    template_name=op_data.get('template_name', ""),
+                    template_snapshot=op_data.get('template_snapshot', {}) or {},
+                    template_drift_score=op_data.get('template_drift_score', 0.0),
                     costs=costs,
                     total_pieces=op_data.get('total_pieces', 1)
                 )
@@ -197,6 +224,7 @@ class PersistenceService:
                 name=data['name'],
                 reference=data.get('reference', ""),
                 client=data.get('client', ""),
+                mwq_uuid=data.get('mwq_uuid', ""),
                 operations=operations,
                 documents=proj_docs,
                 project_date=data.get('project_date'),
@@ -205,7 +233,9 @@ class PersistenceService:
                 status=data.get('status', "En construction"),
                 status_dates=data.get('status_dates', {}),
                 export_history=data.get('export_history', []),
-                volume_margin_rates=PersistenceService._migrate_volume_margins(data)
+                volume_margin_rates=PersistenceService._migrate_volume_margins(data),
+                preview_image=preview_image,
+                validation_report=data.get('validation_report', {}) or {}
             )
 
     @staticmethod
@@ -247,6 +277,7 @@ class PersistenceService:
             supplier_quote_ref=cost_data.get('supplier_quote_ref'),
             documents=docs,
             comment=cost_data.get('comment'),
+            client_comment=cost_data.get('client_comment'),
             fixed_time=cost_data.get('fixed_time', 0.0),
             per_piece_time=cost_data.get('per_piece_time', 0.0),
             hourly_rate=cost_data.get('hourly_rate', 0.0),
@@ -286,6 +317,10 @@ class PersistenceService:
                 label=op_data['label'],
                 typology=op_data.get('typology', ""),
                 comment=op_data.get('comment', ""),
+                template_id=op_data.get('template_id'),
+                template_name=op_data.get('template_name', ""),
+                template_snapshot=op_data.get('template_snapshot', {}) or {},
+                template_drift_score=op_data.get('template_drift_score', 0.0),
                 costs=costs,
                 total_pieces=op_data.get('total_pieces', 1)
             )
@@ -307,15 +342,18 @@ class PersistenceService:
             name=data['name'],
             reference=data.get('reference', ""),
             client=data.get('client', ""),
+            mwq_uuid=data.get('mwq_uuid', ""),
             operations=operations,
             documents=proj_docs,
             project_date=data.get('project_date'),
             sale_quantities=data.get('sale_quantities', [1, 10, 50, 100]),
             tags=data.get('tags', []),
+            preview_image=None,
             status=data.get('status', "En construction"),
             status_dates=data.get('status_dates', {}),
             export_history=data.get('export_history', []),
-            volume_margin_rates=PersistenceService._migrate_volume_margins(data)
+            volume_margin_rates=PersistenceService._migrate_volume_margins(data),
+            validation_report=data.get('validation_report', {}) or {}
         )
 
     @staticmethod

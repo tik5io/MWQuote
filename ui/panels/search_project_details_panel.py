@@ -1,5 +1,7 @@
 import wx
 import os
+import base64
+import io
 from infrastructure.persistence import PersistenceService
 from ui.panels.graph_analysis_panel import GraphAnalysisPanel
 from ui.components.offers_comparison_grid import OffersComparisonGrid
@@ -7,6 +9,9 @@ import domain.cost as domain_cost
 from domain.operation import SUBCONTRACTING_TYPOLOGY
 
 class ProjectDetailsPanel(wx.Panel):
+    PREVIEW_WIDTH = 320
+    PREVIEW_HEIGHT = 180
+
     def __init__(self, parent):
         super().__init__(parent)
         self.project = None
@@ -22,7 +27,17 @@ class ProjectDetailsPanel(wx.Panel):
         font.SetWeight(wx.FONTWEIGHT_BOLD)
         self.title_lbl.SetFont(font)
         vbox.Add(self.title_lbl, 0, wx.ALL, 10)
-        
+
+        self.preview_bitmap = wx.StaticBitmap(self, bitmap=wx.Bitmap(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT))
+        self.preview_bitmap.SetMinSize((self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT))
+        self.preview_bitmap.SetBitmap(self._build_blank_preview_bitmap())
+        vbox.Add(self.preview_bitmap, 0, wx.ALIGN_CENTER | wx.ALL, 5)
+
+        self.open_preview_btn = wx.Button(self, label="Ouvrir Preview")
+        self.open_preview_btn.Bind(wx.EVT_BUTTON, self._on_open_preview)
+        self.open_preview_btn.Disable()
+        vbox.Add(self.open_preview_btn, 0, wx.ALIGN_CENTER | wx.ALL, 5)
+
         vbox.Add(wx.StaticLine(self), 0, wx.EXPAND | wx.ALL, 10)
         
         # Splitter for Tree vs Graph
@@ -92,7 +107,7 @@ class ProjectDetailsPanel(wx.Panel):
         for op in self.project.operations:
             op_item = self.tree.AppendItem(root, f"🔧 {op.typology or 'Op'} | {op.label}")
             for cost in op.costs.values():
-                cost_icon = "💰" if cost.cost_type in [domain_cost.CostType.MATERIAL, domain_cost.CostType.SUBCONTRACTING] else "⚙️" if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION else "📈"
+                cost_icon = "💰" if cost.cost_type in [domain_cost.CostType.MATERIAL, domain_cost.CostType.SUBCONTRACTING] else "⚙️" if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION else "🛠️" if cost.cost_type == domain_cost.CostType.TOOLING else "📈"
                 label = f"{cost_icon} {cost.name}"
                 
                 is_archived = (op.typology == SUBCONTRACTING_TYPOLOGY and not cost.is_active)
@@ -108,7 +123,92 @@ class ProjectDetailsPanel(wx.Panel):
             self.tree.SetItemData(op_item, {"type": "operation", "operation": op})
         
         self.tree.ExpandAll()
+        self._set_preview_bitmap(getattr(self.project, 'preview_image', None))
         self.Layout()
+
+    def _set_preview_bitmap(self, preview_doc):
+        if preview_doc and getattr(preview_doc, 'data', None):
+            try:
+                raw = base64.b64decode(preview_doc.data)
+                stream = wx.MemoryInputStream(raw)
+                image = wx.Image(stream, wx.BITMAP_TYPE_ANY)
+                if not image.IsOk():
+                    raise ValueError("wx image invalid")
+                self.preview_bitmap.SetBitmap(self._bitmap_from_wx_image(image))
+                self.open_preview_btn.Enable()
+                return
+            except Exception:
+                try:
+                    from PIL import Image
+                    with Image.open(io.BytesIO(raw)) as pil_image:
+                        self.preview_bitmap.SetBitmap(self._bitmap_from_pil_image(pil_image.copy()))
+                        self.open_preview_btn.Enable()
+                        return
+                except Exception:
+                    pass
+
+        self.preview_bitmap.SetBitmap(self._build_blank_preview_bitmap())
+        self.open_preview_btn.Disable()
+
+    def _build_blank_preview_bitmap(self) -> wx.Bitmap:
+        blank = wx.Bitmap(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT)
+        dc = wx.MemoryDC(blank)
+        dc.SetBackground(wx.Brush(wx.Colour(240, 240, 240)))
+        dc.Clear()
+        dc.SelectObject(wx.NullBitmap)
+        return blank
+
+    def _bitmap_from_wx_image(self, image: wx.Image) -> wx.Bitmap:
+        src_w = max(1, image.GetWidth())
+        src_h = max(1, image.GetHeight())
+        ratio = min(self.PREVIEW_WIDTH / src_w, self.PREVIEW_HEIGHT / src_h)
+        dst_w = max(1, int(src_w * ratio))
+        dst_h = max(1, int(src_h * ratio))
+        scaled = image.Scale(dst_w, dst_h, wx.IMAGE_QUALITY_HIGH)
+
+        canvas = wx.Bitmap(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT)
+        dc = wx.MemoryDC(canvas)
+        dc.SetBackground(wx.Brush(wx.Colour(240, 240, 240)))
+        dc.Clear()
+        x = (self.PREVIEW_WIDTH - dst_w) // 2
+        y = (self.PREVIEW_HEIGHT - dst_h) // 2
+        dc.DrawBitmap(wx.Bitmap(scaled), x, y, True)
+        dc.SelectObject(wx.NullBitmap)
+        return canvas
+
+    def _bitmap_from_pil_image(self, pil_image) -> wx.Bitmap:
+        from PIL import Image
+        if pil_image.mode != "RGBA":
+            pil_image = pil_image.convert("RGBA")
+        src_w, src_h = pil_image.size
+        src_w = max(1, src_w)
+        src_h = max(1, src_h)
+        ratio = min(self.PREVIEW_WIDTH / src_w, self.PREVIEW_HEIGHT / src_h)
+        dst_w = max(1, int(src_w * ratio))
+        dst_h = max(1, int(src_h * ratio))
+        resized = pil_image.resize((dst_w, dst_h))
+
+        canvas = Image.new("RGBA", (self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT), (240, 240, 240, 255))
+        x = (self.PREVIEW_WIDTH - dst_w) // 2
+        y = (self.PREVIEW_HEIGHT - dst_h) // 2
+        canvas.alpha_composite(resized, (x, y))
+        return wx.Bitmap.FromBufferRGBA(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT, bytes(canvas.tobytes()))
+
+    def _on_open_preview(self, event):
+        if not self.project or not getattr(self.project, 'preview_image', None):
+            return
+        doc = self.project.preview_image
+        if not doc.data:
+            return
+
+        try:
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(doc.filename)[1] or '.png') as tmp:
+                tmp.write(base64.b64decode(doc.data))
+                tmp_path = tmp.name
+            os.startfile(tmp_path)
+        except Exception as e:
+            wx.MessageBox(f"Échec ouverture preview : {e}", "Erreur", wx.OK | wx.ICON_ERROR)
 
     def _on_tree_selection(self, event):
         item = event.GetItem()

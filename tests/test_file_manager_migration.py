@@ -273,6 +273,23 @@ class TestDatabaseUUID(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]['filepath'], new_path)
 
+    def test_upsert_project_saves_preview_filename(self):
+        project_data = {
+            'name': 'Test with preview',
+            'reference': 'TEST-004',
+            'client': 'Test Client',
+            'filepath': '/test/path4.mwq',
+            'drawing_filename': None,
+            'preview_filename': 'preview.png',
+            'status': 'En construction',
+            'export_history': []
+        }
+        project_id = self.db.upsert_project(project_data)
+        projects = self.db.search_projects()
+        found = [p for p in projects if p['id'] == project_id]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]['preview_filename'], 'preview.png')
+
 
 if __name__ == '__main__':
     unittest.main()

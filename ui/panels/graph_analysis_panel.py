@@ -9,6 +9,7 @@ class GraphAnalysisPanel(wx.Panel):
     def __init__(self, parent):
         super().__init__(parent)
         self.project = None
+        self.projects = []  # For comparison mode
         self._build_ui()
 
     def _build_ui(self):
@@ -56,9 +57,12 @@ class GraphAnalysisPanel(wx.Panel):
         self._refresh_qtys()
         self.Refresh()
 
-    def refresh_quantities(self):
-        """Rafraîchit les sélecteurs de quantités (alias pour cohérence API)."""
+    def load_projects(self, projects):
+        """Load multiple projects for comparison mode."""
+        self.projects = projects
+        self.project = projects[0] if projects else None  # Use first as reference
         self._refresh_qtys()
+        self.Refresh()
 
     def _on_paint(self, event):
         dc = wx.PaintDC(self.canvas)
@@ -85,7 +89,11 @@ class GraphAnalysisPanel(wx.Panel):
         h_line = remaining * 0.45
 
         self._draw_macro_indicators(gc, 0, 0, w, h_macro, margin, is_compact)
-        self._draw_bar_chart(gc, 0, h_macro, w, h_bar, margin, is_compact)
+        if self.projects:
+            # In comparison mode, replace bar chart with stacked cost evolution
+            self._draw_stacked_cost_evolution(gc, 0, h_macro, w, h_bar, margin, is_compact)
+        else:
+            self._draw_bar_chart(gc, 0, h_macro, w, h_bar, margin, is_compact)
         self._draw_line_chart(gc, 0, h_macro + h_bar, w, h_line, margin, is_compact)
 
     def _draw_macro_indicators(self, gc, x, y, w, h, margin, is_compact=False):
@@ -280,6 +288,193 @@ class GraphAnalysisPanel(wx.Panel):
                     pct_text = f"({pct:.0f}%)"
                     pw, ph = gc.GetTextExtent(pct_text)
                     gc.DrawText(pct_text, bx + (bar_w - pw) / 2, by_f - vh - ph - 4)
+
+    def _draw_stacked_cost_evolution(self, gc, x, y, w, h, margin, is_compact=False):
+        """Draw stacked cost evolution across quantities for multiple offers (projects).
+        
+        X-axis: Quantities
+        Y-axis: Cumulative cost per piece (€/pc)
+        Stacked operations with different colors per operation
+        Overlaid projects with different line styles
+        """
+        qty_str = self.qty_choice.GetStringSelection()
+        if not qty_str:
+            gc.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL), wx.Colour(150, 150, 150))
+            text = "Aucune quantité définie"
+            tw, th = gc.GetTextExtent(text)
+            gc.DrawText(text, x + (w - tw) / 2, y + h / 2)
+            return
+
+        if not self.projects:
+            return
+
+        # Get common quantities from all projects
+        all_qtys = set()
+        for proj in self.projects:
+            all_qtys.update(proj.sale_quantities)
+        qtys = sorted(list(all_qtys))
+
+        if not qtys:
+            return
+
+        # Collect all unique operations across all projects
+        all_ops_codes = {}
+        for proj in self.projects:
+            for op in proj.operations:
+                if op.code not in all_ops_codes:
+                    all_ops_codes[op.code] = op
+
+        ops_list = list(all_ops_codes.values())
+        if not ops_list:
+            return
+
+        from domain.calculator import Calculator
+        from domain.cost import CostType
+
+        # Build data: for each project, for each quantity, cumulative costs per operation
+        projects_data = []
+        max_cost = 0
+
+        for proj in self.projects:
+            qty_data = []
+            for qty in qtys:
+                # Stack costs per operation
+                cumulative_costs = []
+                cumsum = 0.0
+                for op_code in [op.code for op in ops_list]:
+                    op = None
+                    for o in proj.operations:
+                        if o.code == op_code:
+                            op = o
+                            break
+                    
+                    if op:
+                        op_unit_cost = 0.0
+                        for cost in op._get_active_costs():
+                            res = Calculator.calculate_item(cost, qty)
+                            op_unit_cost += res.unit_sale_price
+                        cumsum += op_unit_cost
+                        cumulative_costs.append(cumsum)
+                    else:
+                        cumulative_costs.append(cumsum)  # Same as previous
+
+                qty_data.append(cumulative_costs)
+                if cumsum > max_cost:
+                    max_cost = cumsum
+
+            projects_data.append((proj.name or proj.reference, qty_data))
+
+        if max_cost == 0:
+            max_cost = 1
+
+        chart_w = w - 2 * margin
+        chart_h = h - margin - 20
+
+        # Title
+        title_font = 8 if is_compact else 10
+        gc.SetFont(wx.Font(title_font, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD), wx.Colour(50, 50, 50))
+        title = "Évol. Coûts Empilés" if is_compact else "Évolution des Coûts par Opération (€/pièce)"
+        gc.DrawText(title, margin, y + 2)
+
+        # Grid
+        if not is_compact:
+            gc.SetPen(wx.Pen(wx.Colour(240, 240, 240), 1))
+            for i in range(3):
+                gy = y + h - margin - (i + 1) * (chart_h / 3)
+                gc.StrokeLine(margin, gy, margin + chart_w, gy)
+
+        # Axes
+        gc.SetPen(wx.Pen(wx.Colour(180, 180, 180), 1))
+        gc.StrokeLine(margin, y + h - margin, margin + chart_w, y + h - margin)
+        gc.StrokeLine(margin, y + 15, margin, y + h - margin)
+
+        # Operation colors - Colorblind-safe palette (Tol palette adapted)
+        # Darker shades for better line contrast while maintaining accessibility
+        op_colors = [
+            wx.Colour(0, 102, 204),      # Dark Blue
+            wx.Colour(204, 85, 0),        # Dark Orange (burnt orange)
+            wx.Colour(0, 153, 102),       # Dark Teal/Green
+            wx.Colour(153, 51, 102),      # Dark Magenta
+            wx.Colour(153, 102, 0),       # Dark Brown/Gold
+            wx.Colour(102, 102, 153),     # Dark Purple-Gray
+            wx.Colour(102, 0, 102),       # Deep Purple
+            wx.Colour(204, 0, 102),       # Dark Crimson
+        ]
+
+        # Project line styles (solid/dashed)
+        project_styles = [
+            ("solid", 2),
+            ("dashed", 2),
+            ("dotted", 2),
+        ]
+
+        # Draw each project's stacked lines
+        for proj_idx, (proj_name, qty_data) in enumerate(projects_data):
+            style_name, line_width = project_styles[proj_idx % len(project_styles)]
+            
+            # For each operation, draw a line that goes through all quantities
+            for op_idx, op_code in enumerate([op.code for op in ops_list]):
+                color = op_colors[op_idx % len(op_colors)]
+                
+                # Adjust transparency/brightness for overlay effect
+                if proj_idx > 0:
+                    # Slightly fade non-first projects
+                    color = wx.Colour(
+                        min(255, int(color.Red() * 0.85)),
+                        min(255, int(color.Green() * 0.85)),
+                        min(255, int(color.Blue() * 0.85))
+                    )
+
+                # Build path for this operation across all quantities
+                path = gc.CreatePath()
+                first_point = True
+
+                for q_idx, qty in enumerate(qtys):
+                    if q_idx < len(qty_data) and op_idx < len(qty_data[q_idx]):
+                        cost_val = qty_data[q_idx][op_idx]
+                        px = margin + (q_idx / (len(qtys) - 1) if len(qtys) > 1 else 0.5) * chart_w
+                        py = y + h - margin - (cost_val / max_cost) * chart_h
+
+                        if first_point:
+                            path.MoveToPoint(px, py)
+                            first_point = False
+                        else:
+                            path.AddLineToPoint(px, py)
+
+                # Draw path
+                if style_name == "solid":
+                    gc.SetPen(wx.Pen(color, line_width))
+                elif style_name == "dashed":
+                    gc.SetPen(wx.Pen(color, line_width, wx.PENSTYLE_SHORT_DASH))
+                else:  # dotted
+                    gc.SetPen(wx.Pen(color, line_width, wx.PENSTYLE_DOT))
+
+                gc.StrokePath(path)
+
+        # Quantity labels
+        label_font = 6 if is_compact else 7
+        gc.SetFont(wx.Font(label_font, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD), wx.Colour(80, 80, 80))
+        for q_idx, qty in enumerate(qtys):
+            px = margin + (q_idx / (len(qtys) - 1) if len(qtys) > 1 else 0.5) * chart_w
+            q_text = f"Q{qty}"
+            qw, qh = gc.GetTextExtent(q_text)
+            gc.DrawText(q_text, px - qw / 2, y + h - margin + 3)
+
+        # Legend for operations
+        if not is_compact:
+            legend_x = margin + chart_w - 100
+            legend_y = y + 15
+            gc.SetFont(wx.Font(6, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL), wx.Colour(60, 60, 60))
+            
+            for op_idx, op_code in enumerate([op.code for op in ops_list]):
+                if op_idx > 4:  # Limit legend to first 5 operations
+                    break
+                color = op_colors[op_idx % len(op_colors)]
+                gc.SetBrush(wx.Brush(color))
+                gc.SetPen(wx.TRANSPARENT_PEN)
+                gc.DrawRectangle(legend_x, legend_y + op_idx * 15, 8, 8)
+                gc.SetFont(wx.Font(6, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL), wx.Colour(60, 60, 60))
+                gc.DrawText(f"Op {op_code[:3]}", legend_x + 12, legend_y + op_idx * 15)
 
     def _draw_line_chart(self, gc, x, y, w, h, margin, is_compact=False):
         qtys = sorted(self.project.sale_quantities)

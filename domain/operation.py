@@ -3,6 +3,7 @@ from typing import Dict
 from .cost import CostItem, CostType, PricingStructure, PricingType
 
 SUBCONTRACTING_TYPOLOGY = "Sous-traitance"
+TOOLING_TYPOLOGY = "OUTILLAGE"
 
 @dataclass
 class Operation:
@@ -10,14 +11,23 @@ class Operation:
     label: str
     typology: str = ""
     comment: str = ""
+    template_id: int | None = None
+    template_name: str = ""
+    template_snapshot: dict = field(default_factory=dict)
+    template_drift_score: float = 0.0
     costs: Dict[str, CostItem] = field(default_factory=dict)
     total_pieces: int = 1  # Number of pieces for per-piece calculations
 
     def _get_active_costs(self):
-        """Returns filtered costs if subcontracting, else all costs."""
+        """Returns costs used in piece-price calculations (excludes tooling)."""
+        non_tooling = [c for c in self.costs.values() if c.cost_type != CostType.TOOLING]
         if self.typology == SUBCONTRACTING_TYPOLOGY:
-            return [c for c in self.costs.values() if c.is_active]
-        return list(self.costs.values())
+            return [c for c in non_tooling if c.is_active]
+        return non_tooling
+
+    def get_tooling_costs(self):
+        """Returns tooling lines (not included in piece-price calculations)."""
+        return [c for c in self.costs.values() if c.cost_type == CostType.TOOLING]
 
     def total_cost(self, quantity: int = None) -> float:
         """Calculate the unit base cost (aggregate of all cost items)"""

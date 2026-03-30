@@ -15,6 +15,8 @@ from infrastructure.indexer import Indexer
 from infrastructure.configuration import ConfigurationService
 from infrastructure.file_manager import FileManager
 from core.app_icon import get_icon_path, load_icon_from_sheet
+from domain.quote_validator import QuoteValidator
+from infrastructure.template_manager import TemplateManager
 
 
 
@@ -38,6 +40,7 @@ class MainFrame(wx.Frame):
         self.db = Database()
         self.indexer = Indexer(self.db)
         self.config = ConfigurationService.get_instance()
+        self.template_manager = TemplateManager(self.db)
         
         self._build_ui()
         self._create_menu_bar()
@@ -100,6 +103,7 @@ class MainFrame(wx.Frame):
         
         # Onglet 1 : Éditeur de structure
         self.editor_panel = OperationCostEditorPanel(self.notebook)
+        self.editor_panel.set_database(self.db)
         self.notebook.AddPage(self.editor_panel, "Structure et Coûts")
         
         # Onglet 2 : Tarif de vente
@@ -191,7 +195,7 @@ class MainFrame(wx.Frame):
         """Réinitialise avec un nouveau projet"""
         if wx.MessageBox("Créer un nouveau projet ? Les modifications non enregistrées seront perdues.", 
                         "Nouveau projet", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
-            new_project = Project(name="Nouveau projet", reference="", client="")
+            new_project = Project(name="Nouveau projet", reference="", client="", mwq_uuid=FileManager.generate_uuid())
             self._update_app_with_project(new_project)
             self.current_path = None
             self._dirty = False
@@ -301,8 +305,11 @@ class MainFrame(wx.Frame):
                 return False
 
         try:
+            # Recompute diagnostic report on each save.
+            self.project.validation_report = QuoteValidator.validate(self.project)
             PersistenceService.save_project(self.project, self.current_path)
             self.indexer.index_file(self.current_path)
+            self.template_manager.record_project_template_usage(self.project)
             self._dirty = False
             return True
         except Exception as e:

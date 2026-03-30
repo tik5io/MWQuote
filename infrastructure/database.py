@@ -32,6 +32,7 @@ class Database:
                 client TEXT,
                 filepath TEXT UNIQUE,
                 drawing_filename TEXT,
+                preview_filename TEXT,
                 last_modified TIMESTAMP,
                 status TEXT DEFAULT 'En construction',
                 min_qty INTEGER,
@@ -48,6 +49,7 @@ class Database:
 
         # Migration for existing DBs: Add new columns if they don't exist
         migrations = [
+            "ALTER TABLE projects ADD COLUMN preview_filename TEXT",
             "ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'En construction'",
             "ALTER TABLE projects ADD COLUMN min_qty INTEGER",
             "ALTER TABLE projects ADD COLUMN max_qty INTEGER",
@@ -76,6 +78,66 @@ class Database:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_mwq_uuid ON projects(mwq_uuid)")
         except:
             pass
+
+        # Templates table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS operation_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                typology TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                tags TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_operation_templates_typology ON operation_templates(typology)")
+        except:
+            pass
+
+        # Per-project template usage history
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS project_template_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                project_uuid TEXT NOT NULL,
+                op_index INTEGER NOT NULL,
+                drift_score REAL DEFAULT 0.0,
+                used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (template_id) REFERENCES operation_templates (id) ON DELETE CASCADE
+            )
+        ''')
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_template_usage_project_uuid ON project_template_usage(project_uuid)")
+        except:
+            pass
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_template_usage_template_id ON project_template_usage(template_id)")
+        except:
+            pass
+
+        # Analytics cache tables
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS analytics_project_cache (
+                project_id INTEGER PRIMARY KEY,
+                last_modified TEXT,
+                client TEXT,
+                status TEXT,
+                exports_count INTEGER,
+                avg_margin REAL,
+                typology_margins_json TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS analytics_cache_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
 
         # Tags table (many-to-one with projects)
         cursor.execute('''
@@ -138,9 +200,9 @@ class Database:
                     cursor.execute('''
                         UPDATE projects
                         SET filepath = ?, is_missing = 0, name = ?, reference = ?, client = ?,
-                            drawing_filename = ?, last_modified = ?, status = ?, min_qty = ?, max_qty = ?,
+                            drawing_filename = ?, preview_filename = ?, last_modified = ?, status = ?, min_qty = ?, max_qty = ?,
                             date_construction = ?, date_finalisee = ?, date_transmise = ?, content_hash = ?,
-                        devis_refs = ?
+                        devis_refs = ?, mwq_uuid = ?
                     WHERE id = ?
                 ''', (
                     filepath,
@@ -148,6 +210,7 @@ class Database:
                     project_data['reference'],
                     project_data['client'],
                     project_data['drawing_filename'],
+                    project_data.get('preview_filename'),
                     datetime.datetime.now(),
                     project_data.get('status', 'En construction'),
                     project_data.get('min_qty'),
@@ -157,6 +220,7 @@ class Database:
                     project_data.get('date_transmise'),
                     content_hash,
                     ", ".join([f"{e['devis_ref']} ({e['date']})" for e in project_data.get('export_history', [])]),
+                    project_data.get('mwq_uuid'),
                     project_id
                 ))
                     # Clear existing tags and re-insert
@@ -170,16 +234,17 @@ class Database:
                 project_id = row[0]
                 cursor.execute('''
                     UPDATE projects
-                    SET name = ?, reference = ?, client = ?, drawing_filename = ?,
+                    SET name = ?, reference = ?, client = ?, drawing_filename = ?, preview_filename = ?,
                         last_modified = ?, status = ?, min_qty = ?, max_qty = ?,
                         date_construction = ?, date_finalisee = ?, date_transmise = ?,
-                        content_hash = ?, is_missing = 0, devis_refs = ?
+                        content_hash = ?, is_missing = 0, devis_refs = ?, mwq_uuid = ?
                     WHERE id = ?
                 ''', (
                     project_data['name'],
                     project_data['reference'],
                     project_data['client'],
                     project_data['drawing_filename'],
+                    project_data.get('preview_filename'),
                     datetime.datetime.now(),
                     project_data.get('status', 'En construction'),
                     project_data.get('min_qty'),
@@ -189,22 +254,24 @@ class Database:
                     project_data.get('date_transmise'),
                     content_hash,
                     ", ".join([f"{e['devis_ref']} ({e['date']})" for e in project_data.get('export_history', [])]),
+                    project_data.get('mwq_uuid'),
                     project_id
                 ))
                 # Clear existing tags to re-insert
                 cursor.execute('DELETE FROM tags WHERE project_id = ?', (project_id,))
             else:
                 cursor.execute('''
-                    INSERT INTO projects (name, reference, client, filepath, drawing_filename, last_modified,
+                    INSERT INTO projects (name, reference, client, filepath, drawing_filename, preview_filename, last_modified,
                                         status, min_qty, max_qty, date_construction, date_finalisee, date_transmise,
-                    content_hash, is_missing, devis_refs)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                    content_hash, is_missing, devis_refs, mwq_uuid)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             ''', (
                 project_data['name'],
                 project_data['reference'],
                 project_data['client'],
                 filepath,
                 project_data['drawing_filename'],
+                project_data.get('preview_filename'),
                 datetime.datetime.now(),
                 project_data.get('status', 'En construction'),
                 project_data.get('min_qty'),
@@ -213,7 +280,8 @@ class Database:
                 project_data.get('date_finalisee'),
                 project_data.get('date_transmise'),
                 content_hash,
-                ", ".join([f"{e['devis_ref']} ({e['date']})" for e in project_data.get('export_history', [])])
+                ", ".join([f"{e['devis_ref']} ({e['date']})" for e in project_data.get('export_history', [])]),
+                project_data.get('mwq_uuid')
             ))
                 project_id = cursor.lastrowid
 

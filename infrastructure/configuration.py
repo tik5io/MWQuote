@@ -74,7 +74,10 @@ class ConfigurationService:
             print(f"Error saving config: {e}")
 
     def get_cost_typologies(self) -> List[str]:
-        return self.config.get("cost_typologies", [])
+        typologies = list(self.config.get("cost_typologies", []))
+        if "OUTILLAGE" not in typologies:
+            typologies.append("OUTILLAGE")
+        return typologies
 
     def get_project_tags(self) -> List[str]:
         return self.config.get("project_tags", [])

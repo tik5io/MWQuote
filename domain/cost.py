@@ -8,6 +8,7 @@ class CostType(Enum):
     MATERIAL = "Matière"
     SUBCONTRACTING = "Sous-traitance"
     INTERNAL_OPERATION = "Opération interne"
+    TOOLING = "Outillage"
 
 class PricingType(Enum):
     PER_UNIT = "Par unité"  # Prix par unité (pièce, mètre, kg, etc.)
@@ -105,6 +106,7 @@ class CostItem:
     documents: List[Document] = field(default_factory=list)
     # Common
     comment: Optional[str] = None
+    client_comment: Optional[str] = None
     supplier_quote_ref: Optional[str] = None # Still useful for the reference ID
     is_active: bool = True  # Used for multi-offer subcontracting
 

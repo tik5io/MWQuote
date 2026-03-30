@@ -3,6 +3,7 @@ import os
 import sys
 import shutil
 import io
+import json
 from datetime import date
 from infrastructure.database import Database
 from infrastructure.indexer import Indexer
@@ -11,9 +12,12 @@ from infrastructure.configuration import ConfigurationService
 from infrastructure.migration_service import MigrationService
 from infrastructure.file_manager import FileManager
 from infrastructure.export_service import ExportService
+from infrastructure.template_manager import TemplateManager
+from infrastructure.analytics_service import AnalyticsService
 from infrastructure.logging_service import get_module_logger
 from ui.panels.search_project_details_panel import ProjectDetailsPanel
 from ui.panels.comparison_panel import ComparisonPanel
+from ui.frames.business_dashboard_frame import BusinessDashboardFrame
 import QuoteEditor_app
 from core.app_icon import get_icon_path, load_icon_from_sheet, get_template_path
 
@@ -29,6 +33,8 @@ class SearchFrame(wx.Frame):
         self.config = ConfigurationService.get_instance()
         self.migration_service = MigrationService(self.db)
         self.export_service = ExportService(db=self.db)
+        self.template_manager = TemplateManager(self.db)
+        self.analytics_service = AnalyticsService(self.db)
         
         self._build_ui()
         self._build_menu()
@@ -114,16 +120,17 @@ class SearchFrame(wx.Frame):
         
         # Left: Result List
         self.list_ctrl = wx.ListCtrl(self.splitter, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
-        self.list_ctrl.InsertColumn(0, "Référence", width=120)
-        self.list_ctrl.InsertColumn(1, "Client", width=120)
-        self.list_ctrl.InsertColumn(2, "Status", width=100)
-        self.list_ctrl.InsertColumn(3, "Q. Min", width=60)
-        self.list_ctrl.InsertColumn(4, "Q. Max", width=60)
-        self.list_ctrl.InsertColumn(5, "Date Proj.", width=90)
-        self.list_ctrl.InsertColumn(6, "Jalons", width=180)
-        self.list_ctrl.InsertColumn(7, "Devis", width=120)
-        self.list_ctrl.InsertColumn(8, "Tags", width=100)
-        self.list_ctrl.InsertColumn(9, "Modifié le", width=110)
+        self.list_ctrl.InsertColumn(0, "Preview", width=70)
+        self.list_ctrl.InsertColumn(1, "Référence", width=120)
+        self.list_ctrl.InsertColumn(2, "Client", width=120)
+        self.list_ctrl.InsertColumn(3, "Status", width=100)
+        self.list_ctrl.InsertColumn(4, "Q. Min", width=60)
+        self.list_ctrl.InsertColumn(5, "Q. Max", width=60)
+        self.list_ctrl.InsertColumn(6, "Date Proj.", width=90)
+        self.list_ctrl.InsertColumn(7, "Jalons", width=180)
+        self.list_ctrl.InsertColumn(8, "Devis", width=120)
+        self.list_ctrl.InsertColumn(9, "Tags", width=100)
+        self.list_ctrl.InsertColumn(10, "Modifié le", width=110)
         
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_item_selected)
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_item_activated)
@@ -167,6 +174,7 @@ class SearchFrame(wx.Frame):
     def _build_menu(self):
         menubar = wx.MenuBar()
         file_menu = wx.Menu()
+        business_menu = wx.Menu()
 
         m_new = file_menu.Append(wx.ID_NEW, "&Nouvelle Quote\tCtrl+N", "Créer une nouvelle quote")
         m_open = file_menu.Append(wx.ID_OPEN, "&Ouvrir...\tCtrl+O", "Ouvrir un fichier .mwq")
@@ -176,12 +184,19 @@ class SearchFrame(wx.Frame):
         m_exit = file_menu.Append(wx.ID_EXIT, "Quitter", "Quitter l'application")
 
         menubar.Append(file_menu, "&Fichier")
+        m_business_dashboard = business_menu.Append(wx.ID_ANY, "Dashboard Business", "Ouvrir le dashboard analytics")
+        menubar.Append(business_menu, "&Business")
         self.SetMenuBar(menubar)
 
         self.Bind(wx.EVT_MENU, self._on_new_quote, m_new)
         self.Bind(wx.EVT_MENU, self._on_open_file, m_open)
         self.Bind(wx.EVT_MENU, self._on_maintenance, m_maintenance)
+        self.Bind(wx.EVT_MENU, self._on_open_business_dashboard, m_business_dashboard)
         self.Bind(wx.EVT_MENU, lambda e: self.Close(), m_exit)
+
+    def _on_open_business_dashboard(self, event):
+        frame = BusinessDashboardFrame(self, self.analytics_service)
+        frame.Show()
 
     def _on_new_quote(self, event):
         """Créer une nouvelle quote et ouvrir l'éditeur (modal)"""
@@ -217,6 +232,8 @@ class SearchFrame(wx.Frame):
     def _on_col_click(self, event):
         col_idx = event.GetColumn()
         col_name = self.list_ctrl.GetColumn(col_idx).GetText()
+        if col_name == "Preview":
+            return
         
         if self.sort_col == col_name:
             self.sort_ascending = not self.sort_ascending
@@ -242,25 +259,27 @@ class SearchFrame(wx.Frame):
         self.project_map = {} # Map index to project data
         
         for i, p in enumerate(results):
-            idx = self.list_ctrl.InsertItem(i, str(p.get('reference') or ""))
-            self.list_ctrl.SetItem(idx, 1, str(p.get('client') or ""))
-            self.list_ctrl.SetItem(idx, 2, str(p.get('status') or ""))
-            self.list_ctrl.SetItem(idx, 3, str(p.get('min_qty', 0)))
-            self.list_ctrl.SetItem(idx, 4, str(p.get('max_qty', 0)))
-            self.list_ctrl.SetItem(idx, 5, str(p.get('project_date') or ""))
+            has_preview = bool(p.get('preview_filename'))
+            idx = self.list_ctrl.InsertItem(i, "Oui" if has_preview else "")
+            self.list_ctrl.SetItem(idx, 1, str(p.get('reference') or ""))
+            self.list_ctrl.SetItem(idx, 2, str(p.get('client') or ""))
+            self.list_ctrl.SetItem(idx, 3, str(p.get('status') or ""))
+            self.list_ctrl.SetItem(idx, 4, str(p.get('min_qty', 0)))
+            self.list_ctrl.SetItem(idx, 5, str(p.get('max_qty', 0)))
+            self.list_ctrl.SetItem(idx, 6, str(p.get('project_date') or ""))
             
             # Format milestones summary
             ms = []
             if p.get('date_construction'): ms.append(f"🏗️{p['date_construction']}")
             if p.get('date_finalisee'): ms.append(f"🏁{p['date_finalisee']}")
             if p.get('date_transmise'): ms.append(f"📧{p['date_transmise']}")
-            self.list_ctrl.SetItem(idx, 6, " | ".join(ms))
+            self.list_ctrl.SetItem(idx, 7, " | ".join(ms))
 
-            self.list_ctrl.SetItem(idx, 7, str(p.get('devis_refs') or ""))
-            self.list_ctrl.SetItem(idx, 8, ", ".join(p.get('tags', [])))
+            self.list_ctrl.SetItem(idx, 8, str(p.get('devis_refs') or ""))
+            self.list_ctrl.SetItem(idx, 9, ", ".join(p.get('tags', [])))
             # Format timestamp roughly
             ts = p.get('last_modified', "")
-            self.list_ctrl.SetItem(idx, 9, str(ts)[:16]) # Simplified timestamp
+            self.list_ctrl.SetItem(idx, 10, str(ts)[:16]) # Simplified timestamp
             
             self.project_map[idx] = p
             
@@ -580,6 +599,8 @@ class SearchFrame(wx.Frame):
             "Relocaliser les fichiers vers un nouveau dossier...",
             "Réconcilier fichiers déplacés",
             "Vérifier l'intégrité de la base",
+            "Générer templates depuis export IA...",
+            "Exporter dataset IA anonymisé (clients masqués)",
             "Supprimer liens vers fichiers inexistants",
             "NETTOYAGE COMPLET (RAZ de l'index)"
         ])
@@ -613,6 +634,10 @@ class SearchFrame(wx.Frame):
                     wx.MessageBox("La base de données est saine (Integrity OK).", "Vérification", wx.OK | wx.ICON_INFORMATION)
                 else:
                     wx.MessageBox("ERREUR : La base de données est corrompue !", "Alerte", wx.OK | wx.ICON_ERROR)
+            elif selected == "Générer templates depuis export IA...":
+                self._on_generate_templates_from_ai_export()
+            elif selected == "Exporter dataset IA anonymisé (clients masqués)":
+                self._on_export_ai_dataset()
             elif selected == "Supprimer liens vers fichiers inexistants":
                 removed = self.db.delete_missing_files()
                 self._refresh_list()
@@ -623,6 +648,187 @@ class SearchFrame(wx.Frame):
                     self.db.clear_all()
                     self._refresh_list()
                     wx.MessageBox("Base de données réinitialisée (VACUUM OK).", "Succès", wx.OK | wx.ICON_INFORMATION)
+
+    def _on_export_ai_dataset(self):
+        """Export anonymized project dataset for AI analysis (business + software usage)."""
+        rows = self.db.search_projects(include_missing=False, sort_by="last_modified", sort_order="DESC")
+        if not rows:
+            wx.MessageBox("Aucun projet indexé à exporter.", "Information", wx.OK | wx.ICON_INFORMATION)
+            return
+
+        default_name = f"mwquote_ai_dataset_{date.today().strftime('%Y%m%d')}.json"
+        with wx.FileDialog(
+            self,
+            "Exporter dataset IA anonymisé",
+            wildcard="Fichier JSON (*.json)|*.json",
+            defaultFile=default_name,
+            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
+        ) as dlg:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            output_path = dlg.GetPath()
+
+        # Stable pseudonymization labels by client value ordering.
+        unique_clients = sorted({(r.get("client") or "").strip() for r in rows})
+        client_map = {}
+        for idx, client_name in enumerate(unique_clients, 1):
+            client_map[client_name] = f"CLIENT_{idx:04d}" if client_name else "CLIENT_0000"
+
+        exported = []
+        skipped = []
+
+        for row in rows:
+            filepath = row.get("filepath")
+            try:
+                project = PersistenceService.load_project(filepath)
+            except Exception as e:
+                skipped.append({"filepath": filepath, "error": str(e)})
+                continue
+
+            anon_client = client_map.get((row.get("client") or "").strip(), "CLIENT_0000")
+            record = self._build_ai_project_record(project, row, anon_client)
+            exported.append(record)
+
+        payload = {
+            "schema_version": "1.0",
+            "generated_on": date.today().isoformat(),
+            "description": (
+                "Dataset MWQuote anonymise pour analyses IA: comprehension usage logiciel, "
+                "analyse metier des couts, recommandations evolutions produit."
+            ),
+            "anonymization": {
+                "clients_masked": True,
+                "project_uuid_preserved": True,
+                "note": "Le champ client est pseudonymise; les UUID projet sont conserves."
+            },
+            "stats": {
+                "indexed_projects": len(rows),
+                "exported_projects": len(exported),
+                "skipped_projects": len(skipped),
+                "unique_clients_anonymized": len(unique_clients),
+            },
+            "projects": exported,
+            "skipped": skipped,
+        }
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"AI dataset exported: {output_path} | exported={len(exported)} skipped={len(skipped)}")
+        msg = (
+            f"Export IA terminé.\n\n"
+            f"Fichier : {output_path}\n"
+            f"Projets exportés : {len(exported)}\n"
+            f"Projets ignorés : {len(skipped)}"
+        )
+        wx.MessageBox(msg, "Export IA anonymisé", wx.OK | wx.ICON_INFORMATION)
+
+    def _on_generate_templates_from_ai_export(self):
+        with wx.FileDialog(
+            self,
+            "Sélectionner un export IA JSON",
+            wildcard="Fichier JSON (*.json)|*.json",
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST
+        ) as dlg:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            path = dlg.GetPath()
+        try:
+            created = self.template_manager.create_initial_templates_from_ai_dataset(path)
+            wx.MessageBox(f"Templates générés: {created}", "Templates IA", wx.OK | wx.ICON_INFORMATION)
+        except Exception as e:
+            wx.MessageBox(f"Erreur génération templates IA:\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
+
+    def _build_ai_project_record(self, project, db_row, anon_client):
+        """Create one anonymized project payload with usage + cost structure."""
+        def enum_val(v):
+            return getattr(v, "value", v)
+
+        def tiers_payload(pricing):
+            tiers = []
+            if not pricing:
+                return tiers
+            for t in (pricing.tiers or []):
+                tiers.append({
+                    "min_quantity": t.min_quantity,
+                    "unit_price": t.unit_price,
+                    "description": t.description,
+                })
+            return tiers
+
+        operations_payload = []
+        cost_type_counts = {}
+        total_costs = 0
+
+        for op_idx, op in enumerate(project.operations, 1):
+            costs_payload = []
+            for cost_key, cost in op.costs.items():
+                total_costs += 1
+                ctype = enum_val(cost.cost_type)
+                cost_type_counts[ctype] = cost_type_counts.get(ctype, 0) + 1
+
+                pricing = cost.pricing
+                costs_payload.append({
+                    "key": cost_key,
+                    "name": cost.name,
+                    "cost_type": ctype,
+                    "is_active": bool(getattr(cost, "is_active", True)),
+                    "method_comment": cost.comment or "",
+                    "client_comment": getattr(cost, "client_comment", "") or "",
+                    "supplier_quote_ref": cost.supplier_quote_ref or "",
+                    "conversion_type": enum_val(cost.conversion_type),
+                    "conversion_factor": cost.conversion_factor,
+                    "margin_rate": cost.margin_rate,
+                    "quantity_per_piece": cost.quantity_per_piece,
+                    "quantity_per_piece_is_inverse": bool(cost.quantity_per_piece_is_inverse),
+                    "internal_operation": {
+                        "fixed_time_h": cost.fixed_time,
+                        "per_piece_time_h": cost.per_piece_time,
+                        "hourly_rate": cost.hourly_rate,
+                    },
+                    "pricing": {
+                        "pricing_type": enum_val(pricing.pricing_type) if pricing else None,
+                        "unit": pricing.unit if pricing else None,
+                        "fixed_price": pricing.fixed_price if pricing else 0.0,
+                        "unit_price": pricing.unit_price if pricing else 0.0,
+                        "tiers": tiers_payload(pricing),
+                    },
+                    "documents_count": len(getattr(cost, "documents", []) or []),
+                })
+
+            operations_payload.append({
+                "index": op_idx,
+                "code": op.code,
+                "label": op.label,
+                "typology": op.typology,
+                "comment": op.comment or "",
+                "costs_count": len(op.costs),
+                "costs": costs_payload,
+            })
+
+        project_uuid = db_row.get("mwq_uuid") or getattr(project, "mwq_uuid", None) or ""
+        return {
+            "project_uuid": project_uuid,
+            "reference": project.reference,
+            "name": project.name,
+            "client_anonymized": anon_client,
+            "status": project.status,
+            "project_date": project.project_date,
+            "status_dates": dict(project.status_dates or {}),
+            "tags": list(project.tags or []),
+            "sale_quantities": list(project.sale_quantities or []),
+            "volume_margin_rates": dict(project.volume_margin_rates or {}),
+            "export_history_count": len(project.export_history or []),
+            "devis_refs_db": db_row.get("devis_refs") or "",
+            "last_modified_db": db_row.get("last_modified"),
+            "usage_summary": {
+                "operations_count": len(project.operations),
+                "costs_count": total_costs,
+                "cost_type_counts": cost_type_counts,
+            },
+            "validation_report": getattr(project, "validation_report", {}) or {},
+            "operations": operations_payload,
+        }
 
     def _do_index(self, folder: str, migrate: bool = False):
         """Helper to run indexing on a folder."""

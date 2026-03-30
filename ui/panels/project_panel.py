@@ -2,15 +2,19 @@
 import wx
 import wx.adv
 import base64
-import os
-import tempfile
+import io
+import time
 from infrastructure.configuration import ConfigurationService
+from domain.document import Document
 
 from ui.dialogs.quantity_manager_dialog import QuantityManagerDialog
 from ui.components.document_list_panel import DocumentListPanel
 
+
 class ProjectPanel(wx.Panel):
     """Panel for managing project-level information and drawings."""
+    PREVIEW_WIDTH = 320
+    PREVIEW_HEIGHT = 180
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -48,7 +52,36 @@ class ProjectPanel(wx.Panel):
         self.doc_list = DocumentListPanel(self, label="Plans de la pièce (PDF) :")
         self.doc_list.on_changed = self.save_project
         main_sizer.Add(self.doc_list, 0, wx.EXPAND | wx.ALL, 10)
-        
+
+        # Project preview image (clipboard import), collapsible to save vertical space
+        self.preview_pane = wx.CollapsiblePane(self, label="Preview du projet")
+        self.preview_pane.Bind(wx.EVT_COLLAPSIBLEPANE_CHANGED, self._on_preview_pane_toggled)
+        preview_parent = self.preview_pane.GetPane()
+
+        preview_box = wx.StaticBoxSizer(wx.VERTICAL, preview_parent, "Image de Preview (Miniature)")
+        self.preview_bitmap = wx.StaticBitmap(preview_parent, bitmap=wx.Bitmap(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT))
+        self.preview_bitmap.SetMinSize((self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT))
+        self.preview_bitmap.SetBitmap(self._build_blank_preview_bitmap())
+        preview_box.Add(self.preview_bitmap, 0, wx.ALIGN_CENTER | wx.ALL, 5)
+
+        button_bar = wx.BoxSizer(wx.HORIZONTAL)
+        self.collect_preview_btn = wx.Button(preview_parent, label="Coller depuis presse-papiers")
+        self.collect_preview_btn.Bind(wx.EVT_BUTTON, self._on_collect_preview)
+        button_bar.Add(self.collect_preview_btn, 0, wx.ALL, 2)
+
+        self.clear_preview_btn = wx.Button(preview_parent, label="Supprimer la preview")
+        self.clear_preview_btn.Bind(wx.EVT_BUTTON, self._on_clear_preview)
+        button_bar.Add(self.clear_preview_btn, 0, wx.ALL, 2)
+
+        preview_box.Add(button_bar, 0, wx.ALIGN_CENTER | wx.ALL, 5)
+
+        preview_sizer = wx.BoxSizer(wx.VERTICAL)
+        preview_sizer.Add(preview_box, 0, wx.EXPAND | wx.ALL, 5)
+        preview_parent.SetSizer(preview_sizer)
+
+        main_sizer.Add(self.preview_pane, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        self.preview_pane.Collapse(False)
+
         # Quantities Section
         qty_sizer = wx.BoxSizer(wx.HORIZONTAL)
         qty_sizer.Add(wx.StaticText(self, label="Quantités de vente:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
@@ -121,6 +154,7 @@ class ProjectPanel(wx.Panel):
                     pass  # Invalid date format, leave empty
             
             self.doc_list.load_documents(project.documents)
+            self._set_preview_bitmap(getattr(project, 'preview_image', None))
             self._update_qty_ui()
             self._update_tags_ui()
             
@@ -155,6 +189,151 @@ class ProjectPanel(wx.Panel):
             
             if hasattr(self, "on_project_changed") and self.on_project_changed:
                 self.on_project_changed()
+
+    def _on_preview_pane_toggled(self, event):
+        self.Layout()
+        top = self.GetTopLevelParent()
+        if top:
+            top.Layout()
+        event.Skip()
+
+    def _build_blank_preview_bitmap(self):
+        blank = wx.Bitmap(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT)
+        dc = wx.MemoryDC(blank)
+        dc.SetBackground(wx.Brush(wx.Colour(240, 240, 240)))
+        dc.Clear()
+        dc.SelectObject(wx.NullBitmap)
+        return blank
+
+    def _bitmap_from_preview_data(self, preview_data_b64):
+        raw = base64.b64decode(preview_data_b64)
+        try:
+            stream = wx.MemoryInputStream(raw)
+            image = wx.Image(stream, wx.BITMAP_TYPE_ANY)
+            if not image.IsOk():
+                raise ValueError("wx image invalid")
+            return self._bitmap_from_wx_image(image)
+        except Exception as wx_exc:
+            try:
+                from PIL import Image
+                with Image.open(io.BytesIO(raw)) as pil_image:
+                    return self._bitmap_from_pil_image(pil_image.copy())
+            except Exception as pil_exc:
+                raise ValueError(f"Impossible de decoder la preview (wx: {wx_exc}, PIL: {pil_exc})")
+
+    def _bitmap_from_wx_image(self, image):
+        src_w = max(1, image.GetWidth())
+        src_h = max(1, image.GetHeight())
+        ratio = min(self.PREVIEW_WIDTH / src_w, self.PREVIEW_HEIGHT / src_h)
+        dst_w = max(1, int(src_w * ratio))
+        dst_h = max(1, int(src_h * ratio))
+        scaled = image.Scale(dst_w, dst_h, wx.IMAGE_QUALITY_HIGH)
+
+        canvas = self._build_blank_preview_bitmap()
+        dc = wx.MemoryDC(canvas)
+        x = (self.PREVIEW_WIDTH - dst_w) // 2
+        y = (self.PREVIEW_HEIGHT - dst_h) // 2
+        dc.DrawBitmap(wx.Bitmap(scaled), x, y, True)
+        dc.SelectObject(wx.NullBitmap)
+        return canvas
+
+    def _bitmap_from_pil_image(self, pil_image):
+        if pil_image.mode != "RGBA":
+            pil_image = pil_image.convert("RGBA")
+        src_w, src_h = pil_image.size
+        src_w = max(1, src_w)
+        src_h = max(1, src_h)
+        ratio = min(self.PREVIEW_WIDTH / src_w, self.PREVIEW_HEIGHT / src_h)
+        dst_w = max(1, int(src_w * ratio))
+        dst_h = max(1, int(src_h * ratio))
+        resized = pil_image.resize((dst_w, dst_h))
+
+        from PIL import Image
+        canvas = Image.new("RGBA", (self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT), (240, 240, 240, 255))
+        x = (self.PREVIEW_WIDTH - dst_w) // 2
+        y = (self.PREVIEW_HEIGHT - dst_h) // 2
+        canvas.alpha_composite(resized, (x, y))
+
+        return wx.Bitmap.FromBufferRGBA(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT, bytes(canvas.tobytes()))
+
+    def _set_preview_bitmap(self, preview_doc):
+        """Set a small preview image in the UI."""
+        if preview_doc and getattr(preview_doc, 'data', None):
+            try:
+                self.preview_bitmap.SetBitmap(self._bitmap_from_preview_data(preview_doc.data))
+            except Exception as exc:
+                self.preview_bitmap.SetBitmap(self._build_blank_preview_bitmap())
+                wx.MessageBox(f"Erreur rendu preview: {exc}", "Preview", wx.OK | wx.ICON_WARNING)
+        else:
+            self.preview_bitmap.SetBitmap(self._build_blank_preview_bitmap())
+        self.preview_bitmap.Refresh()
+
+    @staticmethod
+    def _pil_image_to_png_bytes(pil_image):
+        if pil_image.mode not in ("RGB", "RGBA"):
+            pil_image = pil_image.convert("RGBA")
+        output = io.BytesIO()
+        pil_image.save(output, format="PNG", optimize=True)
+        return output.getvalue()
+
+    def _on_collect_preview(self, event):
+        """Collect an image from clipboard and store it as PNG."""
+        if not self.project:
+            return
+
+        try:
+            from PIL import ImageGrab
+        except ImportError:
+            wx.MessageBox(
+                "Pillow est requis pour la récupération depuis le presse-papiers.\n"
+                "Installez-le avec: pip install Pillow",
+                "Dépendance manquante",
+                wx.OK | wx.ICON_ERROR
+            )
+            return
+
+        img = ImageGrab.grabclipboard()
+        if img is None:
+            wx.MessageBox(
+                "Aucune image trouvée dans le presse-papiers.\n"
+                "Faites une capture d'écran puis réessayez.",
+                "Presse-papiers vide",
+                wx.OK | wx.ICON_WARNING
+            )
+            return
+        if isinstance(img, list):
+            wx.MessageBox(
+                "Le presse-papiers contient des fichiers, pas une image bitmap.",
+                "Contenu non supporté",
+                wx.OK | wx.ICON_WARNING
+            )
+            return
+
+        try:
+            self.preview_bitmap.SetBitmap(self._bitmap_from_pil_image(img))
+            self.preview_bitmap.Refresh()
+        except Exception as exc:
+            wx.MessageBox(f"Image collée mais affichage impossible: {exc}", "Preview", wx.OK | wx.ICON_WARNING)
+
+        try:
+            raw_bytes = self._pil_image_to_png_bytes(img)
+        except Exception as exc:
+            wx.MessageBox(f"Impossible de convertir l'image: {exc}", "Erreur", wx.OK | wx.ICON_ERROR)
+            return
+
+        self.project.preview_image = Document(
+            filename=f"preview_{int(time.time())}.png",
+            data=base64.b64encode(raw_bytes).decode('utf-8')
+        )
+        self._set_preview_bitmap(self.project.preview_image)
+        self.save_project()
+
+    def _on_clear_preview(self, event):
+        if not self.project:
+            return
+        self.project.preview_image = None
+        self._set_preview_bitmap(None)
+        self.save_project()
 
 
     def _update_tags_ui(self):

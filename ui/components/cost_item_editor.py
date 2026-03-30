@@ -163,7 +163,12 @@ class CostItemEditor(wx.Panel):
             self._refresh_dynamic_fields()
             self._update_quantity_reminder()
             self.result_panel.load_item(cost, project)
-            self.result_panel.Show()
+            if cost.cost_type == CostType.TOOLING:
+                self.analysis_scroll.Hide()
+                self.result_panel.Hide()
+            else:
+                self.analysis_scroll.Show()
+                self.result_panel.Show()
             self.main_h_sizer.Layout()
         finally:
             self._is_loading = False
@@ -175,7 +180,7 @@ class CostItemEditor(wx.Panel):
             if ct.value == new_val:
                 self.cost.cost_type = ct
                 break
-        if self.cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING] and not self.cost.pricing:
+        if self.cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING, CostType.TOOLING] and not self.cost.pricing:
             self.cost.pricing = PricingStructure(PricingType.PER_UNIT)
         self._refresh_dynamic_fields()
 
@@ -286,31 +291,54 @@ class CostItemEditor(wx.Panel):
                 self._add_detailed_time_row(op_grid, "Temps/pièce:", cost.per_piece_time, "piece")
                 self.dynamic_sizer.Add(op_sizer, 0, wx.EXPAND | wx.BOTTOM, 10)
 
-        # SECTION 3: PARAMÈTRES COMMERCIAUX & MÉTHODE (Common to all types)
-        comm_sizer, comm_grid = create_box_grid("PARAMÈTRES COMMERCIAUX")
-        
-        comm_grid.Add(wx.StaticText(self.left_column, label="Type de conversion:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.prop_conv_type = wx.Choice(self.left_column, choices=[ct.value for ct in ConversionType])
-        self.prop_conv_type.SetStringSelection(cost.conversion_type.value)
-        self.prop_conv_type.Bind(wx.EVT_CHOICE, lambda e: self.notify_change())
-        comm_grid.Add(self.prop_conv_type, 1, wx.EXPAND)
+            case CostType.TOOLING:
+                if saved_doc_list:
+                    saved_doc_list.Destroy()
+                tool_sizer, tool_grid = create_box_grid("OUTILLAGE")
+                if not cost.pricing:
+                    cost.pricing = PricingStructure(PricingType.PER_UNIT)
+                tool_grid.Add(wx.StaticText(self.left_column, label="Montant outillage (€):"), 0, wx.ALIGN_CENTER_VERTICAL)
+                self.prop_tool_price = wx.TextCtrl(self.left_column, value=f"{cost.pricing.fixed_price:.2f}")
+                self.prop_tool_price.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
+                tool_grid.Add(self.prop_tool_price, 1, wx.EXPAND)
 
-        comm_grid.Add(wx.StaticText(self.left_column, label="Facteur conversion:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.prop_conv_factor = wx.TextCtrl(self.left_column, value=f"{cost.conversion_factor:.4f}")
-        self.prop_conv_factor.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
-        comm_grid.Add(self.prop_conv_factor, 1, wx.EXPAND)
+                tool_grid.Add(wx.StaticText(self.left_column, label="Commentaire Méthode Interne:"), 0, wx.TOP, 5)
+                self.prop_comment = wx.TextCtrl(self.left_column, value=cost.comment or "", style=wx.TE_MULTILINE, size=(-1, 60))
+                self.prop_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
+                tool_grid.Add(self.prop_comment, 1, wx.EXPAND | wx.TOP, 5)
 
-        comm_grid.Add(wx.StaticText(self.left_column, label="Marge (%):"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.prop_margin_rate = wx.TextCtrl(self.left_column, value=f"{cost.margin_rate:.1f}")
-        self.prop_margin_rate.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
-        comm_grid.Add(self.prop_margin_rate, 1, wx.EXPAND)
+                tool_grid.Add(wx.StaticText(self.left_column, label="Commentaire Client (devis):"), 0, wx.TOP, 5)
+                self.prop_client_comment = wx.TextCtrl(self.left_column, value=cost.client_comment or "", style=wx.TE_MULTILINE, size=(-1, 60))
+                self.prop_client_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
+                tool_grid.Add(self.prop_client_comment, 1, wx.EXPAND | wx.TOP, 5)
+                self.dynamic_sizer.Add(tool_sizer, 0, wx.EXPAND)
 
-        comm_grid.Add(wx.StaticText(self.left_column, label="Commentaire Méthode:"), 0, wx.TOP, 5)
-        self.prop_comment = wx.TextCtrl(self.left_column, value=cost.comment or "", style=wx.TE_MULTILINE, size=(-1, 60))
-        self.prop_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
-        comm_grid.Add(self.prop_comment, 1, wx.EXPAND | wx.TOP, 5)
+        # SECTION 3: PARAMÈTRES COMMERCIAUX & MÉTHODE (non outillage)
+        if cost.cost_type != CostType.TOOLING:
+            comm_sizer, comm_grid = create_box_grid("PARAMÈTRES COMMERCIAUX")
+            
+            comm_grid.Add(wx.StaticText(self.left_column, label="Type de conversion:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.prop_conv_type = wx.Choice(self.left_column, choices=[ct.value for ct in ConversionType])
+            self.prop_conv_type.SetStringSelection(cost.conversion_type.value)
+            self.prop_conv_type.Bind(wx.EVT_CHOICE, lambda e: self.notify_change())
+            comm_grid.Add(self.prop_conv_type, 1, wx.EXPAND)
 
-        self.dynamic_sizer.Add(comm_sizer, 0, wx.EXPAND)
+            comm_grid.Add(wx.StaticText(self.left_column, label="Facteur conversion:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.prop_conv_factor = wx.TextCtrl(self.left_column, value=f"{cost.conversion_factor:.4f}")
+            self.prop_conv_factor.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
+            comm_grid.Add(self.prop_conv_factor, 1, wx.EXPAND)
+
+            comm_grid.Add(wx.StaticText(self.left_column, label="Marge (%):"), 0, wx.ALIGN_CENTER_VERTICAL)
+            self.prop_margin_rate = wx.TextCtrl(self.left_column, value=f"{cost.margin_rate:.1f}")
+            self.prop_margin_rate.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
+            comm_grid.Add(self.prop_margin_rate, 1, wx.EXPAND)
+
+            comm_grid.Add(wx.StaticText(self.left_column, label="Commentaire Méthode:"), 0, wx.TOP, 5)
+            self.prop_comment = wx.TextCtrl(self.left_column, value=cost.comment or "", style=wx.TE_MULTILINE, size=(-1, 60))
+            self.prop_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
+            comm_grid.Add(self.prop_comment, 1, wx.EXPAND | wx.TOP, 5)
+
+            self.dynamic_sizer.Add(comm_sizer, 0, wx.EXPAND)
         
         self.left_sizer.Layout()
         self.right_sizer.Layout()
@@ -411,13 +439,27 @@ class CostItemEditor(wx.Panel):
                     self.cost.pricing.unit_price = 0
                     self.cost.pricing.fixed_price = 0
                     self.cost.pricing.tiers = []
+            elif self.cost.cost_type == CostType.TOOLING:
+                if not self.cost.pricing:
+                    self.cost.pricing = PricingStructure(PricingType.PER_UNIT)
+                self.cost.pricing.fixed_price = safe_float(self.prop_tool_price.GetValue())
+                self.cost.pricing.unit_price = 0.0
+                self.cost.pricing.tiers = []
+                self.cost.pricing.unit = "forfait"
+                self.cost.comment = self.prop_comment.GetValue()
+                if hasattr(self, 'prop_client_comment'):
+                    self.cost.client_comment = self.prop_client_comment.GetValue()
+                self.cost.margin_rate = 0.0
+                self.cost.conversion_factor = 1.0
+                self.cost.conversion_type = ConversionType.MULTIPLY
             
-            self.cost.conversion_factor = safe_float(self.prop_conv_factor.GetValue(), 1.0)
-            self.cost.margin_rate = safe_float(self.prop_margin_rate.GetValue())
-            self.cost.comment = self.prop_comment.GetValue()
-            cv_val = self.prop_conv_type.GetStringSelection()
+            if self.cost.cost_type != CostType.TOOLING:
+                self.cost.conversion_factor = safe_float(self.prop_conv_factor.GetValue(), 1.0)
+                self.cost.margin_rate = safe_float(self.prop_margin_rate.GetValue())
+                self.cost.comment = self.prop_comment.GetValue()
+                cv_val = self.prop_conv_type.GetStringSelection()
+                self.cost.conversion_type = ConversionType.MULTIPLY if cv_val == "Multiplier" else ConversionType.DIVIDE
             self.cost.is_active = self.prop_active.GetValue()
-            self.cost.conversion_type = ConversionType.MULTIPLY if cv_val == "Multiplier" else ConversionType.DIVIDE
             logger.debug(
                 f"apply_changes done | name={self.cost.name} type={self.cost.cost_type} "
                 f"conv={self.cost.conversion_type.value} factor={self.cost.conversion_factor} "
@@ -455,6 +497,11 @@ class CostItemEditor(wx.Panel):
                 temp_pricing.unit_price = safe_float(str(self._ctrl_get_value('prop_unit_price', temp_pricing.unit_price)))
                 if self.cost.pricing:
                     temp_pricing.tiers = self.cost.pricing.tiers
+            elif self.cost.cost_type == CostType.TOOLING:
+                temp_pricing.fixed_price = safe_float(str(self._ctrl_get_value('prop_tool_price', 0.0)))
+                temp_pricing.unit_price = 0.0
+                temp_pricing.tiers = []
+                temp_pricing.unit = "forfait"
             else:
                 # Internal operation: ensure pricing is empty for preview
                 temp_pricing.unit_price = 0
@@ -462,12 +509,18 @@ class CostItemEditor(wx.Panel):
                 temp_pricing.tiers = []
 
             temp_cost = CostItem(self._ctrl_get_value('prop_name', "", strip=True), self.cost.cost_type, temp_pricing)
-            temp_cost.conversion_factor = safe_float(str(self._ctrl_get_value('prop_conv_factor', 1.0)), 1.0)
-            temp_cost.margin_rate = safe_float(str(self._ctrl_get_value('prop_margin_rate', 0.0)))
             temp_cost.comment = self._ctrl_get_value('prop_comment', "")
-            cv_val = self._ctrl_get_selection('prop_conv_type', "Multiplier")
             temp_cost.is_active = bool(self._ctrl_get_value('prop_active', False))
-            temp_cost.conversion_type = ConversionType.MULTIPLY if cv_val == "Multiplier" else ConversionType.DIVIDE
+            if self.cost.cost_type == CostType.TOOLING:
+                temp_cost.client_comment = self._ctrl_get_value('prop_client_comment', "")
+                temp_cost.margin_rate = 0.0
+                temp_cost.conversion_factor = 1.0
+                temp_cost.conversion_type = ConversionType.MULTIPLY
+            else:
+                temp_cost.conversion_factor = safe_float(str(self._ctrl_get_value('prop_conv_factor', 1.0)), 1.0)
+                temp_cost.margin_rate = safe_float(str(self._ctrl_get_value('prop_margin_rate', 0.0)))
+                cv_val = self._ctrl_get_selection('prop_conv_type', "Multiplier")
+                temp_cost.conversion_type = ConversionType.MULTIPLY if cv_val == "Multiplier" else ConversionType.DIVIDE
             
             # Include quantity per piece
             temp_cost.quantity_per_piece = safe_float(str(self._ctrl_get_value('prop_qty_per_piece', 1.0)), 1.0)
@@ -484,6 +537,12 @@ class CostItemEditor(wx.Panel):
                 temp_cost.hourly_rate = safe_float(str(self._ctrl_get_value('prop_internal_rate', 0.0)))
                 temp_cost.fixed_time = safe_float(str(self._ctrl_get_value('prop_fixed_h', 0.0)))
                 temp_cost.per_piece_time = safe_float(str(self._ctrl_get_value('prop_piece_h', 0.0)))
+
+            if self.cost.cost_type == CostType.TOOLING:
+                self.analysis_scroll.Hide()
+                self.result_panel.Hide()
+                self.on_changed(temp_cost)
+                return
 
             # Update dynamic consumption label context if needed
             if hasattr(self, 'prop_unit'):
@@ -516,6 +575,9 @@ class CostItemEditor(wx.Panel):
         self.analysis_sizer.Clear(True)
         cost = preview_cost or self.cost
         if not cost or not self.project:
+            self.analysis_scroll.Hide()
+            return
+        if cost.cost_type == CostType.TOOLING:
             self.analysis_scroll.Hide()
             return
 

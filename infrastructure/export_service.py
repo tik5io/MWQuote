@@ -5,6 +5,8 @@ from copy import copy
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from infrastructure.logging_service import get_module_logger
+from domain.cost import CostType
+from domain.quote_validator import QuoteValidator
 
 logger = get_module_logger("ExportService", "export_project.log")
 
@@ -152,6 +154,9 @@ class ExportService:
             
             if devis_ref is None:
                 devis_ref = self.get_devis_reference(project)
+
+            # Keep a fresh diagnostic snapshot during exports too.
+            project.validation_report = QuoteValidator.validate(project)
             
             # THE CRITICAL STEP: Add to history NOW so placeholders use THE SAME reference
             project.export_history.append({
@@ -169,18 +174,10 @@ class ExportService:
             qty_count = len(quantities)
             qty_processed = 0
 
-            # 2. Préparer le commentaire global (toutes les opérations)
-            all_comments = []
-            
-            # Add drawing reference header
-            drawing_ref = project.drawing_filename if hasattr(project, 'drawing_filename') and project.drawing_filename else "N/A"
-            all_comments.append(f"Référence du plan chiffré : {drawing_ref}")
-            all_comments.append("")  # Empty line for separation
-            
-            for op in project.operations:
-                if op.comment and op.comment.strip():
-                    all_comments.append(op.comment.strip())
-            global_comment = "\n".join(all_comments)
+            # 2. Préparer le commentaire global dans l'ordre des opérations:
+            # commentaires d'opérations + commentaires méthode des coûts outillage.
+            global_comment = self._build_global_comment(project)
+            tooling_lines = self._get_tooling_lines(project)
 
             logger.info(f"Export {qty_count} quantités vers le template.")
 
@@ -218,6 +215,11 @@ class ExportService:
             for row_idx in rows_to_hide:
                 ws.row_dimensions[row_idx].hidden = True
 
+            # 5.b Gestion des lignes outillage (TOOL_REF / QTY_REF / PTOOL_REF)
+            self._fill_tooling_rows(ws, tooling_lines, project, global_comment)
+            # 5.c Sécurise COMMENT_REF (certaines manipulations de lignes peuvent l'effacer)
+            self._fill_comment_placeholders(ws, global_comment)
+
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             wb.save(output_path)
 
@@ -252,12 +254,13 @@ class ExportService:
             val = cell.value
             if not isinstance(val, str):
                 continue
+            token = val.strip()
                 
-            if val == "PART_REF":
+            if token == "PART_REF":
                 cell.value = self._get_part_reference(project)
-            elif val == "QTY_REF":
+            elif token == "QTY_REF":
                 cell.value = qty
-            elif val == "PU_REF":
+            elif token == "PU_REF":
                 pu = project.total_price(qty)
                 cell.value = pu
                 cell.number_format = '€ #,##0.00'
@@ -273,22 +276,25 @@ class ExportService:
         val = cell.value
         if not isinstance(val, str):
             return
+        token = val.strip()
 
         # Determine reference date (used for both DATE_REF and VALIDITY_REF)
         # Always use today's date at the moment of export
         ref_date = datetime.date.today()
 
-        if val == "DEVIS_REF":
+        if token == "DEVIS_REF":
             # Use the reference pre-calculated for this export session
             if hasattr(self, '_current_export_ref'):
                 cell.value = self._current_export_ref
             else:
                 cell.value = self.get_devis_reference(project)
-        elif val == "PART_REF":
+        elif token == "PART_REF":
             cell.value = self._get_part_reference(project)
-        elif val == "DATE_REF":
+        elif token == "CUSTOMER_NAME":
+            cell.value = getattr(project, "client", "")
+        elif token == "DATE_REF":
             cell.value = ref_date.strftime("%d/%m/%Y")
-        elif val == "VALIDITY_REF":
+        elif token == "VALIDITY_REF":
             # Add exactly 1 month to ref_date
             month = ref_date.month - 1 + 1
             year = ref_date.year + month // 12
@@ -296,13 +302,117 @@ class ExportService:
             day = min(ref_date.day, calendar.monthrange(year, month)[1])
             date_validity = datetime.date(year, month, day)
             cell.value = date_validity.strftime("%d/%m/%Y")
-        elif val == "COMMENT_REF":
+        elif token == "COMMENT_REF":
             cell.value = global_comment
 
     def _clear_row_placeholders(self, ws, row_idx):
         """Efface les placeholders d'une ligne avant de la masquer."""
-        placeholders = ["PART_REF", "QTY_REF", "PU_REF", "DEVIS_REF", "DATE_REF", "VALIDITY_REF", "COMMENT_REF"]
+        placeholders = [
+            "PART_REF", "QTY_REF", "PU_REF",
+            "TOOL_REF", "PTOOL_REF",
+            "DEVIS_REF", "DATE_REF", "VALIDITY_REF", "CUSTOMER_NAME"
+        ]
         for col_idx in range(1, ws.max_column + 1):
             cell = ws.cell(row=row_idx, column=col_idx)
-            if cell.value in placeholders:
+            if isinstance(cell.value, str) and cell.value.strip() in placeholders:
                 cell.value = ""
+
+    def _get_tooling_lines(self, project):
+        lines = []
+        for op in getattr(project, "operations", []):
+            for cost in getattr(op, "costs", {}).values():
+                if getattr(cost, "cost_type", None) == CostType.TOOLING:
+                    lines.append(cost)
+        return lines
+
+    def _find_rows_with_placeholder(self, ws, placeholder):
+        rows = []
+        for row_idx in range(1, ws.max_row + 1):
+            for col_idx in range(1, ws.max_column + 1):
+                val = ws.cell(row=row_idx, column=col_idx).value
+                if isinstance(val, str) and val.strip() == placeholder:
+                    rows.append(row_idx)
+                    break
+        return rows
+
+    def _clone_row_format(self, ws, source_row, target_row):
+        for col_idx in range(1, ws.max_column + 1):
+            src = ws.cell(row=source_row, column=col_idx)
+            dst = ws.cell(row=target_row, column=col_idx)
+            dst.value = src.value
+            dst.font = copy(src.font)
+            dst.fill = copy(src.fill)
+            dst.border = copy(src.border)
+            dst.alignment = copy(src.alignment)
+            dst.number_format = src.number_format
+            dst.protection = copy(src.protection)
+        src_dim = ws.row_dimensions[source_row]
+        ws.row_dimensions[target_row].height = src_dim.height
+        ws.row_dimensions[target_row].hidden = src_dim.hidden
+
+    def _fill_tool_row(self, ws, row_idx, tool_cost, project, global_comment):
+        price = 0.0
+        if getattr(tool_cost, "pricing", None):
+            # Outillage exporté en ligne unitaire x1: on utilise le montant de lot.
+            price = float(getattr(tool_cost.pricing, "fixed_price", 0.0) or 0.0)
+
+        for col_idx in range(1, ws.max_column + 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            val = cell.value
+            if not isinstance(val, str):
+                continue
+            token = val.strip()
+            if token == "TOOL_REF":
+                cell.value = "OUTILLAGE"
+            elif token == "QTY_REF":
+                cell.value = 1
+            elif token == "PTOOL_REF":
+                cell.value = price
+                cell.number_format = '€ #,##0.00'
+            else:
+                self._replace_cell_placeholder(cell, project, global_comment)
+        ws.row_dimensions[row_idx].hidden = False
+
+    def _fill_tooling_rows(self, ws, tooling_lines, project, global_comment):
+        tool_rows = self._find_rows_with_placeholder(ws, "TOOL_REF")
+        if not tool_rows:
+            return
+
+        template_row = tool_rows[0]
+        if not tooling_lines:
+            for row_idx in tool_rows:
+                self._clear_row_placeholders(ws, row_idx)
+                ws.row_dimensions[row_idx].hidden = True
+            return
+
+        extra_needed = max(0, len(tooling_lines) - 1)
+        if extra_needed > 0:
+            ws.insert_rows(template_row + 1, amount=extra_needed)
+            for i in range(extra_needed):
+                self._clone_row_format(ws, template_row, template_row + 1 + i)
+
+        for idx, tool_cost in enumerate(tooling_lines):
+            self._fill_tool_row(ws, template_row + idx, tool_cost, project, global_comment)
+
+    def _fill_comment_placeholders(self, ws, global_comment):
+        replaced = 0
+        for row_idx in range(1, ws.max_row + 1):
+            for col_idx in range(1, ws.max_column + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                if isinstance(cell.value, str) and cell.value.strip() == "COMMENT_REF":
+                    cell.value = global_comment
+                    replaced += 1
+        logger.info(f"COMMENT_REF replaced count: {replaced}")
+
+    def _build_global_comment(self, project):
+        lines = []
+        for op in getattr(project, "operations", []):
+            if getattr(op, "comment", None) and op.comment.strip():
+                lines.append(op.comment.strip())
+            for cost in getattr(op, "costs", {}).values():
+                if getattr(cost, "cost_type", None) == CostType.TOOLING:
+                    if getattr(cost, "client_comment", None) and cost.client_comment.strip():
+                        lines.append(cost.client_comment.strip())
+        text = "\n".join(lines) if lines else "-"
+        logger.info(f"Global comment lines: {len(lines)}")
+        return text
