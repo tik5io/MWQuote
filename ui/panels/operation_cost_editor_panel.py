@@ -26,10 +26,11 @@ class OperationCostEditorPanel(wx.Panel):
         self._build_ui()
 
     def _build_ui(self):
-        main_sizer = wx.BoxSizer(wx.HORIZONTAL)
-
+        # Use a SplitterWindow for resizable panels
+        splitter = wx.SplitterWindow(self, style=wx.SP_3D | wx.SP_LIVE_UPDATE)
+        
         # Left side: Tree
-        left_panel = wx.Panel(self)
+        left_panel = wx.Panel(splitter)
         left_sizer = wx.BoxSizer(wx.VERTICAL)
 
         self.tree = wx.TreeCtrl(left_panel, style=wx.TR_HAS_BUTTONS | wx.TR_EDIT_LABELS)
@@ -65,26 +66,15 @@ class OperationCostEditorPanel(wx.Panel):
         left_panel.SetSizer(left_sizer)
 
         # Right side: Detail Panel
-        self.properties_panel = wx.ScrolledWindow(self, style=wx.VSCROLL)
+        self.properties_panel = wx.ScrolledWindow(splitter, style=wx.VSCROLL)
         self.properties_panel.SetScrollRate(0, 20)
         self.properties_content = wx.BoxSizer(wx.VERTICAL)
         
         # 1. Operation specific properties
         self.op_props_panel = wx.Panel(self.properties_panel)
         self.op_props_sizer = wx.BoxSizer(wx.VERTICAL) # Changed to self.op_props_sizer
-        grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=10)
-        grid.AddGrowableCol(1, 1)
-        grid.Add(wx.StaticText(self.op_props_panel, label="Typologie:"))
-        self.prop_op_typology = wx.Choice(self.op_props_panel, choices=self.config_service.get_cost_typologies())
-        grid.Add(self.prop_op_typology, 1, wx.EXPAND)
-        grid.Add(wx.StaticText(self.op_props_panel, label="Libellé:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.prop_op_label = wx.TextCtrl(self.op_props_panel)
-        grid.Add(self.prop_op_label, 1, wx.EXPAND)
         
-        grid.Add(wx.StaticText(self.op_props_panel, label="Commentaire Chiffrage:"), 0, wx.TOP, 5)
-        self.prop_op_comment = wx.TextCtrl(self.op_props_panel, style=wx.TE_MULTILINE, size=(-1, 100))
-        grid.Add(self.prop_op_comment, 1, wx.EXPAND)
-
+        # Template status and actions at the top
         self.template_status = wx.StaticText(self.op_props_panel, label="")
         self.template_status.SetForegroundColour(wx.Colour(170, 90, 0))
         self.op_props_sizer.Add(self.template_status, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
@@ -97,9 +87,26 @@ class OperationCostEditorPanel(wx.Panel):
         self.btn_refresh_drift.Bind(wx.EVT_BUTTON, self._on_recalc_template_drift)
         tpl_actions.Add(self.btn_refresh_drift, 0)
         self.op_props_sizer.Add(tpl_actions, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
-
-        self.op_props_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 10) # Changed to self.op_props_sizer
         
+        # Fixed grid for Typology and Label
+        grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=10)
+        grid.AddGrowableCol(1, 1)
+        grid.Add(wx.StaticText(self.op_props_panel, label="Typologie:"))
+        self.prop_op_typology = wx.Choice(self.op_props_panel, choices=self.config_service.get_cost_typologies())
+        grid.Add(self.prop_op_typology, 1, wx.EXPAND)
+        grid.Add(wx.StaticText(self.op_props_panel, label="Libellé:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.prop_op_label = wx.TextCtrl(self.op_props_panel)
+        grid.Add(self.prop_op_label, 1, wx.EXPAND)
+        
+        self.op_props_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
+        
+        # Expandable comment field
+        comment_sizer = wx.BoxSizer(wx.VERTICAL)
+        comment_sizer.Add(wx.StaticText(self.op_props_panel, label="Commentaire Chiffrage:"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 5)
+        self.prop_op_comment = wx.TextCtrl(self.op_props_panel, style=wx.TE_MULTILINE | wx.TE_WORDWRAP)
+        comment_sizer.Add(self.prop_op_comment, 1, wx.EXPAND | wx.ALL, 5)
+        self.op_props_sizer.Add(comment_sizer, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
         # Summary
         self.result_panel = ResultSummaryPanel(self.op_props_panel)
         self.op_props_sizer.Add(self.result_panel, 0, wx.EXPAND | wx.ALL, 5)
@@ -131,8 +138,16 @@ class OperationCostEditorPanel(wx.Panel):
 
         self.properties_panel.SetSizer(self.properties_content)
 
-        main_sizer.Add(left_panel, 1, wx.EXPAND)
-        main_sizer.Add(self.properties_panel, 2, wx.EXPAND)
+        # Split the window: left panel for tree, right panel for properties
+        # SplitVertically creates two panes left-right
+        splitter.SplitVertically(left_panel, self.properties_panel)
+        # Set the initial sash position (proportion of left side width)
+        splitter.SetSashPosition(300)  # ~300 pixels for the tree panel
+        splitter.SetMinimumPaneSize(200)  # Minimum size for each pane to allow resizing
+        
+        # Main sizer for the panel
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        main_sizer.Add(splitter, 1, wx.EXPAND)
         self.SetSizer(main_sizer)
 
         self.tree.Bind(wx.EVT_TREE_SEL_CHANGED, self._on_selection_changed)

@@ -90,16 +90,23 @@ class MainFrame(wx.Frame):
 
     def _build_ui(self):
         """Construit l'interface utilisateur"""
-        # Panel principal
-        main_panel = wx.Panel(self)
-        main_sizer = wx.BoxSizer(wx.VERTICAL)
-
-        # Panel du projet en haut
-        self.project_panel = ProjectPanel(main_panel)
-        main_sizer.Add(self.project_panel, 0, wx.EXPAND | wx.ALL, 5)
-
+        # Use SplitterWindow for 2-column layout
+        splitter = wx.SplitterWindow(self, style=wx.SP_3D | wx.SP_LIVE_UPDATE)
+        
+        # Left column: Project information and preview
+        left_panel = wx.Panel(splitter)
+        left_sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        self.project_panel = ProjectPanel(left_panel)
+        left_sizer.Add(self.project_panel, 1, wx.EXPAND)
+        left_panel.SetSizer(left_sizer)
+        
+        # Right column: Notebook for editing tabs
+        right_panel = wx.Panel(splitter)
+        right_sizer = wx.BoxSizer(wx.VERTICAL)
+        
         # Notebook pour les onglets
-        self.notebook = wx.Notebook(main_panel)
+        self.notebook = wx.Notebook(right_panel)
         
         # Onglet 1 : Éditeur de structure
         self.editor_panel = OperationCostEditorPanel(self.notebook)
@@ -114,9 +121,13 @@ class MainFrame(wx.Frame):
         self.analysis_panel = GraphAnalysisPanel(self.notebook)
         self.notebook.AddPage(self.analysis_panel, "Analyse Graphique")
 
-        main_sizer.Add(self.notebook, 1, wx.EXPAND | wx.ALL, 5)
-
-        main_panel.SetSizer(main_sizer)
+        right_sizer.Add(self.notebook, 1, wx.EXPAND | wx.ALL, 5)
+        right_panel.SetSizer(right_sizer)
+        
+        # Split vertically: left for project info, right for editing tabs
+        splitter.SplitVertically(left_panel, right_panel)
+        splitter.SetSashPosition(400)  # ~400 pixels for left column
+        splitter.SetMinimumPaneSize(250)  # Minimum size for each pane
 
     def _connect_events(self):
         """Connecte les événements entre les panels"""

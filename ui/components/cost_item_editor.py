@@ -303,12 +303,12 @@ class CostItemEditor(wx.Panel):
                 tool_grid.Add(self.prop_tool_price, 1, wx.EXPAND)
 
                 tool_grid.Add(wx.StaticText(self.left_column, label="Commentaire Méthode Interne:"), 0, wx.TOP, 5)
-                self.prop_comment = wx.TextCtrl(self.left_column, value=cost.comment or "", style=wx.TE_MULTILINE, size=(-1, 60))
+                self.prop_comment = wx.TextCtrl(self.left_column, value=cost.comment or "", style=wx.TE_MULTILINE | wx.TE_WORDWRAP, size=(-1, 150))
                 self.prop_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
                 tool_grid.Add(self.prop_comment, 1, wx.EXPAND | wx.TOP, 5)
 
                 tool_grid.Add(wx.StaticText(self.left_column, label="Commentaire Client (devis):"), 0, wx.TOP, 5)
-                self.prop_client_comment = wx.TextCtrl(self.left_column, value=cost.client_comment or "", style=wx.TE_MULTILINE, size=(-1, 60))
+                self.prop_client_comment = wx.TextCtrl(self.left_column, value=cost.client_comment or "", style=wx.TE_MULTILINE | wx.TE_WORDWRAP, size=(-1, 150))
                 self.prop_client_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
                 tool_grid.Add(self.prop_client_comment, 1, wx.EXPAND | wx.TOP, 5)
                 self.dynamic_sizer.Add(tool_sizer, 0, wx.EXPAND)
@@ -334,7 +334,7 @@ class CostItemEditor(wx.Panel):
             comm_grid.Add(self.prop_margin_rate, 1, wx.EXPAND)
 
             comm_grid.Add(wx.StaticText(self.left_column, label="Commentaire Méthode:"), 0, wx.TOP, 5)
-            self.prop_comment = wx.TextCtrl(self.left_column, value=cost.comment or "", style=wx.TE_MULTILINE, size=(-1, 60))
+            self.prop_comment = wx.TextCtrl(self.left_column, value=cost.comment or "", style=wx.TE_MULTILINE | wx.TE_WORDWRAP, size=(-1, 150))
             self.prop_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
             comm_grid.Add(self.prop_comment, 1, wx.EXPAND | wx.TOP, 5)
 

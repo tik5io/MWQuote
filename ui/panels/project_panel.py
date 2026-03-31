@@ -95,22 +95,28 @@ class ProjectPanel(wx.Panel):
         
         main_sizer.Add(qty_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
-        # Milestones Section
-        ms_sizer = wx.StaticBoxSizer(wx.VERTICAL, self, "Suivi de l'Offre (Jalons)")
+        # Milestones Section - Collapsible
+        self.milestones_pane = wx.CollapsiblePane(self, label="Suivi de l'Offre (Jalons)")
+        self.milestones_pane.Bind(wx.EVT_COLLAPSIBLEPANE_CHANGED, self._on_milestones_pane_toggled)
+        milestones_parent = self.milestones_pane.GetPane()
+        
+        ms_sizer = wx.BoxSizer(wx.VERTICAL)
         
         status_box = wx.BoxSizer(wx.HORIZONTAL)
-        status_box.Add(wx.StaticText(self, label="Statut actuel :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
+        status_box.Add(wx.StaticText(milestones_parent, label="Statut actuel :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
         
-        self.status_choice = wx.Choice(self, choices=["En construction", "Finalisée", "Transmise"])
+        self.status_choice = wx.Choice(milestones_parent, choices=["En construction", "Finalisée", "Transmise"])
         self.status_choice.Bind(wx.EVT_CHOICE, self._on_status_changed)
         status_box.Add(self.status_choice, 1, wx.EXPAND)
         
         ms_sizer.Add(status_box, 0, wx.EXPAND | wx.ALL, 5)
         
-        self.milestone_info = wx.StaticText(self, label="")
+        self.milestone_info = wx.StaticText(milestones_parent, label="")
         ms_sizer.Add(self.milestone_info, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         
-        main_sizer.Add(ms_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        milestones_parent.SetSizer(ms_sizer)
+        main_sizer.Add(self.milestones_pane, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        self.milestones_pane.Collapse(False)
         
         # Tags Section
         tag_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -191,6 +197,13 @@ class ProjectPanel(wx.Panel):
                 self.on_project_changed()
 
     def _on_preview_pane_toggled(self, event):
+        self.Layout()
+        top = self.GetTopLevelParent()
+        if top:
+            top.Layout()
+        event.Skip()
+
+    def _on_milestones_pane_toggled(self, event):
         self.Layout()
         top = self.GetTopLevelParent()
         if top:
