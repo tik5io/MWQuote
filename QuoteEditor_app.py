@@ -44,7 +44,7 @@ def open_new_quote(parent_frame=None, parent_indexer=None):
     Returns:
         MainFrame: La fenêtre de l'éditeur créée
     """
-    new_project = Project(name="Nouveau Projet", reference="", client="")
+    new_project = Project(name="", reference="", client="")
     editor_frame = MainFrame(project=new_project, clear_logs=False, filepath=None)
 
     _setup_modal_behavior(editor_frame, parent_frame)

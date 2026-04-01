@@ -157,7 +157,7 @@ class ComparisonPanel(wx.Panel):
         self.smart_grid.AppendRows(len(base_qtys))
         
         for i, p in enumerate(self.projects):
-            self.smart_grid.SetColLabelValue(i, f"{p.name}\n({p.reference})")
+            self.smart_grid.SetColLabelValue(i, f"{p.display_name}")
         
         for i, q in enumerate(base_qtys):
             self.smart_grid.SetRowLabelValue(i, f"Qté: {q}")
@@ -196,8 +196,11 @@ class ComparisonPanel(wx.Panel):
                 val = "-"
                 # Note: Smart match also for metrics!
                 unit_p = p.total_price(qty)
-                if row_idx == 0: val = f"{p.name[:20]}...\n({p.reference})"
-                elif row_idx == 1: val = f"{unit_p * qty:.2f} €"
+                if row_idx == 0:
+                    display = p.display_name
+                    val = f"{display[:20]}" if len(display) > 20 else display
+                elif row_idx == 1:
+                    val = f"{unit_p * qty:.2f} €"
                 elif row_idx == 2 or row_idx == 3:
                     ps = 0; prod_s = 0
                     for op in p.operations:

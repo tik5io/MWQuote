@@ -4,7 +4,7 @@ import sys
 import shutil
 import io
 import json
-from datetime import date
+from datetime import date, datetime
 from infrastructure.database import Database
 from infrastructure.indexer import Indexer
 from infrastructure.persistence import PersistenceService
@@ -602,6 +602,8 @@ class SearchFrame(wx.Frame):
             "Générer templates depuis export IA...",
             "Exporter dataset IA anonymisé (clients masqués)",
             "Supprimer liens vers fichiers inexistants",
+            "📦 BACKUP DATABASE",
+            "📦 RESTORE FROM BACKUP",
             "NETTOYAGE COMPLET (RAZ de l'index)"
         ])
 
@@ -642,6 +644,10 @@ class SearchFrame(wx.Frame):
                 removed = self.db.delete_missing_files()
                 self._refresh_list()
                 wx.MessageBox(f"{removed} entrées obsolètes supprimées.", "Nettoyage fini", wx.OK | wx.ICON_INFORMATION)
+            elif selected == "📦 BACKUP DATABASE":
+                self._on_backup_database()
+            elif selected == "📦 RESTORE FROM BACKUP":
+                self._on_restore_database()
             elif selected == "NETTOYAGE COMPLET (RAZ de l'index)":
                 if wx.MessageBox("Voulez-vous vraiment TOUT EFFACER ? L'index devra être reconstruit.",
                                  "Confirmation RAZ", wx.YES_NO | wx.ICON_WARNING) == wx.YES:
@@ -1065,6 +1071,12 @@ class SearchFrame(wx.Frame):
                                   "Export vers fichier Excel")
         self.Bind(wx.EVT_MENU, self._on_quick_export_xlsx, export_item)
         
+        # Export Fabrication/Qualité (works with single selection only)
+        if selection_count == 1:
+            fab_export_item = menu.Append(wx.ID_ANY, "🏭 Exporter Fabrication/Qualité", 
+                                        "Export Excel avec trame de fabrication et commentaires")
+            self.Bind(wx.EVT_MENU, self._on_export_fabrication_quality, fab_export_item)
+        
         # Edit (only for single selection)
         if selection_count == 1:
             edit_item = menu.Append(wx.ID_ANY, "✎ Éditer\tCtrl+O", "Ouvrir dans l'éditeur")
@@ -1297,6 +1309,74 @@ class SearchFrame(wx.Frame):
                 wx.OK | wx.ICON_ERROR
             )
 
+    def _on_export_fabrication_quality(self, event):
+        """Export Fabrication/Qualité pour le projet sélectionné"""
+        idx = self.list_ctrl.GetFirstSelected()
+        if idx == -1:
+            return
+        
+        p_data = self.project_map.get(idx)
+        if not p_data:
+            return
+        
+        try:
+            # Load project
+            project = PersistenceService.load_project(p_data['filepath'])
+            
+            # Ask for output file
+            default_name = f"{getattr(project, 'reference', 'Projet')}_Fabrication_Qualite.xlsx"
+            with wx.FileDialog(
+                self, "Exporter Fabrication/Qualité",
+                defaultFile=default_name,
+                wildcard="Fichiers Excel (*.xlsx)|*.xlsx",
+                style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
+            ) as fileDialog:
+                if fileDialog.ShowModal() == wx.ID_CANCEL:
+                    return
+                
+                output_path = fileDialog.GetPath()
+            
+            # Show progress dialog
+            progress = wx.ProgressDialog(
+                "Export Fabrication/Qualité",
+                "Génération du document...",
+                maximum=100,
+                parent=self,
+                style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE
+            )
+            
+            try:
+                progress.Update(50, "Création du document Excel...")
+                
+                # Export
+                success = self.export_service.export_fabrication_quality(project, output_path)
+                
+                progress.Update(100)
+                
+                if success:
+                    # Open the file automatically (same logic as XLSX template export)
+                    try:
+                        os.startfile(output_path)
+                    except Exception as e:
+                        logger.warning(f"Impossible d'ouvrir le fichier automatiquement: {e}")
+                    
+                    wx.MessageBox(
+                        f"Export Fabrication/Qualité réussi !\n\nFichier : {output_path}",
+                        "Export réussi",
+                        wx.OK | wx.ICON_INFORMATION
+                    )
+                
+            finally:
+                progress.Destroy()
+                
+        except Exception as e:
+            logger.error(f"Fabrication/Quality export error: {e}", exc_info=True)
+            wx.MessageBox(
+                f"Erreur lors de l'export Fabrication/Qualité :\n{str(e)}",
+                "Erreur",
+                wx.OK | wx.ICON_ERROR
+            )
+
     def _on_context_edit(self, event):
         """Edit selected project from context menu"""
         idx = self.list_ctrl.GetFirstSelected()
@@ -1316,6 +1396,150 @@ class SearchFrame(wx.Frame):
         except Exception as e:
             wx.MessageBox(
                 f"Impossible d'ouvrir le projet: {e}",
+                "Erreur",
+                wx.OK | wx.ICON_ERROR
+            )
+
+    def _on_backup_database(self):
+        """Créer un backup complet: DB + dossier des projets en ZIP"""
+        root_folder = self.config.get_quotes_root_folder()
+        
+        if not root_folder:
+            wx.MessageBox(
+                "Le dossier racine des projets n'est pas défini.\n"
+                "Veuillez d'abord définir le dossier racine dans Maintenance > Définir/Changer le dossier racine.",
+                "Dossier racine manquant",
+                wx.OK | wx.ICON_WARNING
+            )
+            return
+        
+        # Proposer un nom par défaut avec date
+        from datetime import datetime
+        default_name = f"MWQuote_Backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        
+        with wx.FileDialog(
+            self,
+            "Sauvegarder le backup complet",
+            defaultFile=default_name,
+            wildcard="Fichiers ZIP (*.zip)|*.zip",
+            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
+        ) as fileDialog:
+            if fileDialog.ShowModal() == wx.ID_CANCEL:
+                return
+            
+            backup_path = fileDialog.GetPath()
+        
+        # Progress dialog
+        progress = wx.ProgressDialog(
+            "Création du backup",
+            "Compression de la base de données et des projets...",
+            maximum=100,
+            parent=self,
+            style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE
+        )
+        
+        try:
+            wx.BeginBusyCursor()
+            progress.Update(25, "Préparation...")
+            
+            self.db.backup_database_with_projects(backup_path, root_folder)
+            
+            progress.Update(100, "Backup terminé!")
+            wx.EndBusyCursor()
+            progress.Destroy()
+            
+            file_size_mb = os.path.getsize(backup_path) / (1024 * 1024)
+            
+            msg = (
+                f"✓ Backup créé avec succès!\n\n"
+                f"Fichier: {os.path.basename(backup_path)}\n"
+                f"Taille: {file_size_mb:.2f} MB\n"
+                f"Chemin: {backup_path}"
+            )
+            wx.MessageBox(msg, "Backup terminé", wx.OK | wx.ICON_INFORMATION)
+            logger.info(f"Backup créé: {backup_path}")
+            
+        except Exception as e:
+            wx.EndBusyCursor()
+            progress.Destroy()
+            logger.error(f"Erreur backup: {e}", exc_info=True)
+            wx.MessageBox(
+                f"Erreur lors du backup:\n{str(e)}",
+                "Erreur",
+                wx.OK | wx.ICON_ERROR
+            )
+
+    def _on_restore_database(self):
+        """Restaurer la base de données et les projets depuis un backup ZIP"""
+        root_folder = self.config.get_quotes_root_folder()
+        
+        # Proposer de sélectionner le fichier backup
+        with wx.FileDialog(
+            self,
+            "Sélectionner le fichier backup à restaurer",
+            wildcard="Fichiers ZIP (*.zip)|*.zip",
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST
+        ) as fileDialog:
+            if fileDialog.ShowModal() == wx.ID_CANCEL:
+                return
+            
+            backup_path = fileDialog.GetPath()
+        
+        # Confirmation avant restauration
+        msg = (
+            f"Vous êtes sur le point de restaurer depuis un backup.\n\n"
+            f"Fichier: {os.path.basename(backup_path)}\n\n"
+            f"⚠️  ATTENTION: Cette opération va remplacer:\n"
+            f"   • La base de données actuelle\n"
+            f"   • Les fichiers de projets\n\n"
+            f"Les données actuelles seront perdues si elles n'ont pas encore été sauvegardées.\n\n"
+            f"Êtes-vous sûr de vouloir continuer?"
+        )
+        
+        dlg = wx.MessageDialog(self, msg, "Confirmation Restore", wx.YES_NO | wx.ICON_WARNING)
+        if dlg.ShowModal() != wx.ID_YES:
+            dlg.Destroy()
+            return
+        dlg.Destroy()
+        
+        # Progress dialog
+        progress = wx.ProgressDialog(
+            "Restauration en cours",
+            "Extraction du backup...",
+            maximum=100,
+            parent=self,
+            style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE
+        )
+        
+        try:
+            wx.BeginBusyCursor()
+            progress.Update(25, "Extraction de la base de données...")
+            
+            self.db.restore_database(backup_path, root_folder)
+            
+            progress.Update(75, "Mise à jour de l'index...")
+            
+            # Re-index après restauration
+            self._refresh_list()
+            
+            progress.Update(100, "Restauration terminée!")
+            wx.EndBusyCursor()
+            progress.Destroy()
+            
+            wx.MessageBox(
+                f"✓ Restauration complétée avec succès!\n\n"
+                f"La base de données et les projets ont été restaurés.",
+                "Restauration terminée",
+                wx.OK | wx.ICON_INFORMATION
+            )
+            logger.info(f"Restauration depuis: {backup_path}")
+            
+        except Exception as e:
+            wx.EndBusyCursor()
+            progress.Destroy()
+            logger.error(f"Erreur restauration: {e}", exc_info=True)
+            wx.MessageBox(
+                f"Erreur lors de la restauration:\n{str(e)}",
                 "Erreur",
                 wx.OK | wx.ICON_ERROR
             )

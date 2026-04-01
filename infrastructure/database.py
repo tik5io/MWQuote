@@ -456,6 +456,106 @@ class Database:
             result = cursor.fetchone()[0]
             return result == "ok"
 
+    def backup_database(self, backup_path: str) -> bool:
+        """
+        Créer un backup complet : base de données + dossier des projets en ZIP.
+        
+        Args:
+            backup_path: Chemin complet du fichier backup destination (.zip)
+            
+        Returns:
+            True si succès, False sinon
+        """
+        import shutil
+        import zipfile
+        try:
+            # Créer un ZIP
+            with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                # Ajouter la base de données
+                zipf.write(self.db_path, arcname="mwquote_index.db")
+            
+            return True
+        except Exception as e:
+            raise Exception(f"Erreur backup: {str(e)}")
+
+    def backup_database_with_projects(self, backup_path: str, projects_folder: str = None) -> bool:
+        """
+        Créer un backup complet : base de données + dossier des projets ZIP en un seul fichier.
+        
+        Args:
+            backup_path: Chemin complet du fichier backup destination (.zip)
+            projects_folder: Dossier racine des projets à inclure
+            
+        Returns:
+            True si succès, False sinon
+        """
+        import shutil
+        import zipfile
+        try:
+            # Créer un ZIP master contenant DB + projets ZIP
+            with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as master_zip:
+                # 1. Ajouter la base de données à la racine du ZIP
+                master_zip.write(self.db_path, arcname="mwquote_index.db")
+                
+                # 2. Ajouter le dossier racine des projets
+                if projects_folder and os.path.exists(projects_folder):
+                    folder_name = os.path.basename(projects_folder)
+                    for root, dirs, files in os.walk(projects_folder):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            # Conserver la structure: projets/fichier.mwq ou projets/subfolder/fichier.zip
+                            arcname = os.path.join(folder_name, os.path.relpath(file_path, projects_folder))
+                            master_zip.write(file_path, arcname=arcname)
+            
+            return True
+        except Exception as e:
+            raise Exception(f"Erreur backup: {str(e)}")
+
+    def restore_database(self, backup_path: str, projects_folder: str = None) -> bool:
+        """
+        Restaurer la base de données et les projets depuis un backup ZIP complet.
+        Extrait:
+        - mwquote_index.db à sa location originale
+        - le dossier des projets à l'emplacement spécifié
+        
+        Args:
+            backup_path: Chemin complet du fichier backup source (.zip)
+            projects_folder: Dossier parent pour restaurer les projets
+            
+        Returns:
+            True si succès, False sinon
+        """
+        import shutil
+        import zipfile
+        try:
+            with zipfile.ZipFile(backup_path, 'r') as zipf:
+                # 1. Restaurer la base de données
+                if "mwquote_index.db" in zipf.namelist():
+                    # Extraire vers le dossier parent
+                    db_parent = os.path.dirname(self.db_path)
+                    zipf.extract("mwquote_index.db", path=db_parent)
+                    
+                    # Renommer si nécessaire (remplacer l'existant)
+                    extracted_db = os.path.join(db_parent, "mwquote_index.db")
+                    if extracted_db != self.db_path:
+                        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+                        shutil.move(extracted_db, self.db_path)
+                
+                # 2. Restaurer les projets
+                if projects_folder:
+                    # Créer le dossier parent s'il n'existe pas
+                    parent_folder = os.path.dirname(projects_folder)
+                    os.makedirs(parent_folder, exist_ok=True)
+                    
+                    # Extraire tout sauf la DB vers le parent du dossier cible
+                    for member in zipf.namelist():
+                        if member != "mwquote_index.db" and not member.endswith('/'):
+                            zipf.extract(member, path=parent_folder)
+            
+            return True
+        except Exception as e:
+            raise Exception(f"Erreur restore: {str(e)}")
+
     def clear_all(self):
         """Wipe all data from the database."""
         with self.get_connection() as conn:

@@ -1,6 +1,22 @@
 
-.pyc
-.log
-.db
-/build*
-/dist*
+# Python cache and logs
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.db
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Build outputs
+/build*/
+/dist*/
+/**/*.egg-info/
+
+# IDE/editor settings
+.vscode/
+.idea/

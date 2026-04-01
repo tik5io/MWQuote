@@ -619,7 +619,7 @@ class GraphAnalysisPanel(wx.Panel):
         lines.append("NOTE DE CALCUL PROJET")
         lines.append("")
         lines.append(f"Date generation: {now_str}")
-        lines.append(f"Projet: {self.project.reference or '-'} | {self.project.name or '-'}")
+        lines.append(f"Projet: {self.project.display_name}")
         lines.append(f"Client: {self.project.client or '-'}")
         lines.append(f"Nombre operations: {len(self.project.operations)}")
         lines.append(f"Quantites analysees: {', '.join(str(q) for q in quantities)}")

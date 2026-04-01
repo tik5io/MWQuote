@@ -729,7 +729,7 @@ class OperationCostEditorPanel(wx.Panel):
         lines.append("NOTE DE CALCUL TARIFAIRE")
         lines.append("")
         lines.append(f"Date generation: {now_str}")
-        lines.append(f"Projet: {self.project.reference if self.project else '-'} | {self.project.name if self.project else '-'}")
+        lines.append(f"Projet: {self.project.display_name if self.project else '-'}")
         lines.append(f"Operation: {op.typology or '-'} | {op.label}")
         lines.append(f"Poste de cout: {cost.name}")
         lines.append(f"Type de cout: {cost.cost_type.value}")

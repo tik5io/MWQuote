@@ -32,7 +32,7 @@ class MainFrame(wx.Frame):
         if clear_logs:
             clear_logs_directory()
 
-        self.project = project or Project(name="Nouveau Projet", reference="", client="")
+        self.project = project or Project(name="", reference="", client="")
         self.current_path = filepath
         self._dirty = False
         
@@ -158,14 +158,8 @@ class MainFrame(wx.Frame):
             self.SetTitle("MWQuote")
             return
             
-        ref = self.project.reference
-        name = self.project.name
-        
-        if ref and ref.strip():
-            title = f"MWQuote - {ref.strip()}"
-        else:
-            title = f"MWQuote - {name}"
-            
+        display_name = self.project.display_name
+        title = f"MWQuote - {display_name}"
         self.SetTitle(title)
 
     def _on_operation_updated(self, operation, reload_header=False):
@@ -204,9 +198,9 @@ class MainFrame(wx.Frame):
 
     def _on_new(self, event):
         """Réinitialise avec un nouveau projet"""
-        if wx.MessageBox("Créer un nouveau projet ? Les modifications non enregistrées seront perdues.", 
-                        "Nouveau projet", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
-            new_project = Project(name="Nouveau projet", reference="", client="", mwq_uuid=FileManager.generate_uuid())
+        if wx.MessageBox("Créer une nouvelle quote ? Les modifications non enregistrées seront perdues.", 
+                        "Nouvelle quote", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
+            new_project = Project(name="", reference="", client="", mwq_uuid=FileManager.generate_uuid())
             self._update_app_with_project(new_project)
             self.current_path = None
             self._dirty = False

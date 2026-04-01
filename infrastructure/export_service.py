@@ -304,6 +304,49 @@ class ExportService:
             cell.value = date_validity.strftime("%d/%m/%Y")
         elif token == "COMMENT_REF":
             cell.value = global_comment
+        elif token == "IMAGE_PREVIEW":
+            # injecter l'image preview dans le placeholder (zones déjà mergées dans le template)
+            project_preview = getattr(project, 'preview_image', None)
+            if project_preview and getattr(project_preview, 'data', None):
+                try:
+                    from openpyxl.drawing.image import Image as OpenpyxlImage
+                    from PIL import Image as PilImage
+                    import io
+                    import base64
+
+                    preview_data = base64.b64decode(project_preview.data)
+                    preview_img = PilImage.open(io.BytesIO(preview_data))
+
+                    # Taille de la vignette pour le placeholder (hauteur ligne 210px)
+                    max_height = 210
+                    max_width = 300
+                    if hasattr(PilImage, 'Resampling'):
+                        resample = PilImage.Resampling.LANCZOS
+                    else:
+                        resample = PilImage.ANTIALIAS
+                    preview_img.thumbnail((max_width, max_height), resample)
+
+                    image_stream = io.BytesIO()
+                    preview_img.save(image_stream, format='PNG')
+                    image_stream.seek(0)
+
+                    img = OpenpyxlImage(image_stream)
+                    ws = cell.parent
+                    
+                    # Placer l'image dans la cellule (les zones sont déjà mergées dans le template)
+                    img.anchor = cell.coordinate
+                    ws.add_image(img)
+                    
+                    # Ajuster la hauteur de la ligne pour accueillir l'image
+                    ws.row_dimensions[cell.row].height = 210
+                    
+                    # Effacer le texte placeholder
+                    cell.value = ""
+                except Exception as e:
+                    logger.error(f"Erreur lors de l'insertion d'image: {e}", exc_info=True)
+                    cell.value = "Preview non disponible"
+            else:
+                cell.value = "Preview non fournie"
 
     def _clear_row_placeholders(self, ws, row_idx):
         """Efface les placeholders d'une ligne avant de la masquer."""
@@ -416,3 +459,136 @@ class ExportService:
         text = "\n".join(lines) if lines else "-"
         logger.info(f"Global comment lines: {len(lines)}")
         return text
+
+    def export_fabrication_quality(self, project, output_path):
+        """
+        Export Fabrication/Qualité - Document Excel avec la trame de fabrication hiérarchique
+        et les informations de temps et commentaires pour chaque opération.
+        """
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Fabrication_Qualité"
+
+            # Styles
+            header_font = Font(bold=True, size=12)
+            subheader_font = Font(bold=True, size=10)
+            normal_font = Font(size=10)
+            border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                          top=Side(style='thin'), bottom=Side(style='thin'))
+            header_fill = PatternFill(start_color="FFE6E6FA", end_color="FFE6E6FA", fill_type="solid")
+
+            # En-têtes
+            headers = ["Opération", "Typologie", "Temps fixe (h)", "Temps/pièce (h)",
+                      "Commentaire Chiffrage", "Commentaire Méthode", "Preview"]
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=header)
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = border
+                cell.fill = header_fill
+
+            # Ajuster la largeur des colonnes
+            ws.column_dimensions['A'].width = 30  # Opération
+            ws.column_dimensions['B'].width = 20  # Typologie
+            ws.column_dimensions['C'].width = 15  # Temps fixe
+            ws.column_dimensions['D'].width = 15  # Temps/pièce
+            ws.column_dimensions['E'].width = 40  # Commentaire Chiffrage
+            ws.column_dimensions['F'].width = 40  # Commentaire Méthode
+            ws.column_dimensions['G'].width = 20  # Preview (vignette image ou libellé)
+
+            row = 2
+
+            # Informations du projet en en-tête
+            ws.cell(row=row, column=1, value=f"Nom du projet : {getattr(project, 'name', 'N/A')}")
+            ws.cell(row=row, column=2, value=f"Référence projet : {getattr(project, 'reference', 'N/A')}")
+            row += 1
+
+            # Référence du plan / documents
+            drawing_name = getattr(project, 'drawing_filename', None) or 'N/A'
+            ws.cell(row=row, column=1, value=f"Référence plan : {drawing_name}")
+            ws.cell(row=row, column=2, value=f"Client : {getattr(project, 'client', 'N/A')}")
+            row += 1
+
+            # Preview image (si disponible)
+            from openpyxl.drawing.image import Image as OpenpyxlImage
+            from PIL import Image as PilImage
+            import io
+            import base64
+
+            if getattr(project, 'preview_image', None) is not None and getattr(project.preview_image, 'data', None):
+                try:
+                    preview_data = base64.b64decode(project.preview_image.data)
+                    preview_img = PilImage.open(io.BytesIO(preview_data))
+                    # redimensionner pour éviter une insertion trop grande
+                    max_width, max_height = 350, 250
+                    preview_img.thumbnail((max_width, max_height), PilImage.Resampling.LANCZOS if hasattr(PilImage, 'Resampling') else PilImage.ANTIALIAS)
+                    img_io = io.BytesIO()
+                    preview_img.save(img_io, format='PNG')
+                    img_io.seek(0)
+
+                    img = OpenpyxlImage(img_io)
+                    img.anchor = f"G{row}"
+                    ws.add_image(img)
+                    ws.row_dimensions[row].height = 180
+                except Exception:
+                    # Si l'image ne peut être insérée, on laisse juste le texte
+                    ws.cell(row=row, column=1, value='Preview disponible mais impossible à afficher')
+
+                row += 5
+
+            # Parcourir les opérations
+            for op in getattr(project, "operations", []):
+                # Ligne d'opération
+                ws.cell(row=row, column=1, value=f"🔧 {op.label}").font = subheader_font
+                ws.cell(row=row, column=2, value=op.typology or "").font = normal_font
+                ws.cell(row=row, column=5, value=op.comment or "").font = normal_font
+                ws.cell(row=row, column=5).alignment = Alignment(wrap_text=True)
+
+                # Calculer les temps totaux pour l'opération
+                total_fixed_time = 0.0
+                total_per_piece_time = 0.0
+                method_comments = []
+
+                for cost_name, cost in op.costs.items():
+                    if cost.cost_type == CostType.INTERNAL_OPERATION:
+                        total_fixed_time += cost.fixed_time
+                        total_per_piece_time += cost.per_piece_time
+
+                    # Collecter les commentaires méthode
+                    if hasattr(cost, 'comment') and cost.comment and cost.comment.strip():
+                        method_comments.append(f"{cost.name}: {cost.comment.strip()}")
+
+                ws.cell(row=row, column=3, value=round(total_fixed_time, 3) if total_fixed_time > 0 else "").font = normal_font
+                ws.cell(row=row, column=4, value=round(total_per_piece_time, 3) if total_per_piece_time > 0 else "").font = normal_font
+                ws.cell(row=row, column=6, value="\n".join(method_comments)).font = normal_font
+                ws.cell(row=row, column=6).alignment = Alignment(wrap_text=True)
+
+                # Appliquer les bordures
+                for col in range(1, 7):
+                    cell = ws.cell(row=row, column=col)
+                    cell.border = border
+
+                row += 1
+
+                # Ligne de séparation si nécessaire
+                if row > 2:
+                    for col in range(1, 7):
+                        ws.cell(row=row, column=col).border = Border(bottom=Side(style='thin'))
+
+            # Ajuster la hauteur des lignes pour le texte wrappé
+            for r in range(1, row):
+                ws.row_dimensions[r].height = None  # Auto-height
+
+            # Sauvegarder
+            wb.save(output_path)
+
+            logger.info(f"Export Fabrication/Qualité réussi → {output_path}")
+            return True
+
+        except Exception as e:
+            logger.error("Erreur export Fabrication/Qualité", exc_info=True)
+            raise

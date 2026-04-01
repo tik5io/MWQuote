@@ -44,6 +44,15 @@ class Project:
         rate = self.volume_margin_rates.get(quantity, 1.0) if quantity is not None else 1.0
         return base_price * rate
 
+    @property
+    def display_name(self) -> str:
+        """Display name to show in UI: prefer reference over legacy project name."""
+        if self.reference and self.reference.strip():
+            return self.reference.strip()
+        if self.name and self.name.strip():
+            return self.name.strip()
+        return "Nouveau Projet"
+
     def add_operation(self, operation: Operation) -> None:
         self.operations.append(operation)
 
