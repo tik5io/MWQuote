@@ -410,7 +410,7 @@ class ExportService:
                 continue
             token = val.strip()
             if token == "TOOL_REF":
-                cell.value = "OUTILLAGE"
+                cell.value = tool_cost.name
             elif token == "QTY_REF":
                 cell.value = 1
             elif token == "PTOOL_REF":
@@ -425,21 +425,31 @@ class ExportService:
         if not tool_rows:
             return
 
-        template_row = tool_rows[0]
         if not tooling_lines:
             for row_idx in tool_rows:
                 self._clear_row_placeholders(ws, row_idx)
                 ws.row_dimensions[row_idx].hidden = True
             return
 
-        extra_needed = max(0, len(tooling_lines) - 1)
-        if extra_needed > 0:
-            ws.insert_rows(template_row + 1, amount=extra_needed)
+        n_tools = len(tooling_lines)
+        n_template = len(tool_rows)
+
+        # Si plus d'outillages que de lignes template → cloner la dernière
+        if n_tools > n_template:
+            extra_needed = n_tools - n_template
+            last_row = tool_rows[-1]
+            ws.insert_rows(last_row + 1, amount=extra_needed)
             for i in range(extra_needed):
-                self._clone_row_format(ws, template_row, template_row + 1 + i)
+                self._clone_row_format(ws, last_row, last_row + 1 + i)
+            tool_rows = tool_rows + [last_row + 1 + i for i in range(extra_needed)]
 
         for idx, tool_cost in enumerate(tooling_lines):
-            self._fill_tool_row(ws, template_row + idx, tool_cost, project, global_comment)
+            self._fill_tool_row(ws, tool_rows[idx], tool_cost, project, global_comment)
+
+        # Masquer les lignes template non utilisées
+        for row_idx in tool_rows[n_tools:]:
+            self._clear_row_placeholders(ws, row_idx)
+            ws.row_dimensions[row_idx].hidden = True
 
     def _fill_comment_placeholders(self, ws, global_comment):
         replaced = 0
@@ -452,14 +462,17 @@ class ExportService:
         logger.info(f"COMMENT_REF replaced count: {replaced}")
 
     def _build_global_comment(self, project):
-        lines = []
+        op_lines = []
+        tooling_comments = []
         for op in getattr(project, "operations", []):
             if getattr(op, "comment", None) and op.comment.strip():
-                lines.append(op.comment.strip())
+                op_lines.append(op.comment.strip())
             for cost in getattr(op, "costs", {}).values():
                 if getattr(cost, "cost_type", None) == CostType.TOOLING:
                     if getattr(cost, "client_comment", None) and cost.client_comment.strip():
-                        lines.append(cost.client_comment.strip())
+                        tooling_comments.append(cost.client_comment.strip())
+
+        lines = op_lines + tooling_comments
 
         # Pour les offres prototype, ajouter un message d'information en fin de commentaires
         tags_lower = [t.lower() for t in getattr(project, "tags", []) or [] if isinstance(t, str)]
