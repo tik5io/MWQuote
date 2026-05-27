@@ -220,6 +220,10 @@ class ExportService:
             # 5.c Sécurise COMMENT_REF (certaines manipulations de lignes peuvent l'effacer)
             self._fill_comment_placeholders(ws, global_comment)
 
+            # 7. Ajouter l'onglet SERIE si le mode série est actif
+            if getattr(project, 'serie_data', None) is not None:
+                self._add_serie_sheet(wb, project.serie_data)
+
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             wb.save(output_path)
 
@@ -456,9 +460,290 @@ class ExportService:
                 if getattr(cost, "cost_type", None) == CostType.TOOLING:
                     if getattr(cost, "client_comment", None) and cost.client_comment.strip():
                         lines.append(cost.client_comment.strip())
+
+        # Pour les offres prototype, ajouter un message d'information en fin de commentaires
+        tags_lower = [t.lower() for t in getattr(project, "tags", []) or [] if isinstance(t, str)]
+        if "proto" in tags_lower or "prototype" in tags_lower:
+            lines.append(
+                "Offre réalisée dans le cadre d'une production prototype - "
+                "aucune validation ISO 13485 formelle n'est assurée."
+            )
+            lines.append(
+                "Offer produced in a prototype context - "
+                "no formal ISO 13485 validation is provided."
+            )
+
         text = "\n".join(lines) if lines else "-"
         logger.info(f"Global comment lines: {len(lines)}")
         return text
+
+    def _add_serie_sheet(self, wb, sd):
+        """Ajoute un onglet 'SERIE' au workbook Excel avec le chiffrage gros volumes."""
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+        FONT = "Arial"
+        H_BG  = "1F4E79"   # bleu section
+        H_FG  = "FFFFFF"
+        TOT_BG = "2E75B6"
+        RES_BG = "FFFF99"
+        PV_BG  = "375623"
+
+        def hdr(cell, text):
+            cell.value = text
+            cell.font = Font(name=FONT, bold=True, size=10, color=H_FG)
+            cell.fill = PatternFill("solid", fgColor=H_BG)
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+
+        def inp(cell, value, fmt="#,##0.00"):
+            cell.value = value
+            cell.font = Font(name=FONT, size=9)
+            cell.alignment = Alignment(horizontal="right", vertical="center")
+            cell.number_format = fmt
+
+        def res(cell, value, fmt="#,##0.0000"):
+            cell.value = value
+            cell.font = Font(name=FONT, bold=True, size=9)
+            cell.fill = PatternFill("solid", fgColor=RES_BG)
+            cell.alignment = Alignment(horizontal="right", vertical="center")
+            cell.number_format = fmt
+
+        def lbl(cell, text, bold=False):
+            cell.value = text
+            cell.font = Font(name=FONT, bold=bold, size=9)
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+
+        def tot(cell, value, fmt="#,##0.00"):
+            cell.value = value
+            cell.font = Font(name=FONT, bold=True, size=9, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor=TOT_BG)
+            cell.alignment = Alignment(horizontal="right", vertical="center")
+            cell.number_format = fmt
+
+        ws = wb.create_sheet("SERIE")
+
+        # Column widths
+        ws.column_dimensions["A"].width = 32
+        ws.column_dimensions["B"].width = 16
+        ws.column_dimensions["C"].width = 16
+        ws.column_dimensions["D"].width = 16
+        ws.column_dimensions["E"].width = 14
+
+        r = 1
+        ws.merge_cells(f"A{r}:E{r}")
+        c = ws[f"A{r}"]
+        c.value = "CHIFFRAGE PRODUCTION SERIE – Gros Volumes"
+        c.font = Font(name=FONT, bold=True, size=13, color=H_FG)
+        c.fill = PatternFill("solid", fgColor=H_BG)
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[r].height = 26
+        r += 1
+
+        # ---- HYPOTHESES ----
+        r += 1
+        ws.merge_cells(f"A{r}:E{r}")
+        hdr(ws[f"A{r}"], "HYPOTHESES GENERALES")
+        ws.row_dimensions[r].height = 18
+        r += 1
+
+        hyp_rows = [
+            ("Volume annuel cible", sd.annual_volume, "#,##0", "pcs/an"),
+            ("Jours ouvrés / an", sd.working_days_per_year, "#,##0", "j/an"),
+            ("Equipes / jour", sd.shifts_per_day, "0", ""),
+            ("Heures / équipe", sd.hours_per_shift, "0.0", "h"),
+            ("TRS", sd.trs, "0.0%", ""),
+            ("Temps de cycle goulot (calculé)", sd.get_target_cycle_time_s(), "0.00", "s/pcs"),
+            ("TH MO Production", sd.mo_production_rate, "#,##0.00", "€/h"),
+            ("TH MO Qualité", sd.mo_quality_rate, "#,##0.00", "€/h"),
+            ("Coef. structure overhead", sd.overhead_coef, "0%", ""),
+            ("Capacité réelle / an", sd.real_capacity_per_year(), "#,##0", "pcs/an [calculé]"),
+            ("Taux de charge", sd.load_rate(), "0.0%", ""),
+        ]
+        for label, val, fmt, unit in hyp_rows:
+            lbl(ws[f"A{r}"], label)
+            inp(ws[f"B{r}"], val, fmt)
+            lbl(ws[f"C{r}"], unit)
+            r += 1
+
+        # ---- CAPEX ----
+        r += 1
+        ws.merge_cells(f"A{r}:E{r}")
+        hdr(ws[f"A{r}"], f"CAPEX – INVESTISSEMENTS  |  Amort. = durée programme ({sd.program_lifetime_years} ans)  |  Marge globale {sd.capex_global_margin*100:.0f}%")
+        ws.row_dimensions[r].height = 18
+        r += 1
+        for col, text in zip(["A","B","C","D","E"],
+                              ["Désignation","Coût €","Résiduel €","Marge","Prix/pc €"]):
+            c = ws[f"{col}{r}"]
+            c.value = text
+            c.font = Font(name=FONT, bold=True, size=9, color="9C6500")
+            c.fill = PatternFill("solid", fgColor="FFEB9C")
+            c.alignment = Alignment(horizontal="center", vertical="center")
+        r += 1
+        years = sd.program_lifetime_years if sd.program_lifetime_years > 0 else 1
+        capex_total_pc = 0.0
+        for item in sd.capex_items:
+            amort_an = (item.cost - item.residual_value) / years
+            price_pc = (amort_an / sd.annual_volume * (1 + item.margin_rate)) if sd.annual_volume > 0 else 0
+            capex_total_pc += price_pc
+            lbl(ws[f"A{r}"], item.name)
+            inp(ws[f"B{r}"], item.cost, "#,##0")
+            inp(ws[f"C{r}"], item.residual_value, "#,##0")
+            inp(ws[f"D{r}"], item.margin_rate, "0%")
+            inp(ws[f"E{r}"], price_pc, "#,##0.0000")
+            r += 1
+        tot(ws[f"A{r}"], "TOTAL CAPEX / pièce")
+        tot(ws[f"E{r}"], sd.capex_price_per_piece(), "#,##0.0000")
+        r += 1
+
+        # ---- TOOLING ----
+        r += 1
+        ws.merge_cells(f"A{r}:E{r}")
+        hdr(ws[f"A{r}"], "TOOLING / OUTILLAGES")
+        ws.row_dimensions[r].height = 18
+        r += 1
+        for col, text in zip(["A","B","C","D","E"],
+                              ["Désignation","Coût €","Durée vie pcs","Marge","Prix/pc €"]):
+            c = ws[f"{col}{r}"]
+            c.value = text
+            c.font = Font(name=FONT, bold=True, size=9, color="9C6500")
+            c.fill = PatternFill("solid", fgColor="FFEB9C")
+            c.alignment = Alignment(horizontal="center", vertical="center")
+        r += 1
+        for item in sd.tooling_items:
+            cost_pc  = (item.cost / item.lifetime_pieces) if item.lifetime_pieces > 0 else 0
+            price_pc = cost_pc * (1 + item.margin_rate)
+            lbl(ws[f"A{r}"], item.name)
+            inp(ws[f"B{r}"], item.cost, "#,##0")
+            inp(ws[f"C{r}"], item.lifetime_pieces, "#,##0")
+            inp(ws[f"D{r}"], item.margin_rate, "0%")
+            inp(ws[f"E{r}"], price_pc, "#,##0.0000")
+            r += 1
+        tot(ws[f"A{r}"], "TOTAL TOOLING / pièce")
+        tot(ws[f"E{r}"], sd.tooling_price_per_piece(), "#,##0.0000")
+        r += 1
+
+        # ---- SETUP ----
+        r += 1
+        ws.merge_cells(f"A{r}:E{r}")
+        hdr(ws[f"A{r}"], "SETUP / DEMARRAGE SERIE")
+        ws.row_dimensions[r].height = 18
+        r += 1
+        for label, val, fmt in [
+            ("Temps montage outillage", sd.tooling_setup_time_h, "0.00"),
+            ("Validation SOP / 1er art.", sd.sop_validation_time_h, "0.00"),
+            ("Taille de lot / campagne", sd.lot_size, "#,##0"),
+            ("Campagnes / an", sd.campaigns_per_year(), "0.0"),
+            ("Coût setup / campagne €", sd.setup_cost_per_campaign(), "#,##0.00"),
+            ("Coût setup total / an €", sd.setup_cost_per_year(), "#,##0.00"),
+            ("Setup amorti / pièce (prix)", sd.setup_price_per_piece(), "#,##0.0000"),
+        ]:
+            lbl(ws[f"A{r}"], label)
+            inp(ws[f"B{r}"], val, fmt)
+            r += 1
+
+        # ---- CONTROLE ----
+        r += 1
+        ws.merge_cells(f"A{r}:E{r}")
+        hdr(ws[f"A{r}"], f"CONTROLE DE PRODUCTION (mode : {sd.control_mode})")
+        ws.row_dimensions[r].height = 18
+        r += 1
+        for label, val, fmt in [
+            ("Fréquence SPC (1/N pcs)", sd.spc_frequency, "#,##0"),
+            ("Temps SPC / pièce mesurée (min)", sd.spc_time_per_piece_min, "0.00"),
+            ("Coût SPC / pièce produite €", sd.spc_cost_per_piece(), "#,##0.0000"),
+            ("Temps contrôle 100% (s/pcs)", sd.control_100pct_time_s, "0.00"),
+            ("Coût contrôle 100% / pièce €", sd.control_100pct_cost_per_piece(), "#,##0.0000"),
+            ("Coût contrôle retenu / pièce €", sd.control_cost_per_piece(), "#,##0.0000"),
+        ]:
+            lbl(ws[f"A{r}"], label)
+            inp(ws[f"B{r}"], val, fmt)
+            r += 1
+
+        # ---- SYNTHESE ----
+        r += 1
+        ws.merge_cells(f"A{r}:E{r}")
+        hdr(ws[f"A{r}"], "SYNTHESE COUT DE REVIENT")
+        ws.row_dimensions[r].height = 18
+        r += 1
+        for col, text in zip(["A","B","C","D"],
+                              ["Poste de coût","Coût brut €/pcs","Prix client €/pcs","% du total"]):
+            c = ws[f"{col}{r}"]
+            c.value = text
+            c.font = Font(name=FONT, bold=True, size=9, color="9C6500")
+            c.fill = PatternFill("solid", fgColor="FFEB9C")
+            c.alignment = Alignment(horizontal="center", vertical="center")
+        r += 1
+
+        pv = sd.selling_price_per_piece()
+        syn_items = [
+            ("MO directe production", sd.mo_cost_per_piece(), sd.mo_cost_per_piece()),
+            ("CAPEX amortissement",   sd.capex_cost_per_piece(), sd.capex_price_per_piece()),
+            ("Tooling",               sd.tooling_cost_per_piece(), sd.tooling_price_per_piece()),
+            ("Setup",                 sd.setup_cost_per_piece(), sd.setup_price_per_piece()),
+            ("Contrôle qualité",      sd.control_cost_per_piece(), sd.control_cost_per_piece()),
+            ("Matières premières",    sd.material_cost_per_piece, sd.material_cost_per_piece * (1 + sd.material_margin)),
+            ("Logistique / emballage",sd.logistics_cost_per_piece, sd.logistics_cost_per_piece * (1 + sd.logistics_margin)),
+        ]
+        for label, cost, price in syn_items:
+            pct = (price / pv) if pv > 0 else 0
+            lbl(ws[f"A{r}"], label)
+            inp(ws[f"B{r}"], cost, "#,##0.0000")
+            inp(ws[f"C{r}"], price, "#,##0.0000")
+            inp(ws[f"D{r}"], pct, "0.0%")
+            r += 1
+
+        # Sous-total
+        tot(ws[f"A{r}"], "Sous-total (avant marge ciale)")
+        tot(ws[f"B{r}"], sd.total_cost_per_piece(), "#,##0.0000")
+        tot(ws[f"C{r}"], sd.subtotal_with_item_margins(), "#,##0.0000")
+        r += 1
+        r += 1
+
+        # Prix de vente final
+        ws.merge_cells(f"A{r}:B{r}")
+        c = ws[f"A{r}"]
+        c.value = f"PRIX DE VENTE / PIECE  (marge ciale {sd.global_commercial_margin*100:.0f}%)"
+        c.font = Font(name=FONT, bold=True, size=12, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor=PV_BG)
+        c.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[r].height = 22
+        c2 = ws[f"C{r}"]
+        c2.value = pv
+        c2.font = Font(name=FONT, bold=True, size=14, color="FFFFFF")
+        c2.fill = PatternFill("solid", fgColor=PV_BG)
+        c2.number_format = "#,##0.0000"
+        c2.alignment = Alignment(horizontal="right", vertical="center")
+        r += 1
+
+        # LOP
+        r += 1
+        ws.merge_cells(f"A{r}:E{r}")
+        hdr(ws[f"A{r}"], f"LIFE OF PROGRAM  —  {sd.program_lifetime_years} ans  |  {sd.total_program_volume():,} pcs totales")
+        ws.row_dimensions[r].height = 18
+        r += 1
+        lop_rows = [
+            ("CA total programme", sd.total_program_revenue(), "#,##0"),
+            ("Coût total programme", sd.total_program_cost(), "#,##0"),
+            ("  dont CAPEX net (fixe, indép. durée)", sd.total_capex_net_investment(), "#,##0"),
+            ("  dont Tooling (fixe, indép. durée)", sd.total_tooling_investment(), "#,##0"),
+            ("  dont MO + setup + ctrl + mat. (variable)", sd.total_variable_program_cost(), "#,##0"),
+        ]
+        for label, val, fmt in lop_rows:
+            lbl(ws[f"A{r}"], label)
+            inp(ws[f"B{r}"], val, fmt)
+            lbl(ws[f"C{r}"], "€")
+            r += 1
+
+        # CA annuel
+        r += 1
+        lbl(ws[f"A{r}"], "Chiffre d'affaires annuel estimé")
+        c_ca = ws[f"C{r}"]
+        c_ca.value = sd.annual_revenue()
+        c_ca.font = Font(name=FONT, bold=True, size=11, color="375623")
+        c_ca.number_format = "#,##0"
+        c_ca.alignment = Alignment(horizontal="right", vertical="center")
+        ws[f"D{r}"].value = "€ / an"
+        ws[f"D{r}"].font = Font(name=FONT, size=9, color="375623")
 
     def export_fabrication_quality(self, project, output_path):
         """

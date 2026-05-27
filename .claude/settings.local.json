@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(extract-text \"Z:\\\\0 - PROJET SERIE\\\\DORC\\\\2026 24171900\\\\COMMERCIAL\\\\Proposition commercial ind F.xlsx\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python \"Z:\\\\Documents\\\\GitHub\\\\MWQuote\\\\infrastructure\\\\export_service.py\" --help)",
+      "PowerShell(python \"C:\\\\Users\\\\nicolas.guinamard\\\\AppData\\\\Local\\\\Temp\\\\create_serie.py\" 2>&1)"
+    ]
+  }
+}

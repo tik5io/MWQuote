@@ -86,7 +86,9 @@ class Indexer:
             'date_finalisee': project.status_dates.get("Finalisée"),
             'date_transmise': project.status_dates.get("Transmise"),
             'content_hash': content_hash,
-            'export_history': project.export_history
+            'export_history': project.export_history,
+            'is_prototype': any("proto" in t.lower() for t in project.tags),
+            'has_serie': getattr(project, 'serie_data', None) is not None,
         }
 
     def stop(self):

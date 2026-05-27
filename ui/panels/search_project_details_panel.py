@@ -17,9 +17,28 @@ class ProjectDetailsPanel(wx.Panel):
         self.project = None
         self._build_ui()
         
+    # Colour constants for mode badges
+    _BADGE_PROTO = (wx.Colour(210, 110, 20),  wx.WHITE)   # orange, white text
+    _BADGE_SERIE = (wx.Colour(40,  140,  60),  wx.WHITE)   # green,  white text
+
+    def _make_badge(self, parent, label, bg, fg):
+        """Renders a small coloured pill label."""
+        pnl = wx.Panel(parent)
+        pnl.SetBackgroundColour(bg)
+        lbl = wx.StaticText(pnl, label=f"  {label}  ")
+        lbl.SetForegroundColour(fg)
+        f = lbl.GetFont()
+        f.SetWeight(wx.FONTWEIGHT_BOLD)
+        f.SetPointSize(9)
+        lbl.SetFont(f)
+        sz = wx.BoxSizer(wx.HORIZONTAL)
+        sz.Add(lbl, 0, wx.TOP | wx.BOTTOM, 3)
+        pnl.SetSizer(sz)
+        return pnl
+
     def _build_ui(self):
         vbox = wx.BoxSizer(wx.VERTICAL)
-        
+
         # Header
         self.title_lbl = wx.StaticText(self, label="Aucun projet sélectionné")
         font = self.title_lbl.GetFont()
@@ -27,6 +46,16 @@ class ProjectDetailsPanel(wx.Panel):
         font.SetWeight(wx.FONTWEIGHT_BOLD)
         self.title_lbl.SetFont(font)
         vbox.Add(self.title_lbl, 0, wx.ALL, 10)
+
+        # Mode badges row (hidden until a project is loaded)
+        self._badge_row = wx.BoxSizer(wx.HORIZONTAL)
+        self._badge_proto = self._make_badge(self, "PROTOTYPE", *self._BADGE_PROTO)
+        self._badge_serie = self._make_badge(self, "PRODUCTION SÉRIE", *self._BADGE_SERIE)
+        self._badge_row.Add(self._badge_proto, 0, wx.LEFT | wx.BOTTOM, 6)
+        self._badge_row.Add(self._badge_serie, 0, wx.LEFT | wx.BOTTOM, 6)
+        self._badge_proto.Hide()
+        self._badge_serie.Hide()
+        vbox.Add(self._badge_row, 0, wx.LEFT, 10)
 
         self.preview_bitmap = wx.StaticBitmap(self, bitmap=wx.Bitmap(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT))
         self.preview_bitmap.SetMinSize((self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT))
@@ -85,6 +114,8 @@ class ProjectDetailsPanel(wx.Panel):
         """Reset details panel state when nothing should be displayed."""
         self.project = None
         self.title_lbl.SetLabel(title)
+        self._badge_proto.Hide()
+        self._badge_serie.Hide()
         self.tree.DeleteAllItems()
         self.tree.AddRoot("Root")
         self.analysis_panel.Show()
@@ -96,9 +127,15 @@ class ProjectDetailsPanel(wx.Panel):
     def _update_display(self):
         if not self.project:
             return
-            
+
         client_str = f" | {self.project.client}" if self.project.client else ""
         self.title_lbl.SetLabel(f"Projet: {self.project.reference}{client_str}")
+
+        # Show/hide mode badges
+        tags_lower = [t.lower() for t in (getattr(self.project, 'tags', None) or [])]
+        self._badge_proto.Show(any("proto" in t for t in tags_lower))
+        self._badge_serie.Show(getattr(self.project, 'serie_data', None) is not None)
+        self.Layout()
         
         # Update Tree
         self.tree.DeleteAllItems()

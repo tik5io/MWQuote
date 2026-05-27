@@ -123,14 +123,15 @@ class SearchFrame(wx.Frame):
         self.list_ctrl.InsertColumn(0, "Preview", width=70)
         self.list_ctrl.InsertColumn(1, "Référence", width=120)
         self.list_ctrl.InsertColumn(2, "Client", width=120)
-        self.list_ctrl.InsertColumn(3, "Status", width=100)
-        self.list_ctrl.InsertColumn(4, "Q. Min", width=60)
-        self.list_ctrl.InsertColumn(5, "Q. Max", width=60)
-        self.list_ctrl.InsertColumn(6, "Date Proj.", width=90)
-        self.list_ctrl.InsertColumn(7, "Jalons", width=180)
-        self.list_ctrl.InsertColumn(8, "Devis", width=120)
-        self.list_ctrl.InsertColumn(9, "Tags", width=100)
-        self.list_ctrl.InsertColumn(10, "Modifié le", width=110)
+        self.list_ctrl.InsertColumn(3, "Mode", width=110)
+        self.list_ctrl.InsertColumn(4, "Status", width=100)
+        self.list_ctrl.InsertColumn(5, "Q. Min", width=60)
+        self.list_ctrl.InsertColumn(6, "Q. Max", width=60)
+        self.list_ctrl.InsertColumn(7, "Date Proj.", width=90)
+        self.list_ctrl.InsertColumn(8, "Jalons", width=180)
+        self.list_ctrl.InsertColumn(9, "Devis", width=120)
+        self.list_ctrl.InsertColumn(10, "Tags", width=100)
+        self.list_ctrl.InsertColumn(11, "Modifié le", width=110)
         
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_item_selected)
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_item_activated)
@@ -258,29 +259,51 @@ class SearchFrame(wx.Frame):
         
         self.project_map = {} # Map index to project data
         
+        # Row background colours for modes
+        PROTO_BG  = wx.Colour(255, 237, 200)   # warm orange tint
+        SERIE_BG  = wx.Colour(210, 240, 220)   # soft green tint
+        BOTH_BG   = wx.Colour(220, 230, 255)   # blue-violet for both
+
         for i, p in enumerate(results):
-            has_preview = bool(p.get('preview_filename'))
+            has_preview  = bool(p.get('preview_filename'))
+            is_prototype = bool(p.get('is_prototype', 0))
+            has_serie    = bool(p.get('has_serie', 0))
+
+            # Build mode label
+            mode_parts = []
+            if is_prototype: mode_parts.append("PROTO")
+            if has_serie:    mode_parts.append("SÉRIE")
+            mode_label = " + ".join(mode_parts) if mode_parts else "—"
+
             idx = self.list_ctrl.InsertItem(i, "Oui" if has_preview else "")
             self.list_ctrl.SetItem(idx, 1, str(p.get('reference') or ""))
             self.list_ctrl.SetItem(idx, 2, str(p.get('client') or ""))
-            self.list_ctrl.SetItem(idx, 3, str(p.get('status') or ""))
-            self.list_ctrl.SetItem(idx, 4, str(p.get('min_qty', 0)))
-            self.list_ctrl.SetItem(idx, 5, str(p.get('max_qty', 0)))
-            self.list_ctrl.SetItem(idx, 6, str(p.get('project_date') or ""))
-            
+            self.list_ctrl.SetItem(idx, 3, mode_label)
+            self.list_ctrl.SetItem(idx, 4, str(p.get('status') or ""))
+            self.list_ctrl.SetItem(idx, 5, str(p.get('min_qty', 0)))
+            self.list_ctrl.SetItem(idx, 6, str(p.get('max_qty', 0)))
+            self.list_ctrl.SetItem(idx, 7, str(p.get('project_date') or ""))
+
             # Format milestones summary
             ms = []
             if p.get('date_construction'): ms.append(f"🏗️{p['date_construction']}")
-            if p.get('date_finalisee'): ms.append(f"🏁{p['date_finalisee']}")
-            if p.get('date_transmise'): ms.append(f"📧{p['date_transmise']}")
-            self.list_ctrl.SetItem(idx, 7, " | ".join(ms))
+            if p.get('date_finalisee'):    ms.append(f"🏁{p['date_finalisee']}")
+            if p.get('date_transmise'):    ms.append(f"📧{p['date_transmise']}")
+            self.list_ctrl.SetItem(idx, 8, " | ".join(ms))
 
-            self.list_ctrl.SetItem(idx, 8, str(p.get('devis_refs') or ""))
-            self.list_ctrl.SetItem(idx, 9, ", ".join(p.get('tags', [])))
-            # Format timestamp roughly
+            self.list_ctrl.SetItem(idx, 9, str(p.get('devis_refs') or ""))
+            self.list_ctrl.SetItem(idx, 10, ", ".join(p.get('tags', [])))
             ts = p.get('last_modified', "")
-            self.list_ctrl.SetItem(idx, 10, str(ts)[:16]) # Simplified timestamp
-            
+            self.list_ctrl.SetItem(idx, 11, str(ts)[:16])
+
+            # Row color based on mode
+            if is_prototype and has_serie:
+                self.list_ctrl.SetItemBackgroundColour(idx, BOTH_BG)
+            elif has_serie:
+                self.list_ctrl.SetItemBackgroundColour(idx, SERIE_BG)
+            elif is_prototype:
+                self.list_ctrl.SetItemBackgroundColour(idx, PROTO_BG)
+
             self.project_map[idx] = p
             
         self.SetStatusText(f"{len(results)} projets trouvés")

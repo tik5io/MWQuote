@@ -11,6 +11,7 @@ from domain.project import Project
 from domain.operation import Operation
 from domain.cost import CostItem, CostType, PricingType, PricingStructure, PricingTier, ConversionType
 from domain.document import Document
+from domain.serie_data import SerieData, CapexItem, ToolingItem, MachinePost
 
 # Constants
 PROJECT_JSON_FILENAME = "project.json"
@@ -235,7 +236,8 @@ class PersistenceService:
                 export_history=data.get('export_history', []),
                 volume_margin_rates=PersistenceService._migrate_volume_margins(data),
                 preview_image=preview_image,
-                validation_report=data.get('validation_report', {}) or {}
+                validation_report=data.get('validation_report', {}) or {},
+                serie_data=PersistenceService._load_serie_data(data.get('serie_data'))
             )
 
     @staticmethod
@@ -353,7 +355,8 @@ class PersistenceService:
             status_dates=data.get('status_dates', {}),
             export_history=data.get('export_history', []),
             volume_margin_rates=PersistenceService._migrate_volume_margins(data),
-            validation_report=data.get('validation_report', {}) or {}
+            validation_report=data.get('validation_report', {}) or {},
+            serie_data=PersistenceService._load_serie_data(data.get('serie_data'))
         )
 
     @staticmethod
@@ -389,6 +392,72 @@ class PersistenceService:
         # Actually, dict keys in JSON must be strings.
         # In the Domain model, we use quantities as keys.
         return {int(k): float(v) for k, v in rates.items()}
+
+    @staticmethod
+    def _load_serie_data(d) -> SerieData:
+        """Reconstruit un SerieData depuis un dict JSON (ou None).
+
+        Rétrocompatible : les anciens fichiers avec target_cycle_time_s sont
+        migrés vers fallback_cycle_time_s.
+        Les machine_posts sont rechargés mais seront re-synchronisés depuis
+        les opérations du projet lors du chargement dans l'UI.
+        """
+        if not d:
+            return None
+
+        # Migration : target_cycle_time_s (ancien) → fallback_cycle_time_s
+        fallback_tc = d.get('fallback_cycle_time_s', d.get('target_cycle_time_s', 0.0))
+
+        # Reconstruction robuste des MachinePost (champs optionnels tolérés)
+        raw_posts = d.get('machine_posts', [])
+        posts = []
+        for x in raw_posts:
+            posts.append(MachinePost(
+                operation_code=x.get('operation_code', ''),
+                name=x.get('name', ''),
+                cycle_time_s=x.get('cycle_time_s', 0.0),
+                mo_rate_euro_per_h=x.get('mo_rate_euro_per_h', 0.0),
+                machines_available=x.get('machines_available', 1),
+            ))
+
+        return SerieData(
+            annual_volume=d.get('annual_volume', 100000),
+            working_days_per_year=d.get('working_days_per_year', 220),
+            shifts_per_day=d.get('shifts_per_day', 2),
+            hours_per_shift=d.get('hours_per_shift', 7.0),
+            trs=d.get('trs', 0.85),
+            scrap_rate=d.get('scrap_rate', 0.0),
+            program_lifetime_years=d.get('program_lifetime_years', 5),
+            fallback_cycle_time_s=fallback_tc,
+            mo_production_rate=d.get('mo_production_rate', 28.0),
+            mo_quality_rate=d.get('mo_quality_rate', 28.0),
+            overhead_coef=d.get('overhead_coef', 0.30),
+            capex_items=[
+                CapexItem(
+                    name=x.get('name', 'CAPEX'),
+                    cost=x.get('cost', 0.0),
+                    residual_value=x.get('residual_value', 0.0),
+                    margin_rate=x.get('margin_rate', 0.15),
+                )
+                for x in d.get('capex_items', [])
+            ],
+            capex_global_margin=d.get('capex_global_margin', 0.15),
+            tooling_items=[ToolingItem(**x) for x in d.get('tooling_items', [])],
+            machine_posts=posts,
+            tooling_setup_time_h=d.get('tooling_setup_time_h', 1.0),
+            sop_validation_time_h=d.get('sop_validation_time_h', 0.5),
+            lot_size=d.get('lot_size', 5000),
+            setup_margin=d.get('setup_margin', 0.15),
+            spc_frequency=d.get('spc_frequency', 50),
+            spc_time_per_piece_min=d.get('spc_time_per_piece_min', 2.0),
+            control_100pct_time_s=d.get('control_100pct_time_s', 3.0),
+            control_mode=d.get('control_mode', 'SPC'),
+            material_cost_per_piece=d.get('material_cost_per_piece', 0.0),
+            material_margin=d.get('material_margin', 0.10),
+            logistics_cost_per_piece=d.get('logistics_cost_per_piece', 0.0),
+            logistics_margin=d.get('logistics_margin', 0.05),
+            global_commercial_margin=d.get('global_commercial_margin', 0.25),
+        )
 
     @staticmethod
     def get_project_metadata(filepath: str) -> Tuple[Project, str]:

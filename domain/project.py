@@ -1,9 +1,10 @@
 # domain/project.py
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 import uuid
 from .operation import Operation
 from .document import Document
+from .serie_data import SerieData
 
 @dataclass
 class Project:
@@ -27,6 +28,9 @@ class Project:
     volume_margin_rates: dict = field(default_factory=dict)  # dict {quantity: rate}
     # Validation/diagnostic report (persisted)
     validation_report: dict = field(default_factory=dict)
+
+    # Production série (gros volumes) — None si non activé
+    serie_data: Optional[SerieData] = None
 
     @property
     def drawing_filename(self):

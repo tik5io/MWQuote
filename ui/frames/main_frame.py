@@ -7,6 +7,7 @@ from ui.panels.project_panel import ProjectPanel
 from ui.panels.operation_cost_editor_panel import OperationCostEditorPanel
 from ui.panels.sales_pricing_panel import SalesPricingPanel
 from ui.panels.graph_analysis_panel import GraphAnalysisPanel
+from ui.panels.serie_pricing_panel import SeriePricingPanel
 from infrastructure.persistence import PersistenceService
 from infrastructure.logging_service import clear_logs_directory
 from infrastructure.export_service import ExportService
@@ -121,6 +122,10 @@ class MainFrame(wx.Frame):
         self.analysis_panel = GraphAnalysisPanel(self.notebook)
         self.notebook.AddPage(self.analysis_panel, "Analyse Graphique")
 
+        # Onglet 4 : Production Série
+        self.serie_panel = SeriePricingPanel(self.notebook)
+        self.notebook.AddPage(self.serie_panel, "Production Série")
+
         right_sizer.Add(self.notebook, 1, wx.EXPAND | wx.ALL, 5)
         right_panel.SetSizer(right_sizer)
         
@@ -134,6 +139,7 @@ class MainFrame(wx.Frame):
         self.editor_panel.on_operation_updated = self._on_operation_updated
         self.sales_panel.on_operation_updated = self._on_operation_updated
         self.project_panel.on_quantities_changed = self._on_quantities_changed
+        self.serie_panel.on_serie_updated = self._on_serie_updated
         
         def on_proj_changed():
             self.editor_panel.update_root_label()
@@ -150,6 +156,7 @@ class MainFrame(wx.Frame):
         self.editor_panel.load_project(self.project)
         self.sales_panel.load_project(self.project)
         self.analysis_panel.load_project(self.project)
+        self.serie_panel.load_project(self.project)
         self._update_title()
 
     def _update_title(self):
@@ -186,8 +193,13 @@ class MainFrame(wx.Frame):
         # Rafraîchir les sélecteurs de quantités dans les sous-composants
         self.editor_panel.refresh_quantities()
         self.sales_panel.refresh_quantities()
-        
+
         # Trigger background save to update Search list and analysis
+        self._mark_dirty()
+        self._auto_save_if_possible()
+
+    def _on_serie_updated(self):
+        """Appelé quand les données Série sont modifiées."""
         self._mark_dirty()
         self._auto_save_if_possible()
 
@@ -195,6 +207,7 @@ class MainFrame(wx.Frame):
         """Rafraîchit tous les panels de données (grid, graphiques, etc.)."""
         self.sales_panel.refresh_data()
         self.analysis_panel.refresh_data()
+        self.serie_panel.refresh_data()
 
     def _on_new(self, event):
         """Réinitialise avec un nouveau projet"""

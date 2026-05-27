@@ -43,7 +43,9 @@ class Database:
                 content_hash TEXT,
                 is_missing INTEGER DEFAULT 0,
                 devis_refs TEXT,
-                mwq_uuid TEXT
+                mwq_uuid TEXT,
+                is_prototype INTEGER DEFAULT 0,
+                has_serie INTEGER DEFAULT 0
             )
         ''')
 
@@ -60,6 +62,8 @@ class Database:
             "ALTER TABLE projects ADD COLUMN is_missing INTEGER DEFAULT 0",
             "ALTER TABLE projects ADD COLUMN devis_refs TEXT",
             "ALTER TABLE projects ADD COLUMN mwq_uuid TEXT",
+            "ALTER TABLE projects ADD COLUMN is_prototype INTEGER DEFAULT 0",
+            "ALTER TABLE projects ADD COLUMN has_serie INTEGER DEFAULT 0",
         ]
         for migration in migrations:
             try:
@@ -202,7 +206,7 @@ class Database:
                         SET filepath = ?, is_missing = 0, name = ?, reference = ?, client = ?,
                             drawing_filename = ?, preview_filename = ?, last_modified = ?, status = ?, min_qty = ?, max_qty = ?,
                             date_construction = ?, date_finalisee = ?, date_transmise = ?, content_hash = ?,
-                        devis_refs = ?, mwq_uuid = ?
+                        devis_refs = ?, mwq_uuid = ?, is_prototype = ?, has_serie = ?
                     WHERE id = ?
                 ''', (
                     filepath,
@@ -221,6 +225,8 @@ class Database:
                     content_hash,
                     ", ".join([f"{e['devis_ref']} ({e['date']})" for e in project_data.get('export_history', [])]),
                     project_data.get('mwq_uuid'),
+                    1 if project_data.get('is_prototype') else 0,
+                    1 if project_data.get('has_serie') else 0,
                     project_id
                 ))
                     # Clear existing tags and re-insert
@@ -237,7 +243,8 @@ class Database:
                     SET name = ?, reference = ?, client = ?, drawing_filename = ?, preview_filename = ?,
                         last_modified = ?, status = ?, min_qty = ?, max_qty = ?,
                         date_construction = ?, date_finalisee = ?, date_transmise = ?,
-                        content_hash = ?, is_missing = 0, devis_refs = ?, mwq_uuid = ?
+                        content_hash = ?, is_missing = 0, devis_refs = ?, mwq_uuid = ?,
+                        is_prototype = ?, has_serie = ?
                     WHERE id = ?
                 ''', (
                     project_data['name'],
@@ -255,6 +262,8 @@ class Database:
                     content_hash,
                     ", ".join([f"{e['devis_ref']} ({e['date']})" for e in project_data.get('export_history', [])]),
                     project_data.get('mwq_uuid'),
+                    1 if project_data.get('is_prototype') else 0,
+                    1 if project_data.get('has_serie') else 0,
                     project_id
                 ))
                 # Clear existing tags to re-insert
@@ -263,26 +272,28 @@ class Database:
                 cursor.execute('''
                     INSERT INTO projects (name, reference, client, filepath, drawing_filename, preview_filename, last_modified,
                                         status, min_qty, max_qty, date_construction, date_finalisee, date_transmise,
-                    content_hash, is_missing, devis_refs, mwq_uuid)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-            ''', (
-                project_data['name'],
-                project_data['reference'],
-                project_data['client'],
-                filepath,
-                project_data['drawing_filename'],
-                project_data.get('preview_filename'),
-                datetime.datetime.now(),
-                project_data.get('status', 'En construction'),
-                project_data.get('min_qty'),
-                project_data.get('max_qty'),
-                project_data.get('date_construction'),
-                project_data.get('date_finalisee'),
-                project_data.get('date_transmise'),
-                content_hash,
-                ", ".join([f"{e['devis_ref']} ({e['date']})" for e in project_data.get('export_history', [])]),
-                project_data.get('mwq_uuid')
-            ))
+                                        content_hash, is_missing, devis_refs, mwq_uuid, is_prototype, has_serie)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                ''', (
+                    project_data['name'],
+                    project_data['reference'],
+                    project_data['client'],
+                    filepath,
+                    project_data['drawing_filename'],
+                    project_data.get('preview_filename'),
+                    datetime.datetime.now(),
+                    project_data.get('status', 'En construction'),
+                    project_data.get('min_qty'),
+                    project_data.get('max_qty'),
+                    project_data.get('date_construction'),
+                    project_data.get('date_finalisee'),
+                    project_data.get('date_transmise'),
+                    content_hash,
+                    ", ".join([f"{e['devis_ref']} ({e['date']})" for e in project_data.get('export_history', [])]),
+                    project_data.get('mwq_uuid'),
+                    1 if project_data.get('is_prototype') else 0,
+                    1 if project_data.get('has_serie') else 0,
+                ))
                 project_id = cursor.lastrowid
 
             # Insert tags
