@@ -78,7 +78,7 @@ class Indexer:
             'filepath': filepath,
             'drawing_filename': project.drawing_filename,
             'preview_filename': getattr(project.preview_image, 'filename', None) if getattr(project, 'preview_image', None) else None,
-            'tags': project.tags,
+            'tags': [],
             'status': project.status,
             'min_qty': qtys[0] if qtys else 0,
             'max_qty': qtys[-1] if qtys else 0,
@@ -87,7 +87,7 @@ class Indexer:
             'date_transmise': project.status_dates.get("Transmise"),
             'content_hash': content_hash,
             'export_history': project.export_history,
-            'is_prototype': any("proto" in t.lower() for t in project.tags),
+            'is_prototype': 0,
             'has_serie': getattr(project, 'serie_data', None) is not None,
         }
 
