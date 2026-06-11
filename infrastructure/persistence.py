@@ -80,16 +80,6 @@ class PersistenceService:
                 if preview_path:
                     project_preview = {'filename': project.preview_image.filename, '_path': preview_path}
 
-            # Global export history (XLSX files)
-            export_history_for_json = []
-            for entry in (project.export_history or []):
-                entry_copy = dict(entry)
-                xlsx_b64 = entry_copy.pop('xlsx_data_b64', None)
-                xlsx_path = entry_copy.get('_xlsx_path')
-                if xlsx_b64 and xlsx_path:
-                    doc_index[xlsx_path] = xlsx_b64
-                export_history_for_json.append(entry_copy)
-
             # Serialize all versions
             versions_data = []
             for version in project.versions:
@@ -126,9 +116,6 @@ class PersistenceService:
                     'documents': version_doc_paths,
                     'sale_quantities': version.sale_quantities,
                     'volume_margin_rates': {str(k): v for k, v in (version.volume_margin_rates or {}).items()},
-                    'status': version.status,
-                    'status_dates': version.status_dates,
-                    'validation_report': version.validation_report or {},
                     'serie_data': dataclasses.asdict(version.serie_data) if version.serie_data else None,
                 }
                 versions_data.append(version_dict)
@@ -140,7 +127,6 @@ class PersistenceService:
                 'mwq_uuid': project.mwq_uuid,
                 'project_date': project.project_date,
                 'preview_image': project_preview,
-                'export_history': export_history_for_json,
                 'versions': versions_data,
                 'current_version_index': project.current_version_index,
                 '_mwq_version': MWQ_VERSION,
@@ -184,17 +170,6 @@ class PersistenceService:
                 else:
                     preview_image = Document(filename=preview_ref.get('filename'), data=None)
 
-            # Restore XLSX binaries in export_history (global)
-            raw_export_history = data.get('export_history', [])
-            export_history = []
-            for entry in raw_export_history:
-                entry = dict(entry)
-                xlsx_path = entry.get('_xlsx_path')
-                if xlsx_path and xlsx_path in zf.namelist():
-                    binary_data = zf.read(xlsx_path)
-                    entry['xlsx_data_b64'] = base64.b64encode(binary_data).decode('ascii')
-                export_history.append(entry)
-
             # --- v3.0: versioned format ---
             if 'versions' in data:
                 versions = []
@@ -210,7 +185,6 @@ class PersistenceService:
                     mwq_uuid=data.get('mwq_uuid', ""),
                     project_date=data.get('project_date'),
                     preview_image=preview_image,
-                    export_history=export_history,
                     versions=versions,
                     current_version_index=data.get('current_version_index', 1),
                 )
@@ -238,14 +212,10 @@ class PersistenceService:
                 mwq_uuid=data.get('mwq_uuid', ""),
                 project_date=data.get('project_date'),
                 preview_image=preview_image,
-                export_history=export_history,
                 operations=operations,
                 documents=proj_docs,
                 sale_quantities=data.get('sale_quantities', [1, 10, 50, 100]),
-                status=data.get('status', "En construction"),
-                status_dates=data.get('status_dates', {}),
                 volume_margin_rates=PersistenceService._migrate_volume_margins(data),
-                validation_report=data.get('validation_report', {}) or {},
                 serie_data=PersistenceService._load_serie_data(data.get('serie_data')),
             )
 
@@ -276,9 +246,6 @@ class PersistenceService:
             documents=version_docs,
             sale_quantities=v_data.get('sale_quantities', [1, 10, 50, 100]),
             volume_margin_rates=PersistenceService._migrate_volume_margins(v_data),
-            status=v_data.get('status', "En construction"),
-            status_dates=v_data.get('status_dates', {}),
-            validation_report=v_data.get('validation_report', {}) or {},
             serie_data=PersistenceService._load_serie_data(v_data.get('serie_data')),
         )
 
@@ -417,14 +384,10 @@ class PersistenceService:
             mwq_uuid=data.get('mwq_uuid', ""),
             project_date=data.get('project_date'),
             preview_image=None,
-            export_history=data.get('export_history', []),
             operations=operations,
             documents=proj_docs,
             sale_quantities=data.get('sale_quantities', [1, 10, 50, 100]),
-            status=data.get('status', "En construction"),
-            status_dates=data.get('status_dates', {}),
             volume_margin_rates=PersistenceService._migrate_volume_margins(data),
-            validation_report=data.get('validation_report', {}) or {},
             serie_data=PersistenceService._load_serie_data(data.get('serie_data')),
         )
 

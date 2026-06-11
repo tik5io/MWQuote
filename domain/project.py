@@ -14,9 +14,8 @@ from .project_version import ProjectVersion
 class Project:
     """
     Un projet MWQuote contient N versions indicées de gamme.
-    Chaque version a ses propres opérations, coûts, documents et statut.
-    Les propriétés de premier niveau (operations, status, …) délèguent
-    vers la version courante.
+    Chaque version a ses propres opérations, coûts et documents.
+    Les propriétés de premier niveau (operations, …) délèguent vers la version courante.
     """
 
     def __init__(
@@ -27,19 +26,20 @@ class Project:
         mwq_uuid: str = "",
         project_date: str = None,
         preview_image: Document = None,
-        export_history: List[dict] = None,
         versions: List[ProjectVersion] = None,
         current_version_index: int = 1,
         # Legacy / convenience args (ignorés si versions est fourni)
         operations: List[Operation] = None,
         documents: List[Document] = None,
         sale_quantities: List[int] = None,
-        status: str = "En construction",
-        status_dates: dict = None,
         volume_margin_rates: dict = None,
-        validation_report: dict = None,
         serie_data: Optional[SerieData] = None,
-        tags: list = None,  # Feature supprimée — conservé pour compatibilité load
+        # Champs obsolètes — acceptés en lecture pour compatibilité fichiers anciens
+        export_history: List[dict] = None,
+        status: str = None,
+        status_dates: dict = None,
+        validation_report: dict = None,
+        tags: list = None,
     ):
         self.name = name
         self.reference = reference
@@ -47,7 +47,6 @@ class Project:
         self.mwq_uuid = mwq_uuid
         self.project_date = project_date
         self.preview_image = preview_image
-        self.export_history: List[dict] = export_history if export_history is not None else []
         self._current_version_index: int = current_version_index
 
         if versions:
@@ -60,9 +59,6 @@ class Project:
                 documents=documents if documents is not None else [],
                 sale_quantities=sale_quantities if sale_quantities is not None else [1, 10, 50, 100],
                 volume_margin_rates=volume_margin_rates if volume_margin_rates is not None else {},
-                status=status,
-                status_dates=status_dates if status_dates is not None else {},
-                validation_report=validation_report if validation_report is not None else {},
                 serie_data=serie_data,
             )
             self._versions = [v1]
@@ -101,8 +97,6 @@ class Project:
         new_version.label = label
         new_version.created_at = datetime.datetime.now().isoformat()
         new_version.created_from_version = self._current_version_index
-        new_version.status = "En construction"
-        new_version.status_dates = {}
         self._versions.append(new_version)
         return new_version
 
@@ -116,14 +110,6 @@ class Project:
         new_v.version_index = 1
         new_v.created_from_version = None
 
-        # Exporter uniquement les entrées d'historique de cette version
-        history = [
-            copy.deepcopy(e) for e in self.export_history
-            if e.get('version_index') == version_index
-        ]
-        for e in history:
-            e['version_index'] = 1
-
         new_project = Project(
             name=self.name,
             reference=self.reference,
@@ -131,7 +117,6 @@ class Project:
             mwq_uuid=str(uuid.uuid4()),
             project_date=self.project_date,
             preview_image=copy.deepcopy(self.preview_image),
-            export_history=history,
             versions=[new_v],
             current_version_index=1,
         )
@@ -175,30 +160,6 @@ class Project:
         self.current_version.volume_margin_rates = value
 
     @property
-    def status(self) -> str:
-        return self.current_version.status
-
-    @status.setter
-    def status(self, value: str):
-        self.current_version.status = value
-
-    @property
-    def status_dates(self) -> dict:
-        return self.current_version.status_dates
-
-    @status_dates.setter
-    def status_dates(self, value: dict):
-        self.current_version.status_dates = value
-
-    @property
-    def validation_report(self) -> dict:
-        return self.current_version.validation_report
-
-    @validation_report.setter
-    def validation_report(self, value: dict):
-        self.current_version.validation_report = value
-
-    @property
     def serie_data(self) -> Optional[SerieData]:
         return self.current_version.serie_data
 
@@ -206,13 +167,45 @@ class Project:
     def serie_data(self, value: Optional[SerieData]):
         self.current_version.serie_data = value
 
-    # Tags feature removed — kept for load/save compatibility only
+    # Champs obsolètes — propriétés fantômes pour compatibilité code existant
     @property
     def tags(self) -> list:
         return []
 
     @tags.setter
     def tags(self, value: list):
+        pass  # ignored
+
+    @property
+    def status(self) -> str:
+        return ""
+
+    @status.setter
+    def status(self, value: str):
+        pass  # ignored
+
+    @property
+    def status_dates(self) -> dict:
+        return {}
+
+    @status_dates.setter
+    def status_dates(self, value: dict):
+        pass  # ignored
+
+    @property
+    def export_history(self) -> list:
+        return []
+
+    @export_history.setter
+    def export_history(self, value: list):
+        pass  # ignored
+
+    @property
+    def validation_report(self) -> dict:
+        return {}
+
+    @validation_report.setter
+    def validation_report(self, value: dict):
         pass  # ignored
 
     # ------------------------------------------------------------------ #
@@ -257,15 +250,10 @@ class Project:
         return False
 
     def clone(self) -> 'Project':
-        """Retourne une copie profonde avec un nouveau UUID et historique vierge."""
+        """Retourne une copie profonde avec un nouveau UUID."""
         new_project = copy.deepcopy(self)
         new_uuid = str(uuid.uuid4())
         new_project.mwq_uuid = new_uuid
-        new_project.export_history = []
-        # Réinitialiser le statut de toutes les versions
-        for v in new_project._versions:
-            v.status = "En construction"
-            v.status_dates = {}
         new_project._regenerate_document_filenames(new_uuid)
         return new_project
 

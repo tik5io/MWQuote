@@ -16,7 +16,6 @@ from infrastructure.indexer import Indexer
 from infrastructure.configuration import ConfigurationService
 from infrastructure.file_manager import FileManager
 from core.app_icon import get_icon_path, load_icon_from_sheet, get_template_path
-from domain.quote_validator import QuoteValidator
 from infrastructure.template_manager import TemplateManager
 
 
@@ -209,8 +208,7 @@ class MainFrame(wx.Frame):
             btn.SetToolTip(
                 f"Version {v_idx}" + (f" — {version.label}" if version.label.strip() else "") +
                 f"\nCréée le {version.created_at[:10]}" +
-                (f"\nDepuis V{version.created_from_version}" if version.created_from_version else "") +
-                f"\nStatus : {version.status}"
+                (f"\nDepuis V{version.created_from_version}" if version.created_from_version else "")
             )
             v_idx_captured = v_idx
             btn.Bind(wx.EVT_TOGGLEBUTTON, lambda e, idx=v_idx_captured: self._on_version_selected(idx))
@@ -384,19 +382,6 @@ class MainFrame(wx.Frame):
             )
             return
 
-        # Le projet doit être enregistré pour pouvoir stocker l'historique d'export
-        if not self.current_path or self._dirty:
-            res = wx.MessageBox(
-                "Le projet doit être enregistré avant de créer une offre.\n"
-                "Enregistrer maintenant ?",
-                "Enregistrement requis",
-                wx.YES_NO | wx.ICON_QUESTION
-            )
-            if res != wx.YES:
-                return
-            if not self._save_project(allow_dialog=True):
-                return
-
         # Générer la référence devis
         reference = self.export_service.get_devis_reference(project=self.project)
         default_filename = self.export_service.get_default_filename(
@@ -426,15 +411,9 @@ class MainFrame(wx.Frame):
                 self.project,
                 template_path,
                 output_path,
-                project_save_path=self.current_path,
                 devis_ref=reference
             )
             progress.Destroy()
-
-            # Rafraîchir l'historique dans le panel (export_service a mis à jour le projet)
-            self.project_panel.load_project(self.project)
-            self._dirty = False
-            self._update_title()
 
             # Ouvrir le fichier automatiquement
             try:
@@ -562,7 +541,7 @@ class MainFrame(wx.Frame):
                 # Auto-index in DB
                 self.indexer.index_file(path)
                 wx.MessageBox(
-                    "Projet dupliqué avec succès !\n(Jalons et exports XLSX remis à zéro)",
+                    "Projet dupliqué avec succès !",
                     "Information",
                     wx.OK | wx.ICON_INFORMATION
                 )
@@ -647,7 +626,6 @@ class MainFrame(wx.Frame):
                     self.current_path = fd.GetPath()
 
         try:
-            self.project.validation_report = QuoteValidator.validate(self.project)
             PersistenceService.save_project(self.project, self.current_path)
             self.indexer.index_file(self.current_path)
             self.template_manager.record_project_template_usage(self.project)

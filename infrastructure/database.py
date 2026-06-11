@@ -11,7 +11,7 @@ class Database:
             if not os.path.exists(db_dir):
                 os.makedirs(db_dir, exist_ok=True)
             db_path = os.path.join(db_dir, "mwquote_index.db")
-        
+
         self.db_path = db_path
         self.init_db()
 
@@ -34,17 +34,11 @@ class Database:
                 drawing_filename TEXT,
                 preview_filename TEXT,
                 last_modified TIMESTAMP,
-                status TEXT DEFAULT 'En construction',
                 min_qty INTEGER,
                 max_qty INTEGER,
-                date_construction TEXT,
-                date_finalisee TEXT,
-                date_transmise TEXT,
                 content_hash TEXT,
                 is_missing INTEGER DEFAULT 0,
-                devis_refs TEXT,
                 mwq_uuid TEXT,
-                is_prototype INTEGER DEFAULT 0,
                 has_serie INTEGER DEFAULT 0
             )
         ''')
@@ -52,17 +46,11 @@ class Database:
         # Migration for existing DBs: Add new columns if they don't exist
         migrations = [
             "ALTER TABLE projects ADD COLUMN preview_filename TEXT",
-            "ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'En construction'",
             "ALTER TABLE projects ADD COLUMN min_qty INTEGER",
             "ALTER TABLE projects ADD COLUMN max_qty INTEGER",
-            "ALTER TABLE projects ADD COLUMN date_construction TEXT",
-            "ALTER TABLE projects ADD COLUMN date_finalisee TEXT",
-            "ALTER TABLE projects ADD COLUMN date_transmise TEXT",
             "ALTER TABLE projects ADD COLUMN content_hash TEXT",
             "ALTER TABLE projects ADD COLUMN is_missing INTEGER DEFAULT 0",
-            "ALTER TABLE projects ADD COLUMN devis_refs TEXT",
             "ALTER TABLE projects ADD COLUMN mwq_uuid TEXT",
-            "ALTER TABLE projects ADD COLUMN is_prototype INTEGER DEFAULT 0",
             "ALTER TABLE projects ADD COLUMN has_serie INTEGER DEFAULT 0",
         ]
         for migration in migrations:
@@ -121,38 +109,6 @@ class Database:
         except:
             pass
 
-        # Analytics cache tables
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS analytics_project_cache (
-                project_id INTEGER PRIMARY KEY,
-                last_modified TEXT,
-                client TEXT,
-                status TEXT,
-                exports_count INTEGER,
-                avg_margin REAL,
-                typology_margins_json TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS analytics_cache_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # Tags table (many-to-one with projects)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS tags (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER,
-                tag TEXT,
-                FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE
-            )
-        ''')
-
         conn.commit()
         conn.close()
 
@@ -160,7 +116,7 @@ class Database:
         """Initialize quote numbering table for persistent counters."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS quote_numbers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,13 +127,12 @@ class Database:
                 UNIQUE(date, prefix)
             )
         ''')
-        
-        # Create index for fast lookups
+
         try:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_quote_date_prefix ON quote_numbers(date, prefix)")
         except:
             pass
-        
+
         conn.commit()
         conn.close()
 
@@ -197,43 +152,30 @@ class Database:
                 cursor.execute('SELECT id, filepath FROM projects WHERE content_hash = ? AND is_missing = 1', (content_hash,))
                 hash_row = cursor.fetchone()
                 if hash_row:
-                    # Found a missing project with same hash - reconnect it!
                     project_id = hash_row[0]
                     old_path = hash_row[1]
                     print(f"Reconnecting project: {old_path} -> {filepath}")
                     cursor.execute('''
                         UPDATE projects
                         SET filepath = ?, is_missing = 0, name = ?, reference = ?, client = ?,
-                            drawing_filename = ?, preview_filename = ?, last_modified = ?, status = ?, min_qty = ?, max_qty = ?,
-                            date_construction = ?, date_finalisee = ?, date_transmise = ?, content_hash = ?,
-                        devis_refs = ?, mwq_uuid = ?, is_prototype = ?, has_serie = ?
-                    WHERE id = ?
-                ''', (
-                    filepath,
-                    project_data['name'],
-                    project_data['reference'],
-                    project_data['client'],
-                    project_data['drawing_filename'],
-                    project_data.get('preview_filename'),
-                    datetime.datetime.now(),
-                    project_data.get('status', 'En construction'),
-                    project_data.get('min_qty'),
-                    project_data.get('max_qty'),
-                    project_data.get('date_construction'),
-                    project_data.get('date_finalisee'),
-                    project_data.get('date_transmise'),
-                    content_hash,
-                    ", ".join([f"{e['devis_ref']} ({e['date']})" for e in project_data.get('export_history', [])]),
-                    project_data.get('mwq_uuid'),
-                    1 if project_data.get('is_prototype') else 0,
-                    1 if project_data.get('has_serie') else 0,
-                    project_id
-                ))
-                    # Clear existing tags and re-insert
-                    cursor.execute('DELETE FROM tags WHERE project_id = ?', (project_id,))
-                    for tag in project_data.get('tags', []):
-                        if tag:
-                            cursor.execute('INSERT INTO tags (project_id, tag) VALUES (?, ?)', (project_id, tag))
+                            drawing_filename = ?, preview_filename = ?, last_modified = ?,
+                            min_qty = ?, max_qty = ?, content_hash = ?, mwq_uuid = ?, has_serie = ?
+                        WHERE id = ?
+                    ''', (
+                        filepath,
+                        project_data['name'],
+                        project_data['reference'],
+                        project_data['client'],
+                        project_data['drawing_filename'],
+                        project_data.get('preview_filename'),
+                        datetime.datetime.now(),
+                        project_data.get('min_qty'),
+                        project_data.get('max_qty'),
+                        content_hash,
+                        project_data.get('mwq_uuid'),
+                        1 if project_data.get('has_serie') else 0,
+                        project_id
+                    ))
                     return project_id
 
             if row:
@@ -241,10 +183,8 @@ class Database:
                 cursor.execute('''
                     UPDATE projects
                     SET name = ?, reference = ?, client = ?, drawing_filename = ?, preview_filename = ?,
-                        last_modified = ?, status = ?, min_qty = ?, max_qty = ?,
-                        date_construction = ?, date_finalisee = ?, date_transmise = ?,
-                        content_hash = ?, is_missing = 0, devis_refs = ?, mwq_uuid = ?,
-                        is_prototype = ?, has_serie = ?
+                        last_modified = ?, min_qty = ?, max_qty = ?,
+                        content_hash = ?, is_missing = 0, mwq_uuid = ?, has_serie = ?
                     WHERE id = ?
                 ''', (
                     project_data['name'],
@@ -253,27 +193,18 @@ class Database:
                     project_data['drawing_filename'],
                     project_data.get('preview_filename'),
                     datetime.datetime.now(),
-                    project_data.get('status', 'En construction'),
                     project_data.get('min_qty'),
                     project_data.get('max_qty'),
-                    project_data.get('date_construction'),
-                    project_data.get('date_finalisee'),
-                    project_data.get('date_transmise'),
                     content_hash,
-                    ", ".join([f"{e['devis_ref']} ({e['date']})" for e in project_data.get('export_history', [])]),
                     project_data.get('mwq_uuid'),
-                    1 if project_data.get('is_prototype') else 0,
                     1 if project_data.get('has_serie') else 0,
                     project_id
                 ))
-                # Clear existing tags to re-insert
-                cursor.execute('DELETE FROM tags WHERE project_id = ?', (project_id,))
             else:
                 cursor.execute('''
-                    INSERT INTO projects (name, reference, client, filepath, drawing_filename, preview_filename, last_modified,
-                                        status, min_qty, max_qty, date_construction, date_finalisee, date_transmise,
-                                        content_hash, is_missing, devis_refs, mwq_uuid, is_prototype, has_serie)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                    INSERT INTO projects (name, reference, client, filepath, drawing_filename, preview_filename,
+                                        last_modified, min_qty, max_qty, content_hash, is_missing, mwq_uuid, has_serie)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 ''', (
                     project_data['name'],
                     project_data['reference'],
@@ -282,30 +213,18 @@ class Database:
                     project_data['drawing_filename'],
                     project_data.get('preview_filename'),
                     datetime.datetime.now(),
-                    project_data.get('status', 'En construction'),
                     project_data.get('min_qty'),
                     project_data.get('max_qty'),
-                    project_data.get('date_construction'),
-                    project_data.get('date_finalisee'),
-                    project_data.get('date_transmise'),
                     content_hash,
-                    ", ".join([f"{e['devis_ref']} ({e['date']})" for e in project_data.get('export_history', [])]),
                     project_data.get('mwq_uuid'),
-                    1 if project_data.get('is_prototype') else 0,
                     1 if project_data.get('has_serie') else 0,
                 ))
                 project_id = cursor.lastrowid
-
-            # Insert tags
-            for tag in project_data.get('tags', []):
-                if tag:
-                    cursor.execute('INSERT INTO tags (project_id, tag) VALUES (?, ?)', (project_id, tag))
 
             return project_id
 
     def search_projects(self,
                        global_search: str = None,
-                       status: str = None,
                        sort_by: str = "last_modified",
                        sort_order: str = "DESC",
                        include_missing: bool = False) -> List[Dict]:
@@ -315,7 +234,6 @@ class Database:
             cursor = conn.cursor()
 
             query = "SELECT DISTINCT p.* FROM projects p"
-            joins = []
             where_clauses = []
             params = []
 
@@ -325,68 +243,34 @@ class Database:
 
             if global_search and global_search.strip():
                 raw_term = global_search.strip()
-                # Support '*' as wildcard by replacing it with SQL '%'
-                if '*' in raw_term:
-                    term = raw_term.replace('*', '%')
-                else:
-                    # Default to 'contains' search if no wildcard provided
-                    term = f"%{raw_term}%"
-                
-                joins.append("LEFT JOIN tags t ON p.id = t.project_id")
-                # Unified OR search across multiple fields
-                search_clause = "(p.reference LIKE ? OR p.client LIKE ? OR p.devis_refs LIKE ? OR t.tag LIKE ?)"
+                term = raw_term.replace('*', '%') if '*' in raw_term else f"%{raw_term}%"
+                search_clause = "(p.reference LIKE ? OR p.client LIKE ? OR p.name LIKE ?)"
                 where_clauses.append(search_clause)
-                params.extend([term, term, term, term])
-
-            if status and status.strip() and status.lower() != "tous":
-                where_clauses.append("p.status = ?")
-                params.append(status.strip())
+                params.extend([term, term, term])
 
             full_query = query
-            if joins:
-                full_query += " " + " ".join(joins)
             if where_clauses:
                 full_query += " WHERE " + " AND ".join(where_clauses)
 
-            # Mapping for sorting columns to DB columns
             col_map = {
                 "Référence": "reference",
                 "Client": "client",
-                "Status": "status",
                 "Q. Min": "min_qty",
                 "Q. Max": "max_qty",
-                "Date Proj.": "project_date",
-                "Devis": "devis_refs",
-                "Tags": "tags",
                 "Modifié le": "last_modified",
                 "reference": "reference",
                 "client": "client",
-                "status": "status",
                 "min_qty": "min_qty",
                 "max_qty": "max_qty",
-                "project_date": "project_date",
                 "last_modified": "last_modified"
             }
             db_sort_col = col_map.get(sort_by, "last_modified")
-            
-            # Ensure sort_order is safe
             order = "DESC" if sort_order.upper() == "DESC" else "ASC"
-            
             full_query += f" ORDER BY p.{db_sort_col} {order}"
 
             cursor.execute(full_query, params)
             rows = cursor.fetchall()
-
-            results = []
-            for row in rows:
-                p = dict(row)
-                # Fetch tags for each project
-                cursor.execute('SELECT tag FROM tags WHERE project_id = ?', (p['id'],))
-                tags = [t['tag'] for t in cursor.fetchall()]
-                p['tags'] = tags
-                results.append(p)
-
-            return results
+            return [dict(row) for row in rows]
 
     def find_by_hash(self, content_hash: str) -> Optional[Dict]:
         """Find a project by its content hash."""
@@ -395,12 +279,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM projects WHERE content_hash = ?', (content_hash,))
             row = cursor.fetchone()
-            if row:
-                p = dict(row)
-                cursor.execute('SELECT tag FROM tags WHERE project_id = ?', (p['id'],))
-                p['tags'] = [t['tag'] for t in cursor.fetchall()]
-                return p
-            return None
+            return dict(row) if row else None
 
     def mark_missing(self, filepath: str) -> bool:
         """Mark a project as missing (file not found)."""
@@ -410,23 +289,13 @@ class Database:
             return cursor.rowcount > 0
 
     def update_filepath(self, project_id_or_path, new_path: str):
-        """Update the filepath for a project. 
-        
-        Can accept either:
-        - project_id (int) to update by ID
-        - old_path (str) to update by old path
-        
-        This replaces the old update_filepath(id, path) method for backward compatibility.
-        """
+        """Update the filepath for a project."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
             if isinstance(project_id_or_path, int):
-                # Update by ID
                 cursor.execute("UPDATE projects SET filepath = ?, is_missing = 0, last_modified = ? WHERE id = ?",
                              (new_path, datetime.datetime.now(), project_id_or_path))
             else:
-                # Update by old path
                 cursor.execute("UPDATE projects SET filepath = ?, is_missing = 0, last_modified = ? WHERE filepath = ?",
                              (new_path, datetime.datetime.now(), project_id_or_path))
             conn.commit()
@@ -441,10 +310,9 @@ class Database:
             return [dict(row) for row in rows]
 
     def delete_project(self, project_id: int):
-        """Delete a project and its associated tags."""
+        """Delete a project."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM tags WHERE project_id = ?', (project_id,))
             cursor.execute('DELETE FROM projects WHERE id = ?', (project_id,))
             conn.commit()
 
@@ -468,101 +336,48 @@ class Database:
             return result == "ok"
 
     def backup_database(self, backup_path: str) -> bool:
-        """
-        Créer un backup complet : base de données + dossier des projets en ZIP.
-        
-        Args:
-            backup_path: Chemin complet du fichier backup destination (.zip)
-            
-        Returns:
-            True si succès, False sinon
-        """
-        import shutil
         import zipfile
         try:
-            # Créer un ZIP
             with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                # Ajouter la base de données
                 zipf.write(self.db_path, arcname="mwquote_index.db")
-            
             return True
         except Exception as e:
             raise Exception(f"Erreur backup: {str(e)}")
 
     def backup_database_with_projects(self, backup_path: str, projects_folder: str = None) -> bool:
-        """
-        Créer un backup complet : base de données + dossier des projets ZIP en un seul fichier.
-        
-        Args:
-            backup_path: Chemin complet du fichier backup destination (.zip)
-            projects_folder: Dossier racine des projets à inclure
-            
-        Returns:
-            True si succès, False sinon
-        """
-        import shutil
         import zipfile
         try:
-            # Créer un ZIP master contenant DB + projets ZIP
             with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as master_zip:
-                # 1. Ajouter la base de données à la racine du ZIP
                 master_zip.write(self.db_path, arcname="mwquote_index.db")
-                
-                # 2. Ajouter le dossier racine des projets
                 if projects_folder and os.path.exists(projects_folder):
                     folder_name = os.path.basename(projects_folder)
                     for root, dirs, files in os.walk(projects_folder):
                         for file in files:
                             file_path = os.path.join(root, file)
-                            # Conserver la structure: projets/fichier.mwq ou projets/subfolder/fichier.zip
                             arcname = os.path.join(folder_name, os.path.relpath(file_path, projects_folder))
                             master_zip.write(file_path, arcname=arcname)
-            
             return True
         except Exception as e:
             raise Exception(f"Erreur backup: {str(e)}")
 
     def restore_database(self, backup_path: str, projects_folder: str = None) -> bool:
-        """
-        Restaurer la base de données et les projets depuis un backup ZIP complet.
-        Extrait:
-        - mwquote_index.db à sa location originale
-        - le dossier des projets à l'emplacement spécifié
-        
-        Args:
-            backup_path: Chemin complet du fichier backup source (.zip)
-            projects_folder: Dossier parent pour restaurer les projets
-            
-        Returns:
-            True si succès, False sinon
-        """
         import shutil
         import zipfile
         try:
             with zipfile.ZipFile(backup_path, 'r') as zipf:
-                # 1. Restaurer la base de données
                 if "mwquote_index.db" in zipf.namelist():
-                    # Extraire vers le dossier parent
                     db_parent = os.path.dirname(self.db_path)
                     zipf.extract("mwquote_index.db", path=db_parent)
-                    
-                    # Renommer si nécessaire (remplacer l'existant)
                     extracted_db = os.path.join(db_parent, "mwquote_index.db")
                     if extracted_db != self.db_path:
                         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
                         shutil.move(extracted_db, self.db_path)
-                
-                # 2. Restaurer les projets
                 if projects_folder:
-                    # Créer le dossier parent s'il n'existe pas
                     parent_folder = os.path.dirname(projects_folder)
                     os.makedirs(parent_folder, exist_ok=True)
-                    
-                    # Extraire tout sauf la DB vers le parent du dossier cible
                     for member in zipf.namelist():
                         if member != "mwquote_index.db" and not member.endswith('/'):
                             zipf.extract(member, path=parent_folder)
-            
             return True
         except Exception as e:
             raise Exception(f"Erreur restore: {str(e)}")
@@ -571,10 +386,7 @@ class Database:
         """Wipe all data from the database."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM tags")
             cursor.execute("DELETE FROM projects")
-
-        # Open separate connection without transaction for VACUUM
         conn = sqlite3.connect(self.db_path, isolation_level=None)
         conn.execute("VACUUM")
         conn.close()
@@ -593,12 +405,6 @@ class Database:
             cursor.execute("SELECT COUNT(DISTINCT client) FROM projects WHERE is_missing = 0")
             stats['total_clients'] = cursor.fetchone()[0]
 
-            cursor.execute("SELECT COUNT(*) FROM tags")
-            stats['total_tags_links'] = cursor.fetchone()[0]
-
-            cursor.execute("SELECT COUNT(DISTINCT tag) FROM tags")
-            stats['unique_tags'] = cursor.fetchone()[0]
-
             if os.path.exists(self.db_path):
                 stats['db_size_kb'] = os.path.getsize(self.db_path) / 1024
             else:
@@ -607,10 +413,7 @@ class Database:
         return stats
 
     def mark_missing_files(self) -> int:
-        """Mark projects as missing if their files no longer exist on disk.
-
-        Returns count of newly marked missing projects.
-        """
+        """Mark projects as missing if their files no longer exist on disk."""
         marked = 0
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -624,24 +427,20 @@ class Database:
         return marked
 
     def delete_missing_files(self) -> int:
-        """Remove projects from DB that are marked as missing (permanently)."""
+        """Remove projects from DB that are marked as missing."""
         removed = 0
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id FROM projects WHERE is_missing = 1")
             rows = cursor.fetchall()
             for (pid,) in rows:
-                cursor.execute("DELETE FROM tags WHERE project_id = ?", (pid,))
                 cursor.execute("DELETE FROM projects WHERE id = ?", (pid,))
                 removed += 1
             conn.commit()
         return removed
 
     def reconcile_files(self) -> Dict:
-        """Check all file paths and update missing status.
-
-        Returns stats about what was found.
-        """
+        """Check all file paths and update missing status."""
         stats = {'checked': 0, 'missing': 0, 'found': 0}
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -651,11 +450,9 @@ class Database:
                 stats['checked'] += 1
                 exists = os.path.exists(path)
                 if exists and was_missing:
-                    # File found again!
                     cursor.execute("UPDATE projects SET is_missing = 0 WHERE id = ?", (pid,))
                     stats['found'] += 1
                 elif not exists and not was_missing:
-                    # File went missing
                     cursor.execute("UPDATE projects SET is_missing = 1 WHERE id = ?", (pid,))
                     stats['missing'] += 1
             conn.commit()
@@ -697,25 +494,15 @@ class Database:
     def migrate_legacy_filenames_to_uuid(self):
         """Auto-assign UUIDs to projects that don't have them."""
         import uuid
-        
-        stats = {
-            "migrated": 0,
-            "errors": []
-        }
-        
+        stats = {"migrated": 0, "errors": []}
         legacy_projects = self.get_all_projects_without_uuid()
-        
         for project in legacy_projects:
             try:
                 new_uuid = str(uuid.uuid4())
                 self.set_project_uuid(project['id'], new_uuid)
                 stats["migrated"] += 1
             except Exception as err:
-                stats["errors"].append({
-                    "project": project.get('name', 'Unknown'),
-                    "error": str(err)
-                })
-        
+                stats["errors"].append({"project": project.get('name', 'Unknown'), "error": str(err)})
         return stats
 
     # ============= Quote Numbering Methods =============
@@ -737,7 +524,6 @@ class Database:
         date_str = date.isoformat()
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            # Use INSERT OR REPLACE for atomic update
             cursor.execute('''
                 INSERT OR REPLACE INTO quote_numbers (date, prefix, counter, last_updated)
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -750,57 +536,3 @@ class Database:
         new_value = current + 1
         self.update_quote_counter(date, prefix, new_value)
         return new_value
-
-    def reset_quote_counter(self, date: datetime.date, prefix: str = "OD"):
-        """Reset counter to 0 for a date and prefix."""
-        self.update_quote_counter(date, prefix, 0)
-
-    def get_all_quote_counters_for_date(self, date: datetime.date):
-        """Get all prefix counters for a specific date."""
-        date_str = date.isoformat()
-        with self.get_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT prefix, counter FROM quote_numbers WHERE date = ?",
-                (date_str,)
-            )
-            rows = cursor.fetchall()
-            return {row['prefix']: row['counter'] for row in rows}
-
-    def get_quote_stats_for_date(self, date: datetime.date):
-        """Get numbering stats for a date."""
-        date_str = date.isoformat()
-        with self.get_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM quote_numbers WHERE date = ?",
-                (date_str,)
-            )
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
-
-    def export_quote_numbering_stats(self, start_date: datetime.date, end_date: datetime.date):
-        """Export numbering stats for a date range."""
-        start_str = start_date.isoformat()
-        end_str = end_date.isoformat()
-        with self.get_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT date, prefix, counter, last_updated FROM quote_numbers
-                WHERE date BETWEEN ? AND ?
-                ORDER BY date DESC, prefix
-            ''', (start_str, end_str))
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
-    def update_project_export_history(self, project_id: int, export_refs: str):
-        """Update the devis_refs field with export history."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE projects SET devis_refs = ? WHERE id = ?",
-                (export_refs, project_id)
-            )
-            conn.commit()

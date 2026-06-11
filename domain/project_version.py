@@ -18,7 +18,4 @@ class ProjectVersion:
     documents: List[Document] = field(default_factory=list)  # Plans de la pièce
     sale_quantities: List[int] = field(default_factory=lambda: [1, 10, 50, 100])
     volume_margin_rates: dict = field(default_factory=dict)
-    status: str = "En construction"
-    status_dates: dict = field(default_factory=dict)
-    validation_report: dict = field(default_factory=dict)
     serie_data: Optional[SerieData] = None

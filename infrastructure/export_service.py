@@ -1,5 +1,4 @@
 import os
-import base64
 import datetime
 import calendar
 from copy import copy
@@ -7,7 +6,6 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from infrastructure.logging_service import get_module_logger
 from domain.cost import CostType
-from domain.quote_validator import QuoteValidator
 
 logger = get_module_logger("ExportService", "export_project.log")
 
@@ -29,73 +27,19 @@ class ExportService:
             from infrastructure.quote_numbering_service import QuoteNumberingService
             self.numbering_service = QuoteNumberingService(db)
 
-    def get_devis_reference(self, project=None, sub_version: int = None):
+    def get_devis_reference(self, project=None):
         """
-        Génère la référence du devis avec numérotation persistante.
-        Format: {prefix}{date}_{counter:03d}-{sub_version}
-        Exemple: OD260202_001-1
-        
-        Logique:
-        - Si la quote a déjà un numéro (dans export_history), le réutiliser
-        - Sinon, assigner un nouveau numéro avec le compteur du jour
-        - La sous-version s'incrémente à chaque export, peu importe le jour
-        
-        Args:
-            project: Project object (for compatibility, can be None if using numbering_service)
-            sub_version: Sub-version number. If None, uses history count for that project
+        Génère une nouvelle référence de devis avec numérotation persistante.
+        Format: {prefix}{date}_{counter:03d}
+        Exemple: OD260202_001
         """
-        
-        # Si numbering service disponible, l'utiliser (meilleur système)
-        if self.numbering_service and project and hasattr(project, 'export_history'):
-            # Chercher si cette quote a déjà un numéro assigné dans son historique
-            existing_ref = None
-            for export_entry in project.export_history:
-                devis_ref = export_entry.get('devis_ref') or export_entry.get('reference')
-                if devis_ref and devis_ref.startswith('OD'):
-                    # Extraire le numéro (sans la sous-version)
-                    # Format: OD260202_001-1 → on veut OD260202_001
-                    if '-' in devis_ref:
-                        existing_ref = devis_ref.rsplit('-', 1)[0]
-                    else:
-                        existing_ref = devis_ref
-                    break
-            
-            # Si un numéro existe, le réutiliser
-            if existing_ref:
-                quote_num = existing_ref
-            else:
-                # Sinon, obtenir un nouveau numéro (incrémente le compteur du jour)
-                quote_num, counter = self.numbering_service.get_next_quote_number("OD")
-            
-            # Déterminer la sous-version (nombre d'exports précédents de cette quote + 1)
-            if sub_version is None:
-                sub_version = len(project.export_history) + 1
-            
-            return f"{quote_num}-{sub_version}"
-        
-        # Fallback ancien système (compatible)
+        if self.numbering_service:
+            quote_num, _ = self.numbering_service.get_next_quote_number("OD")
+            return quote_num
+
+        # Fallback sans DB
         today = datetime.date.today()
-        base_ref = f"OD{today.strftime('%y%m%d')}_001"
-        
-        if project and hasattr(project, 'export_history'):
-            # Chercher si cette quote a déjà un numéro
-            existing_ref = None
-            for export_entry in project.export_history:
-                devis_ref = export_entry.get('devis_ref') or export_entry.get('reference')
-                if devis_ref and devis_ref.startswith('OD'):
-                    if '-' in devis_ref:
-                        existing_ref = devis_ref.rsplit('-', 1)[0]
-                    else:
-                        existing_ref = devis_ref
-                    break
-            
-            if existing_ref:
-                base_ref = existing_ref
-            
-            sub_version = len(project.export_history) + 1
-            return f"{base_ref}-{sub_version}"
-            
-        return base_ref
+        return f"OD{today.strftime('%y%m%d')}_001"
 
     def get_default_filename(self, project, devis_ref: str = None):
         """Génère le nom de fichier par défaut : DEVIS_REF-PART_REF-xQTYmin-xQTYmax.xlsx"""
@@ -140,35 +84,15 @@ class ExportService:
     # =========================
     # PUBLIC
     # =========================
-    def export_excel(self, project, template_path, output_path, project_save_path=None, devis_ref=None):
+    def export_excel(self, project, template_path, output_path, devis_ref=None):
         try:
             wb = load_workbook(template_path)
             ws = wb.active
 
             # 0. Generate devis reference
-            ref_date = datetime.date.today()
-            
-            # IMPORTANT: Compter les exports précédents AVANT d'ajouter le nouveau
-            # pour que la sous-version soit correcte
-            if not hasattr(project, 'export_history'):
-                project.export_history = []
-            
             if devis_ref is None:
                 devis_ref = self.get_devis_reference(project)
 
-            # Keep a fresh diagnostic snapshot during exports too.
-            project.validation_report = QuoteValidator.validate(project)
-            
-            # THE CRITICAL STEP: Add to history NOW so placeholders use THE SAME reference
-            project.export_history.append({
-                "devis_ref": devis_ref,
-                "date": ref_date.strftime("%d/%m/%Y"),
-                "time": datetime.datetime.now().strftime("%H:%M"),
-                "version_index": getattr(project, 'current_version_index', 1),
-            })
-
-            # Placeholder replacement will now call get_devis_reference again, 
-            # but daily_count will have increased, so we MUST use the devis_ref we just generated.
             self._current_export_ref = devis_ref
 
             # 1. Trier les quantités par ordre croissant
@@ -230,25 +154,6 @@ class ExportService:
             wb.save(output_path)
 
             logger.info(f"Export Excel réussi → {output_path}")
-
-            # Embed the generated XLSX bytes in the last export_history entry
-            try:
-                with open(output_path, 'rb') as f:
-                    xlsx_bytes = f.read()
-                xlsx_filename = os.path.basename(output_path)
-                if project.export_history:
-                    last_entry = project.export_history[-1]
-                    last_entry['xlsx_filename'] = xlsx_filename
-                    last_entry['xlsx_data_b64'] = base64.b64encode(xlsx_bytes).decode('ascii')
-                    last_entry['_xlsx_path'] = f"documents/exports/{xlsx_filename}"
-            except Exception as e:
-                logger.warning(f"Impossible d'embarquer le XLSX dans le projet: {e}")
-
-            # 6. Save project to persist history if path provided
-            if project_save_path:
-                from infrastructure.persistence import PersistenceService
-                PersistenceService.save_project(project, project_save_path)
-                logger.info(f"Projet mis à jour avec l'historique d'export → {project_save_path}")
 
         except PermissionError:
             msg = f"Impossible d'enregistrer le fichier '{os.path.basename(output_path)}'. Vérifiez qu'il n'est pas déjà ouvert dans Excel."

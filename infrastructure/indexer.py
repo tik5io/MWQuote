@@ -78,16 +78,9 @@ class Indexer:
             'filepath': filepath,
             'drawing_filename': project.drawing_filename,
             'preview_filename': getattr(project.preview_image, 'filename', None) if getattr(project, 'preview_image', None) else None,
-            'tags': [],
-            'status': project.status,
             'min_qty': qtys[0] if qtys else 0,
             'max_qty': qtys[-1] if qtys else 0,
-            'date_construction': project.status_dates.get("En construction"),
-            'date_finalisee': project.status_dates.get("Finalisée"),
-            'date_transmise': project.status_dates.get("Transmise"),
             'content_hash': content_hash,
-            'export_history': project.export_history,
-            'is_prototype': 0,
             'has_serie': getattr(project, 'serie_data', None) is not None,
         }
 

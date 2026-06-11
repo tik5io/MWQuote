@@ -35,30 +35,13 @@ class TimelinePanel(scrolled.ScrolledPanel):
     """Chronological timeline view of project activity."""
 
     EVENT_COLORS = {
-        "modified":     wx.Colour(70, 130, 180),
-        "construction": wx.Colour(210, 120, 30),
-        "finalisee":    wx.Colour(34, 139, 34),
-        "transmise":    wx.Colour(106, 90, 205),
-        "export":       wx.Colour(180, 50, 50),
+        "modified": wx.Colour(70, 130, 180),
     }
     EVENT_ICONS = {
-        "modified":     "📝",
-        "construction": "🏗️",
-        "finalisee":    "🏁",
-        "transmise":    "📧",
-        "export":       "💾",
+        "modified": "📝",
     }
     EVENT_LABELS = {
-        "modified":     "Modifié",
-        "construction": "En construction",
-        "finalisee":    "Finalisée",
-        "transmise":    "Transmise",
-        "export":       "Export XLSX",
-    }
-    STATUS_BG = {
-        "En construction": wx.Colour(255, 220, 130),
-        "Finalisée":       wx.Colour(160, 220, 160),
-        "Transmise":       wx.Colour(160, 195, 240),
+        "modified": "Modifié",
     }
 
     def __init__(self, parent):
@@ -88,29 +71,6 @@ class TimelinePanel(scrolled.ScrolledPanel):
                     events.append({"datetime": ev_dt, "type": "modified", "project": p, "detail": ts[:16]})
                 except Exception:
                     pass
-
-            # Status milestone events (date only)
-            for col, ev_type in [("date_construction", "construction"),
-                                  ("date_finalisee",    "finalisee"),
-                                  ("date_transmise",    "transmise")]:
-                val = str(p.get(col) or '')
-                if val:
-                    try:
-                        ev_dt = datetime.fromisoformat(val[:10])
-                        events.append({"datetime": ev_dt, "type": ev_type, "project": p, "detail": val[:10]})
-                    except Exception:
-                        pass
-
-            # Export events from devis_refs text (format per line: "DD/MM/YYYY - OD...")
-            for line in (str(p.get('devis_refs') or '')).split('\n'):
-                line = line.strip()
-                if ' - ' in line:
-                    date_str, ref = line.split(' - ', 1)
-                    try:
-                        ev_dt = datetime.strptime(date_str.strip(), "%d/%m/%Y")
-                        events.append({"datetime": ev_dt, "type": "export", "project": p, "detail": ref.strip()})
-                    except Exception:
-                        pass
 
         events.sort(key=lambda e: e["datetime"], reverse=True)
 
@@ -205,13 +165,6 @@ class TimelinePanel(scrolled.ScrolledPanel):
         ref_lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
         row1.Add(ref_lbl, 1, wx.ALIGN_CENTER_VERTICAL)
 
-        status = p.get('status', '')
-        if status:
-            s_lbl = wx.StaticText(card, label=f" {status} ")
-            s_lbl.SetBackgroundColour(self.STATUS_BG.get(status, wx.Colour(210, 210, 210)))
-            s_lbl.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-            row1.Add(s_lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
-
         content.Add(row1, 0, wx.EXPAND | wx.TOP, 4)
 
         # Row 2: time detail (for modified and export)
@@ -228,8 +181,6 @@ class TimelinePanel(scrolled.ScrolledPanel):
 
         # Bind click/double-click on all child widgets
         all_widgets = [card, stripe, type_lbl, sep_lbl, ref_lbl]
-        if status:
-            all_widgets.append(s_lbl)
 
         def on_click(event, p_data=p, c=card):
             self._set_selected(c)
@@ -321,26 +272,18 @@ class SearchFrame(wx.Frame):
         search_box = wx.BoxSizer(wx.HORIZONTAL)
         search_box.Add(wx.StaticText(top_bar_container, label="Rechercher :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         self.search_global = wx.TextCtrl(top_bar_container, style=wx.TE_PROCESS_ENTER)
-        self.search_global.SetHint("Réf, Client, Tag, Devis...")
+        self.search_global.SetHint("Réf, Client, Nom...")
         search_box.Add(self.search_global, 1, wx.EXPAND)
-        
-        # Status Filter
-        status_box = wx.BoxSizer(wx.HORIZONTAL)
-        status_box.Add(wx.StaticText(top_bar_container, label="Statut :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        self.status_filter = wx.Choice(top_bar_container, choices=["Tous", "En construction", "Finalisée", "Transmise"])
-        self.status_filter.SetSelection(0)
-        status_box.Add(self.status_filter, 1, wx.EXPAND)
-        
+
         search_btn = wx.Button(top_bar_container, label="Rechercher")
         search_btn.Bind(wx.EVT_BUTTON, self._on_search)
-        
+
         # Reset button
         reset_btn = wx.Button(top_bar_container, label="X", size=(40, -1))
         reset_btn.Bind(wx.EVT_BUTTON, self._on_reset)
         reset_btn.SetToolTip("Effacer les filtres")
 
         top_bar.Add(search_box, 3, wx.ALL | wx.EXPAND, 5)
-        top_bar.Add(status_box, 1, wx.ALL | wx.EXPAND, 5)
         top_bar.Add(search_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         top_bar.Add(reset_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 
@@ -369,13 +312,10 @@ class SearchFrame(wx.Frame):
         self.list_ctrl.InsertColumn(1, "Référence", width=120)
         self.list_ctrl.InsertColumn(2, "Client", width=120)
         self.list_ctrl.InsertColumn(3, "Mode", width=110)
-        self.list_ctrl.InsertColumn(4, "Status", width=100)
-        self.list_ctrl.InsertColumn(5, "Q. Min", width=60)
-        self.list_ctrl.InsertColumn(6, "Q. Max", width=60)
-        self.list_ctrl.InsertColumn(7, "Date Proj.", width=90)
-        self.list_ctrl.InsertColumn(8, "Jalons", width=180)
-        self.list_ctrl.InsertColumn(9, "Devis", width=120)
-        self.list_ctrl.InsertColumn(10, "Modifié le", width=110)
+        self.list_ctrl.InsertColumn(4, "Q. Min", width=60)
+        self.list_ctrl.InsertColumn(5, "Q. Max", width=60)
+        self.list_ctrl.InsertColumn(6, "Date Proj.", width=90)
+        self.list_ctrl.InsertColumn(7, "Modifié le", width=110)
 
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_item_selected)
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_item_activated)
@@ -424,7 +364,6 @@ class SearchFrame(wx.Frame):
         
         # Bind search events (Enter key)
         self.search_global.Bind(wx.EVT_TEXT_ENTER, self._on_search)
-        self.status_filter.Bind(wx.EVT_CHOICE, self._on_search)
 
     def _build_menu(self):
         menubar = wx.MenuBar()
@@ -504,16 +443,14 @@ class SearchFrame(wx.Frame):
     def _on_reset(self, event):
         """Clear all filters and show all projects"""
         self.search_global.SetValue("")
-        self.status_filter.SetSelection(0)
         self.sort_col = "last_modified"
         self.sort_ascending = False
         self._refresh_list()
 
     def _on_search(self, event):
-        """Trigger global search using term and status"""
+        """Trigger global search"""
         term = self.search_global.GetValue()
-        status = self.status_filter.GetStringSelection()
-        self._refresh_list(term, status)
+        self._refresh_list(term)
 
     def _on_col_click(self, event):
         col_idx = event.GetColumn()
@@ -529,14 +466,12 @@ class SearchFrame(wx.Frame):
             
         self._on_search(None)
 
-    def _refresh_list(self, term=None, status=None):
+    def _refresh_list(self, term=None):
         if term is None: term = self.search_global.GetValue()
-        if status is None: status = self.status_filter.GetStringSelection()
 
         sort_order = "ASC" if self.sort_ascending else "DESC"
         results = self.db.search_projects(
             global_search=term,
-            status=status,
             sort_by=self.sort_col,
             sort_order=sort_order
         )
@@ -550,53 +485,30 @@ class SearchFrame(wx.Frame):
             return
 
         self.list_ctrl.DeleteAllItems()
-        
-        # Row background colours for modes
-        PROTO_BG  = wx.Colour(255, 237, 200)   # warm orange tint
-        SERIE_BG  = wx.Colour(210, 240, 220)   # soft green tint
-        BOTH_BG   = wx.Colour(220, 230, 255)   # blue-violet for both
+
+        SERIE_BG = wx.Colour(210, 240, 220)   # soft green tint
 
         for i, p in enumerate(results):
-            has_preview  = bool(p.get('preview_filename'))
-            is_prototype = bool(p.get('is_prototype', 0))
-            has_serie    = bool(p.get('has_serie', 0))
+            has_preview = bool(p.get('preview_filename'))
+            has_serie   = bool(p.get('has_serie', 0))
 
-            # Build mode label
-            mode_parts = []
-            if is_prototype: mode_parts.append("PROTO")
-            if has_serie:    mode_parts.append("SÉRIE")
-            mode_label = " + ".join(mode_parts) if mode_parts else "—"
+            mode_label = "SÉRIE" if has_serie else "—"
 
             idx = self.list_ctrl.InsertItem(i, "Oui" if has_preview else "")
             self.list_ctrl.SetItem(idx, 1, str(p.get('reference') or ""))
             self.list_ctrl.SetItem(idx, 2, str(p.get('client') or ""))
             self.list_ctrl.SetItem(idx, 3, mode_label)
-            self.list_ctrl.SetItem(idx, 4, str(p.get('status') or ""))
-            self.list_ctrl.SetItem(idx, 5, str(p.get('min_qty', 0)))
-            self.list_ctrl.SetItem(idx, 6, str(p.get('max_qty', 0)))
-            self.list_ctrl.SetItem(idx, 7, str(p.get('project_date') or ""))
-
-            # Format milestones summary
-            ms = []
-            if p.get('date_construction'): ms.append(f"🏗️{p['date_construction']}")
-            if p.get('date_finalisee'):    ms.append(f"🏁{p['date_finalisee']}")
-            if p.get('date_transmise'):    ms.append(f"📧{p['date_transmise']}")
-            self.list_ctrl.SetItem(idx, 8, " | ".join(ms))
-
-            self.list_ctrl.SetItem(idx, 9, str(p.get('devis_refs') or ""))
+            self.list_ctrl.SetItem(idx, 4, str(p.get('min_qty', 0)))
+            self.list_ctrl.SetItem(idx, 5, str(p.get('max_qty', 0)))
+            self.list_ctrl.SetItem(idx, 6, str(p.get('project_date') or ""))
             ts = p.get('last_modified', "")
-            self.list_ctrl.SetItem(idx, 10, str(ts)[:16])
+            self.list_ctrl.SetItem(idx, 7, str(ts)[:16])
 
-            # Row color based on mode
-            if is_prototype and has_serie:
-                self.list_ctrl.SetItemBackgroundColour(idx, BOTH_BG)
-            elif has_serie:
+            if has_serie:
                 self.list_ctrl.SetItemBackgroundColour(idx, SERIE_BG)
-            elif is_prototype:
-                self.list_ctrl.SetItemBackgroundColour(idx, PROTO_BG)
 
             self.project_map[idx] = p
-            
+
         self.SetStatusText(f"{len(results)} projets trouvés")
 
     def _on_item_selected(self, event):
@@ -697,7 +609,7 @@ class SearchFrame(wx.Frame):
             self._refresh_list()
             wx.MessageBox(
                 f"Projet dupliqué vers :\n{os.path.basename(dst_path)}\n"
-                f"(Jalons et exports XLSX remis à zéro)",
+                f"(fichier indépendant)",
                 "Succès",
                 wx.OK | wx.ICON_INFORMATION
             )
@@ -1132,20 +1044,15 @@ class SearchFrame(wx.Frame):
             "reference": project.reference,
             "name": project.name,
             "client_anonymized": anon_client,
-            "status": project.status,
             "project_date": project.project_date,
-            "status_dates": dict(project.status_dates or {}),
             "sale_quantities": list(project.sale_quantities or []),
             "volume_margin_rates": dict(project.volume_margin_rates or {}),
-            "export_history_count": len(project.export_history or []),
-            "devis_refs_db": db_row.get("devis_refs") or "",
             "last_modified_db": db_row.get("last_modified"),
             "usage_summary": {
                 "operations_count": len(project.operations),
                 "costs_count": total_costs,
                 "cost_type_counts": cost_type_counts,
             },
-            "validation_report": getattr(project, "validation_report", {}) or {},
             "operations": operations_payload,
         }
 
@@ -1478,19 +1385,9 @@ class SearchFrame(wx.Frame):
                                 project,
                                 template_path,
                                 output_path,
-                                project_save_path=p_data['filepath'],
                                 devis_ref=reference
                             )
-                            
-                            # Update DB
-                            if not hasattr(project, 'export_history'):
-                                project.export_history = []
-                            
-                            self.db.update_project_export_history(
-                                p_data['id'],
-                                '\n'.join([f"{e['date']} - {e.get('devis_ref', 'N/A')}" for e in project.export_history])
-                            )
-                            
+
                             success_count += 1
                             logger.info(f"Export successful: {output_path}")
                             
@@ -1554,27 +1451,17 @@ class SearchFrame(wx.Frame):
                         project,
                         template_path,
                         output_path,
-                        project_save_path=p_data['filepath'],
                         devis_ref=reference
                     )
-                    
+
                     progress.Destroy()
-                    
+
                     # Try to open the file automatically
                     try:
                         os.startfile(output_path)
                     except Exception as e:
                         logger.warning(f"Impossible d'ouvrir le fichier automatiquement: {e}")
-                    
-                    # Update DB with new export history
-                    if not hasattr(project, 'export_history'):
-                        project.export_history = []
-                    
-                    self.db.update_project_export_history(
-                        p_data['id'],
-                        '\n'.join([f"{e['date']} - {e.get('devis_ref', 'N/A')}" for e in project.export_history])
-                    )
-                    
+
                     wx.MessageBox(
                         f"Export réussi !\n\n"
                         f"Référence : {reference}\n"

@@ -5,7 +5,6 @@ import base64
 import io
 import os
 import time
-import tempfile
 from domain.document import Document
 
 from ui.dialogs.quantity_manager_dialog import QuantityManagerDialog
@@ -95,36 +94,6 @@ class ProjectPanel(wx.Panel):
         
         main_sizer.Add(qty_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
-        # Milestones Section - Collapsible
-        self.milestones_pane = wx.CollapsiblePane(self, label="Suivi de l'Offre (Jalons)")
-        self.milestones_pane.Bind(wx.EVT_COLLAPSIBLEPANE_CHANGED, self._on_milestones_pane_toggled)
-        milestones_parent = self.milestones_pane.GetPane()
-        
-        ms_sizer = wx.BoxSizer(wx.VERTICAL)
-        
-        status_box = wx.BoxSizer(wx.HORIZONTAL)
-        status_box.Add(wx.StaticText(milestones_parent, label="Statut actuel :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
-        
-        self.status_choice = wx.Choice(milestones_parent, choices=["En construction", "Finalisée", "Transmise"])
-        self.status_choice.Bind(wx.EVT_CHOICE, self._on_status_changed)
-        status_box.Add(self.status_choice, 1, wx.EXPAND)
-        
-        ms_sizer.Add(status_box, 0, wx.EXPAND | wx.ALL, 5)
-        
-        self.milestone_info = wx.StaticText(milestones_parent, label="")
-        ms_sizer.Add(self.milestone_info, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
-        
-        milestones_parent.SetSizer(ms_sizer)
-        main_sizer.Add(self.milestones_pane, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
-        self.milestones_pane.Collapse(False)
-        
-        # Export History Section
-        history_sizer = wx.StaticBoxSizer(wx.VERTICAL, self, "Historique des Exports XLSX (double-clic pour ouvrir)")
-        self.history_list = wx.ListBox(self, size=(-1, 100))
-        self.history_list.Bind(wx.EVT_LISTBOX_DCLICK, self._on_history_double_click)
-        history_sizer.Add(self.history_list, 1, wx.EXPAND | wx.ALL, 5)
-        main_sizer.Add(history_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
-        
         self.SetSizer(main_sizer)
 
     def load_project(self, project):
@@ -148,14 +117,6 @@ class ProjectPanel(wx.Panel):
             self.doc_list.load_documents(project.documents)
             self._set_preview_bitmap(getattr(project, 'preview_image', None))
             self._update_qty_ui()
-            
-            # Load status and milestones
-            status = getattr(project, "status", "En construction")
-            idx = self.status_choice.FindString(status)
-            if idx != wx.NOT_FOUND:
-                self.status_choice.SetSelection(idx)
-            self._update_milestone_ui()
-            self._update_history_ui()
         finally:
             self._is_loading = False
 
@@ -181,13 +142,6 @@ class ProjectPanel(wx.Panel):
                 self.on_project_changed()
 
     def _on_preview_pane_toggled(self, event):
-        self.Layout()
-        top = self.GetTopLevelParent()
-        if top:
-            top.Layout()
-        event.Skip()
-
-    def _on_milestones_pane_toggled(self, event):
         self.Layout()
         top = self.GetTopLevelParent()
         if top:
@@ -332,74 +286,6 @@ class ProjectPanel(wx.Panel):
         self._set_preview_bitmap(None)
         self.save_project()
 
-
-    def _update_milestone_ui(self):
-        if not self.project: return
-        dates = getattr(self.project, "status_dates", {})
-        info = []
-        if dates.get("En construction"): info.append(f"🏗️ Construction: {dates['En construction']}")
-        if dates.get("Finalisée"): info.append(f"🏁 Finalisée: {dates['Finalisée']}")
-        if dates.get("Transmise"): info.append(f"📧 Transmise: {dates['Transmise']}")
-        self.milestone_info.SetLabel(" | ".join(info) if info else "Aucun jalon enregistré")
-
-    def _on_status_changed(self, event):
-        if not self.project: return
-        new_status = self.status_choice.GetStringSelection()
-        
-        import datetime
-        now_str = datetime.date.today().isoformat()
-        
-        if not hasattr(self.project, "status_dates"):
-            self.project.status_dates = {}
-            
-        self.project.status = new_status
-        # Set date for the new status if not already set (or always update? Let's update to current date when picked)
-        self.project.status_dates[new_status] = now_str
-        
-        self._update_milestone_ui()
-        self.save_project()
-
-    def _on_history_double_click(self, event):
-        if not self.project:
-            return
-        sel = self.history_list.GetSelection()
-        if sel == wx.NOT_FOUND:
-            return
-        history = list(reversed(getattr(self.project, 'export_history', [])))
-        if sel >= len(history):
-            return
-        entry = history[sel]
-        xlsx_b64 = entry.get('xlsx_data_b64')
-        if not xlsx_b64:
-            wx.MessageBox(
-                "Aucun fichier XLSX stocké pour cet export.\n"
-                "Les exports futurs seront automatiquement sauvegardés.",
-                "Fichier non disponible",
-                wx.OK | wx.ICON_INFORMATION
-            )
-            return
-        try:
-            xlsx_bytes = base64.b64decode(xlsx_b64)
-            filename = entry.get('xlsx_filename', f"{entry.get('devis_ref', 'export')}.xlsx")
-            tmp_path = os.path.join(tempfile.gettempdir(), filename)
-            with open(tmp_path, 'wb') as f:
-                f.write(xlsx_bytes)
-            os.startfile(tmp_path)
-        except Exception as e:
-            wx.MessageBox(f"Erreur lors de l'ouverture du XLSX:\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
-
-    def _update_history_ui(self):
-        if not self.project: return
-        self.history_list.Clear()
-        history = getattr(self.project, "export_history", [])
-        for entry in reversed(history):
-            time_str = f" {entry['time']}" if 'time' in entry else ""
-            has_xlsx = "💾 " if entry.get('xlsx_data_b64') else "   "
-            # Affiche la version — V1 par défaut pour les anciens exports
-            v_idx = entry.get('version_index', 1)
-            self.history_list.Append(
-                f"{has_xlsx}{entry['devis_ref']} [V{v_idx}] - {entry['date']}{time_str}"
-            )
 
     def _update_qty_ui(self):
         if not self.project: return
