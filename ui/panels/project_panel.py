@@ -3,8 +3,9 @@ import wx
 import wx.adv
 import base64
 import io
+import os
 import time
-from infrastructure.configuration import ConfigurationService
+import tempfile
 from domain.document import Document
 
 from ui.dialogs.quantity_manager_dialog import QuantityManagerDialog
@@ -20,7 +21,6 @@ class ProjectPanel(wx.Panel):
         super().__init__(parent)
         self.project = None
         self.on_quantities_changed = None
-        self.config_service = ConfigurationService()
         self._build_ui()
 
     def _build_ui(self):
@@ -118,24 +118,10 @@ class ProjectPanel(wx.Panel):
         main_sizer.Add(self.milestones_pane, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
         self.milestones_pane.Collapse(False)
         
-        # Tags Section
-        tag_sizer = wx.BoxSizer(wx.VERTICAL)
-        tag_sizer.Add(wx.StaticText(self, label="Étiquettes de Classification du Projet :"), 0, wx.BOTTOM, 5)
-        
-        self.tags_wrap_sizer = wx.WrapSizer(wx.HORIZONTAL)
-        self.tag_checkboxes = []
-        for tag in self.config_service.get_project_tags():
-            cb = wx.CheckBox(self, label=tag)
-            cb.Bind(wx.EVT_CHECKBOX, lambda e: self.save_project())
-            self.tag_checkboxes.append(cb)
-            self.tags_wrap_sizer.Add(cb, 0, wx.ALL, 5)
-            
-        tag_sizer.Add(self.tags_wrap_sizer, 0, wx.EXPAND)
-        main_sizer.Add(tag_sizer, 0, wx.EXPAND | wx.ALL, 10)
-
         # Export History Section
-        history_sizer = wx.StaticBoxSizer(wx.VERTICAL, self, "Historique des Exports (XLSX)")
+        history_sizer = wx.StaticBoxSizer(wx.VERTICAL, self, "Historique des Exports XLSX (double-clic pour ouvrir)")
         self.history_list = wx.ListBox(self, size=(-1, 100))
+        self.history_list.Bind(wx.EVT_LISTBOX_DCLICK, self._on_history_double_click)
         history_sizer.Add(self.history_list, 1, wx.EXPAND | wx.ALL, 5)
         main_sizer.Add(history_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
         
@@ -162,7 +148,6 @@ class ProjectPanel(wx.Panel):
             self.doc_list.load_documents(project.documents)
             self._set_preview_bitmap(getattr(project, 'preview_image', None))
             self._update_qty_ui()
-            self._update_tags_ui()
             
             # Load status and milestones
             status = getattr(project, "status", "En construction")
@@ -190,7 +175,6 @@ class ProjectPanel(wx.Panel):
             else:
                 self.project.project_date = None
             
-            self.project.tags = [cb.GetLabel() for cb in self.tag_checkboxes if cb.GetValue()]
             self.project.documents = self.doc_list.documents
             
             if hasattr(self, "on_project_changed") and self.on_project_changed:
@@ -349,19 +333,6 @@ class ProjectPanel(wx.Panel):
         self.save_project()
 
 
-    def _update_tags_ui(self):
-        if not self.project: return
-        # Uncheck all first
-        for cb in self.tag_checkboxes:
-            cb.SetValue(False)
-            
-        # Check based on project tags
-        for tag in self.project.tags:
-            for cb in self.tag_checkboxes:
-                if cb.GetLabel() == tag:
-                    cb.SetValue(True)
-                    break
-
     def _update_milestone_ui(self):
         if not self.project: return
         dates = getattr(self.project, "status_dates", {})
@@ -388,14 +359,47 @@ class ProjectPanel(wx.Panel):
         self._update_milestone_ui()
         self.save_project()
 
+    def _on_history_double_click(self, event):
+        if not self.project:
+            return
+        sel = self.history_list.GetSelection()
+        if sel == wx.NOT_FOUND:
+            return
+        history = list(reversed(getattr(self.project, 'export_history', [])))
+        if sel >= len(history):
+            return
+        entry = history[sel]
+        xlsx_b64 = entry.get('xlsx_data_b64')
+        if not xlsx_b64:
+            wx.MessageBox(
+                "Aucun fichier XLSX stocké pour cet export.\n"
+                "Les exports futurs seront automatiquement sauvegardés.",
+                "Fichier non disponible",
+                wx.OK | wx.ICON_INFORMATION
+            )
+            return
+        try:
+            xlsx_bytes = base64.b64decode(xlsx_b64)
+            filename = entry.get('xlsx_filename', f"{entry.get('devis_ref', 'export')}.xlsx")
+            tmp_path = os.path.join(tempfile.gettempdir(), filename)
+            with open(tmp_path, 'wb') as f:
+                f.write(xlsx_bytes)
+            os.startfile(tmp_path)
+        except Exception as e:
+            wx.MessageBox(f"Erreur lors de l'ouverture du XLSX:\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
+
     def _update_history_ui(self):
         if not self.project: return
         self.history_list.Clear()
         history = getattr(self.project, "export_history", [])
-        # Show latest first
         for entry in reversed(history):
             time_str = f" {entry['time']}" if 'time' in entry else ""
-            self.history_list.Append(f"{entry['devis_ref']} - {entry['date']}{time_str}")
+            has_xlsx = "💾 " if entry.get('xlsx_data_b64') else "   "
+            # Affiche la version — V1 par défaut pour les anciens exports
+            v_idx = entry.get('version_index', 1)
+            self.history_list.Append(
+                f"{has_xlsx}{entry['devis_ref']} [V{v_idx}] - {entry['date']}{time_str}"
+            )
 
     def _update_qty_ui(self):
         if not self.project: return

@@ -1,9 +1,12 @@
 import wx
+import wx.lib.scrolledpanel as scrolled
 import os
 import sys
 import shutil
 import io
 import json
+import datetime as dt_module
+from collections import defaultdict
 from datetime import date, datetime
 from infrastructure.database import Database
 from infrastructure.indexer import Indexer
@@ -22,6 +25,237 @@ import QuoteEditor_app
 from core.app_icon import get_icon_path, load_icon_from_sheet, get_template_path
 
 logger = get_module_logger("SearchFrame", "search_frame.log")
+
+MONTHS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+             "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+DAYS_FR = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+
+
+class TimelinePanel(scrolled.ScrolledPanel):
+    """Chronological timeline view of project activity."""
+
+    EVENT_COLORS = {
+        "modified":     wx.Colour(70, 130, 180),
+        "construction": wx.Colour(210, 120, 30),
+        "finalisee":    wx.Colour(34, 139, 34),
+        "transmise":    wx.Colour(106, 90, 205),
+        "export":       wx.Colour(180, 50, 50),
+    }
+    EVENT_ICONS = {
+        "modified":     "📝",
+        "construction": "🏗️",
+        "finalisee":    "🏁",
+        "transmise":    "📧",
+        "export":       "💾",
+    }
+    EVENT_LABELS = {
+        "modified":     "Modifié",
+        "construction": "En construction",
+        "finalisee":    "Finalisée",
+        "transmise":    "Transmise",
+        "export":       "Export XLSX",
+    }
+    STATUS_BG = {
+        "En construction": wx.Colour(255, 220, 130),
+        "Finalisée":       wx.Colour(160, 220, 160),
+        "Transmise":       wx.Colour(160, 195, 240),
+    }
+
+    def __init__(self, parent):
+        super().__init__(parent, style=wx.BORDER_NONE)
+        self.SetBackgroundColour(wx.Colour(245, 245, 248))
+        self.on_item_selected = None
+        self.on_item_activated = None
+        self._selected_card = None
+        self._main_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.SetSizer(self._main_sizer)
+        self.SetupScrolling(scroll_x=False)
+
+    def load_events(self, db_rows):
+        """Rebuild the timeline from a list of DB project rows."""
+        self._main_sizer.Clear(True)
+        self._selected_card = None
+
+        events = []
+        today = date.today()
+
+        for p in db_rows:
+            # Last-modified event (has timestamp with time)
+            ts = str(p.get('last_modified') or '')
+            if ts:
+                try:
+                    ev_dt = datetime.fromisoformat(ts[:19])
+                    events.append({"datetime": ev_dt, "type": "modified", "project": p, "detail": ts[:16]})
+                except Exception:
+                    pass
+
+            # Status milestone events (date only)
+            for col, ev_type in [("date_construction", "construction"),
+                                  ("date_finalisee",    "finalisee"),
+                                  ("date_transmise",    "transmise")]:
+                val = str(p.get(col) or '')
+                if val:
+                    try:
+                        ev_dt = datetime.fromisoformat(val[:10])
+                        events.append({"datetime": ev_dt, "type": ev_type, "project": p, "detail": val[:10]})
+                    except Exception:
+                        pass
+
+            # Export events from devis_refs text (format per line: "DD/MM/YYYY - OD...")
+            for line in (str(p.get('devis_refs') or '')).split('\n'):
+                line = line.strip()
+                if ' - ' in line:
+                    date_str, ref = line.split(' - ', 1)
+                    try:
+                        ev_dt = datetime.strptime(date_str.strip(), "%d/%m/%Y")
+                        events.append({"datetime": ev_dt, "type": "export", "project": p, "detail": ref.strip()})
+                    except Exception:
+                        pass
+
+        events.sort(key=lambda e: e["datetime"], reverse=True)
+
+        day_groups = defaultdict(list)
+        for ev in events:
+            day_groups[ev["datetime"].date()].append(ev)
+
+        self.Freeze()
+        try:
+            # Destroy all existing child windows cleanly
+            for child in list(self.GetChildren()):
+                child.Destroy()
+            self._main_sizer = wx.BoxSizer(wx.VERTICAL)
+
+            if not events:
+                placeholder = wx.StaticText(self, label="Aucune activité enregistrée.")
+                placeholder.SetForegroundColour(wx.Colour(150, 150, 150))
+                self._main_sizer.Add(placeholder, 0, wx.ALL, 20)
+            else:
+                for day in sorted(day_groups.keys(), reverse=True):
+                    self._add_day_section(day, day_groups[day], today)
+
+            self._main_sizer.AddSpacer(20)
+            self.SetSizer(self._main_sizer, deleteOld=True)
+            self.SetupScrolling(scroll_x=False)
+            self.Layout()
+            self.Scroll(0, 0)
+        finally:
+            self.Thaw()
+
+    def _add_day_section(self, day, events, today):
+        # Day header
+        header = wx.Panel(self)
+        header.SetBackgroundColour(wx.Colour(230, 230, 238))
+        h_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        label_text = self._format_day(day, today)
+        lbl = wx.StaticText(header, label=f"  {label_text}")
+        lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        lbl.SetForegroundColour(wx.Colour(60, 60, 90))
+        h_sizer.Add(lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.TOP | wx.BOTTOM, 4)
+        header.SetSizer(h_sizer)
+        self._main_sizer.Add(header, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 8)
+
+        for ev in events:
+            card = self._make_card(ev)
+            self._main_sizer.Add(card, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 6)
+
+        self._main_sizer.AddSpacer(4)
+
+    def _format_day(self, d, today):
+        if d == today:
+            return f"Aujourd'hui  —  {d.day} {MONTHS_FR[d.month - 1]} {d.year}"
+        if d == today - dt_module.timedelta(days=1):
+            return f"Hier  —  {d.day} {MONTHS_FR[d.month - 1]} {d.year}"
+        return f"{DAYS_FR[d.weekday()]} {d.day} {MONTHS_FR[d.month - 1]} {d.year}"
+
+    def _make_card(self, ev):
+        p = ev["project"]
+        ev_type = ev["type"]
+        color = self.EVENT_COLORS[ev_type]
+        icon = self.EVENT_ICONS[ev_type]
+        label = self.EVENT_LABELS[ev_type]
+        detail = ev["detail"]
+
+        card = wx.Panel(self, style=wx.BORDER_SIMPLE)
+        card.SetBackgroundColour(wx.Colour(255, 255, 255))
+
+        outer = wx.BoxSizer(wx.HORIZONTAL)
+
+        # Left color stripe
+        stripe = wx.Panel(card, size=(5, -1))
+        stripe.SetBackgroundColour(color)
+        outer.Add(stripe, 0, wx.EXPAND)
+
+        # Card content
+        content = wx.BoxSizer(wx.VERTICAL)
+
+        # Row 1: event type + reference + client + status badge
+        row1 = wx.BoxSizer(wx.HORIZONTAL)
+
+        type_lbl = wx.StaticText(card, label=f"{icon} {label}")
+        type_lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        type_lbl.SetForegroundColour(color)
+        row1.Add(type_lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
+
+        sep_lbl = wx.StaticText(card, label="  |  ")
+        sep_lbl.SetForegroundColour(wx.Colour(180, 180, 180))
+        row1.Add(sep_lbl, 0, wx.ALIGN_CENTER_VERTICAL)
+
+        ref_text = f"{p.get('reference', '—')}   {p.get('client', '')}"
+        ref_lbl = wx.StaticText(card, label=ref_text)
+        ref_lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        row1.Add(ref_lbl, 1, wx.ALIGN_CENTER_VERTICAL)
+
+        status = p.get('status', '')
+        if status:
+            s_lbl = wx.StaticText(card, label=f" {status} ")
+            s_lbl.SetBackgroundColour(self.STATUS_BG.get(status, wx.Colour(210, 210, 210)))
+            s_lbl.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+            row1.Add(s_lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+
+        content.Add(row1, 0, wx.EXPAND | wx.TOP, 4)
+
+        # Row 2: time detail (for modified and export)
+        if ev_type in ("modified", "export") and detail:
+            detail_lbl = wx.StaticText(card, label=f"        {detail}")
+            detail_lbl.SetForegroundColour(wx.Colour(120, 120, 120))
+            detail_lbl.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+            content.Add(detail_lbl, 0, wx.BOTTOM, 4)
+        else:
+            content.AddSpacer(4)
+
+        outer.Add(content, 1, wx.EXPAND)
+        card.SetSizer(outer)
+
+        # Bind click/double-click on all child widgets
+        all_widgets = [card, stripe, type_lbl, sep_lbl, ref_lbl]
+        if status:
+            all_widgets.append(s_lbl)
+
+        def on_click(event, p_data=p, c=card):
+            self._set_selected(c)
+            if self.on_item_selected:
+                self.on_item_selected(p_data)
+
+        def on_dclick(event, p_data=p):
+            if self.on_item_activated:
+                self.on_item_activated(p_data)
+
+        for w in all_widgets:
+            w.Bind(wx.EVT_LEFT_UP, on_click)
+            w.Bind(wx.EVT_LEFT_DCLICK, on_dclick)
+
+        return card
+
+    def _set_selected(self, card):
+        if self._selected_card and self._selected_card is not card:
+            try:
+                self._selected_card.SetBackgroundColour(wx.Colour(255, 255, 255))
+                self._selected_card.Refresh()
+            except Exception:
+                pass
+        self._selected_card = card
+        card.SetBackgroundColour(wx.Colour(235, 242, 255))
+        card.Refresh()
 
 
 class SearchFrame(wx.Frame):
@@ -42,7 +276,8 @@ class SearchFrame(wx.Frame):
         # Sorting state (must be before _refresh_list)
         self.sort_col = "last_modified"
         self.sort_ascending = False
-        
+        self._timeline_mode = False
+
         self._refresh_list()
         
         self.Centre()
@@ -108,18 +343,28 @@ class SearchFrame(wx.Frame):
         top_bar.Add(status_box, 1, wx.ALL | wx.EXPAND, 5)
         top_bar.Add(search_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         top_bar.Add(reset_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-        
+
         top_bar.AddStretchSpacer(1)
+
+        # View toggle button
+        self.view_toggle_btn = wx.Button(top_bar_container, label="📅 Chronologie")
+        self.view_toggle_btn.SetToolTip("Basculer entre vue liste et vue chronologique")
+        self.view_toggle_btn.Bind(wx.EVT_BUTTON, self._on_toggle_view)
+        top_bar.Add(self.view_toggle_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         
         top_bar_container.SetSizer(top_bar)
         vbox.Add(top_bar_container, 0, wx.EXPAND | wx.ALL, 5)
         
-        # --- Splitter (List & Details) ---
+        # --- Splitter (List/Timeline & Details) ---
         self.splitter = wx.SplitterWindow(main_panel)
-        self.splitter.SetSashGravity(0.5) # Balanced split
-        
-        # Left: Result List
-        self.list_ctrl = wx.ListCtrl(self.splitter, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
+        self.splitter.SetSashGravity(0.5)
+
+        # Left: container for list_ctrl + timeline_panel (only one visible at a time)
+        self.left_container = wx.Panel(self.splitter)
+        self.left_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        # List view
+        self.list_ctrl = wx.ListCtrl(self.left_container, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
         self.list_ctrl.InsertColumn(0, "Preview", width=70)
         self.list_ctrl.InsertColumn(1, "Référence", width=120)
         self.list_ctrl.InsertColumn(2, "Client", width=120)
@@ -130,15 +375,24 @@ class SearchFrame(wx.Frame):
         self.list_ctrl.InsertColumn(7, "Date Proj.", width=90)
         self.list_ctrl.InsertColumn(8, "Jalons", width=180)
         self.list_ctrl.InsertColumn(9, "Devis", width=120)
-        self.list_ctrl.InsertColumn(10, "Tags", width=100)
-        self.list_ctrl.InsertColumn(11, "Modifié le", width=110)
-        
+        self.list_ctrl.InsertColumn(10, "Modifié le", width=110)
+
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_item_selected)
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_item_activated)
         self.list_ctrl.Bind(wx.EVT_LIST_COL_CLICK, self._on_col_click)
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self._on_list_right_click)
         self.list_ctrl.Bind(wx.EVT_RIGHT_UP, self._on_list_right_click)
-        
+
+        # Timeline view
+        self.timeline_panel = TimelinePanel(self.left_container)
+        self.timeline_panel.on_item_selected = self._on_timeline_item_selected
+        self.timeline_panel.on_item_activated = self._on_timeline_item_activated
+        self.timeline_panel.Hide()
+
+        self.left_sizer.Add(self.list_ctrl, 1, wx.EXPAND)
+        self.left_sizer.Add(self.timeline_panel, 1, wx.EXPAND)
+        self.left_container.SetSizer(self.left_sizer)
+
         # Right: Details / Comparison Container
         self.right_container = wx.Panel(self.splitter)
         self.right_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -152,7 +406,7 @@ class SearchFrame(wx.Frame):
         
         self.right_container.SetSizer(self.right_sizer)
         
-        self.splitter.SplitVertically(self.list_ctrl, self.right_container, 600)
+        self.splitter.SplitVertically(self.left_container, self.right_container, 600)
         self.splitter.SetMinimumPaneSize(100)
         
         vbox.Add(self.splitter, 1, wx.EXPAND)
@@ -216,6 +470,37 @@ class SearchFrame(wx.Frame):
             except Exception as e:
                 wx.MessageBox(f"Erreur lors du chargement : {str(e)}", "Erreur", wx.OK | wx.ICON_ERROR)
 
+    def _on_toggle_view(self, event):
+        """Switch between list view and timeline view."""
+        self._timeline_mode = not self._timeline_mode
+        if self._timeline_mode:
+            self.list_ctrl.Hide()
+            self.timeline_panel.Show()
+            self.view_toggle_btn.SetLabel("📋 Liste")
+        else:
+            self.timeline_panel.Hide()
+            self.list_ctrl.Show()
+            self.view_toggle_btn.SetLabel("📅 Chronologie")
+        self.left_container.Layout()
+        self._refresh_list()
+
+    def _on_timeline_item_selected(self, p_data):
+        """Show project details when a timeline card is clicked."""
+        self.details_panel.Show()
+        self.comparison_panel.Hide()
+        self.right_container.Layout()
+        if p_data.get('filepath'):
+            self.details_panel.load_project(p_data['filepath'])
+
+    def _on_timeline_item_activated(self, p_data):
+        """Open project editor on double-click of a timeline card."""
+        filepath = p_data.get('filepath')
+        if filepath:
+            try:
+                QuoteEditor_app.open_quote_from_file(filepath, parent_frame=self, parent_indexer=self.indexer)
+            except Exception as e:
+                wx.MessageBox(f"Impossible d'ouvrir le projet: {e}", "Erreur", wx.OK | wx.ICON_ERROR)
+
     def _on_reset(self, event):
         """Clear all filters and show all projects"""
         self.search_global.SetValue("")
@@ -247,8 +532,7 @@ class SearchFrame(wx.Frame):
     def _refresh_list(self, term=None, status=None):
         if term is None: term = self.search_global.GetValue()
         if status is None: status = self.status_filter.GetStringSelection()
-        
-        self.list_ctrl.DeleteAllItems()
+
         sort_order = "ASC" if self.sort_ascending else "DESC"
         results = self.db.search_projects(
             global_search=term,
@@ -256,8 +540,16 @@ class SearchFrame(wx.Frame):
             sort_by=self.sort_col,
             sort_order=sort_order
         )
-        
-        self.project_map = {} # Map index to project data
+
+        # Build project_map for all modes (needed by context menu, etc.)
+        self.project_map = {}
+
+        if self._timeline_mode:
+            self.timeline_panel.load_events(results)
+            self.SetStatusText(f"{len(results)} projets trouvés")
+            return
+
+        self.list_ctrl.DeleteAllItems()
         
         # Row background colours for modes
         PROTO_BG  = wx.Colour(255, 237, 200)   # warm orange tint
@@ -292,9 +584,8 @@ class SearchFrame(wx.Frame):
             self.list_ctrl.SetItem(idx, 8, " | ".join(ms))
 
             self.list_ctrl.SetItem(idx, 9, str(p.get('devis_refs') or ""))
-            self.list_ctrl.SetItem(idx, 10, ", ".join(p.get('tags', [])))
             ts = p.get('last_modified', "")
-            self.list_ctrl.SetItem(idx, 11, str(ts)[:16])
+            self.list_ctrl.SetItem(idx, 10, str(ts)[:16])
 
             # Row color based on mode
             if is_prototype and has_serie:
@@ -608,7 +899,7 @@ class SearchFrame(wx.Frame):
                f"Statistiques :\n"
                f"- Projets indexés : {stats['total_projects']}{missing_info}\n"
                f"- Clients uniques : {stats['total_clients']}\n"
-               f"- Tags uniques : {stats['unique_tags']}\n\n"
+               f"\n"
                "Actions disponibles :")
 
         # Build choices dynamically based on whether root folder is set
@@ -844,7 +1135,6 @@ class SearchFrame(wx.Frame):
             "status": project.status,
             "project_date": project.project_date,
             "status_dates": dict(project.status_dates or {}),
-            "tags": list(project.tags or []),
             "sale_quantities": list(project.sale_quantities or []),
             "volume_margin_rates": dict(project.volume_margin_rates or {}),
             "export_history_count": len(project.export_history or []),
@@ -1089,17 +1379,12 @@ class SearchFrame(wx.Frame):
         # Create context menu
         menu = wx.Menu()
         
-        # Export as XLSX (works with single or multiple selections)
-        export_item = menu.Append(wx.ID_ANY, f"💾 Exporter vers XLSX" + (f" ({selection_count} fichiers)" if selection_count > 1 else ""), 
-                                  "Export vers fichier Excel")
-        self.Bind(wx.EVT_MENU, self._on_quick_export_xlsx, export_item)
-        
         # Export Fabrication/Qualité (works with single selection only)
         if selection_count == 1:
-            fab_export_item = menu.Append(wx.ID_ANY, "🏭 Exporter Fabrication/Qualité", 
-                                        "Export Excel avec trame de fabrication et commentaires")
+            fab_export_item = menu.Append(wx.ID_ANY, "🏭 Exporter Fabrication/Qualité",
+                                          "Export Excel avec trame de fabrication et commentaires")
             self.Bind(wx.EVT_MENU, self._on_export_fabrication_quality, fab_export_item)
-        
+
         # Edit (only for single selection)
         if selection_count == 1:
             edit_item = menu.Append(wx.ID_ANY, "✎ Éditer\tCtrl+O", "Ouvrir dans l'éditeur")

@@ -1,4 +1,5 @@
 import os
+import base64
 import datetime
 import calendar
 from copy import copy
@@ -162,7 +163,8 @@ class ExportService:
             project.export_history.append({
                 "devis_ref": devis_ref,
                 "date": ref_date.strftime("%d/%m/%Y"),
-                "time": datetime.datetime.now().strftime("%H:%M")
+                "time": datetime.datetime.now().strftime("%H:%M"),
+                "version_index": getattr(project, 'current_version_index', 1),
             })
 
             # Placeholder replacement will now call get_devis_reference again, 
@@ -229,6 +231,19 @@ class ExportService:
 
             logger.info(f"Export Excel réussi → {output_path}")
 
+            # Embed the generated XLSX bytes in the last export_history entry
+            try:
+                with open(output_path, 'rb') as f:
+                    xlsx_bytes = f.read()
+                xlsx_filename = os.path.basename(output_path)
+                if project.export_history:
+                    last_entry = project.export_history[-1]
+                    last_entry['xlsx_filename'] = xlsx_filename
+                    last_entry['xlsx_data_b64'] = base64.b64encode(xlsx_bytes).decode('ascii')
+                    last_entry['_xlsx_path'] = f"documents/exports/{xlsx_filename}"
+            except Exception as e:
+                logger.warning(f"Impossible d'embarquer le XLSX dans le projet: {e}")
+
             # 6. Save project to persist history if path provided
             if project_save_path:
                 from infrastructure.persistence import PersistenceService
@@ -247,10 +262,7 @@ class ExportService:
     # PRIVATE
     # =========================
     def _get_part_reference(self, project):
-        ref = getattr(project, "reference", "")
-        if "Prototype" in getattr(project, "tags", []):
-            ref = f"{ref} - PROTO"
-        return ref
+        return getattr(project, "reference", "")
 
     def _fill_qty_row(self, ws, row_idx, project, qty, global_comment):
         for col_idx in range(1, ws.max_column + 1):
@@ -473,18 +485,6 @@ class ExportService:
                         tooling_comments.append(cost.client_comment.strip())
 
         lines = op_lines + tooling_comments
-
-        # Pour les offres prototype, ajouter un message d'information en fin de commentaires
-        tags_lower = [t.lower() for t in getattr(project, "tags", []) or [] if isinstance(t, str)]
-        if "proto" in tags_lower or "prototype" in tags_lower:
-            lines.append(
-                "Offre réalisée dans le cadre d'une production prototype - "
-                "aucune validation ISO 13485 formelle n'est assurée."
-            )
-            lines.append(
-                "Offer produced in a prototype context - "
-                "no formal ISO 13485 validation is provided."
-            )
 
         text = "\n".join(lines) if lines else "-"
         logger.info(f"Global comment lines: {len(lines)}")
