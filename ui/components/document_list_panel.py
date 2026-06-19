@@ -6,12 +6,13 @@ from domain.document import Document
 
 class DocumentListPanel(wx.Panel):
     """Reusable panel to manage a list of Documents (PDFs)."""
-    
-    def __init__(self, parent, label="Documents :"):
+
+    def __init__(self, parent, label="Documents :", project_name_callback=None):
         super().__init__(parent)
         self.documents = []
-        self.on_changed = None # Callback when docs are added/removed
-        
+        self.on_changed = None
+        self.project_name_callback = project_name_callback
+
         self._build_ui(label)
 
     def _build_ui(self, label):
@@ -59,7 +60,12 @@ class DocumentListPanel(wx.Panel):
                 view_btn = wx.Button(self.list_panel, label="Voir", size=(50, 22))
                 view_btn.Bind(wx.EVT_BUTTON, lambda e, d=doc: self._on_view(d))
                 doc_row.Add(view_btn, 0, wx.LEFT, 5)
-                
+
+                # Export button
+                exp_btn = wx.Button(self.list_panel, label="Exporter", size=(70, 22))
+                exp_btn.Bind(wx.EVT_BUTTON, lambda e, d=doc: self._on_export(d))
+                doc_row.Add(exp_btn, 0, wx.LEFT, 2)
+
                 # Delete button
                 del_btn = wx.Button(self.list_panel, label="X", size=(25, 22))
                 del_btn.SetForegroundColour(wx.Colour(200, 0, 0))
@@ -119,3 +125,44 @@ class DocumentListPanel(wx.Panel):
             os.startfile(tmp_path)
         except Exception as e:
             wx.MessageBox(f"Erreur lors de l'ouverture du document : {e}", "Erreur", wx.OK | wx.ICON_ERROR)
+
+    def _on_export(self, doc):
+        try:
+            desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+            if not os.path.isdir(desktop):
+                desktop = os.path.expanduser("~")
+
+            # Build default filename from project name + doc filename
+            if self.project_name_callback:
+                project_name = self.project_name_callback() or ""
+            else:
+                project_name = ""
+
+            suffix = os.path.splitext(doc.filename)[1] or ".pdf"
+            base = os.path.splitext(doc.filename)[0]
+            if project_name:
+                default_name = f"{project_name} - {base}{suffix}"
+            else:
+                default_name = doc.filename
+
+            # Sanitize for Windows filename
+            for ch in r'\/:*?"<>|':
+                default_name = default_name.replace(ch, "_")
+
+            wildcard = "Fichiers PDF (*.pdf)|*.pdf|Tous les fichiers (*.*)|*.*"
+            with wx.FileDialog(self, "Enregistrer le document sous",
+                               defaultDir=desktop,
+                               defaultFile=default_name,
+                               wildcard=wildcard,
+                               style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as dlg:
+                if dlg.ShowModal() == wx.ID_CANCEL:
+                    return
+                dest_path = dlg.GetPath()
+
+            data = base64.b64decode(doc.data)
+            with open(dest_path, "wb") as f:
+                f.write(data)
+
+            wx.MessageBox(f"Document exporté avec succès :\n{dest_path}", "Export réussi", wx.OK | wx.ICON_INFORMATION)
+        except Exception as e:
+            wx.MessageBox(f"Erreur lors de l'export : {e}", "Erreur", wx.OK | wx.ICON_ERROR)

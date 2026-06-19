@@ -219,7 +219,8 @@ class CostItemEditor(wx.Panel):
                     offer_grid.Add(self.prop_supplier_quote_ref, 1, wx.EXPAND)
                     
                     if not saved_doc_list:
-                        self.doc_list = DocumentListPanel(self.left_column, label="Offres Fournisseur (PDF) :")
+                        self.doc_list = DocumentListPanel(self.left_column, label="Offres Fournisseur (PDF) :",
+                                                          project_name_callback=lambda: getattr(getattr(self, 'project', None), 'reference', None) or "")
                     else:
                         self.doc_list = saved_doc_list
                         self.doc_list.Reparent(self.left_column)

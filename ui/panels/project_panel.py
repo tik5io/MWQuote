@@ -44,11 +44,17 @@ class ProjectPanel(wx.Panel):
         self.date_ctrl = wx.adv.DatePickerCtrl(self, style=wx.adv.DP_DROPDOWN | wx.adv.DP_SHOWCENTURY | wx.adv.DP_ALLOWNONE)
         self.date_ctrl.Bind(wx.adv.EVT_DATE_CHANGED, lambda e: self.save_project())
         grid.Add(self.date_ctrl, 1, wx.EXPAND)
-        
+
+        self.prototype_chk = wx.CheckBox(self, label="Prototype")
+        self.prototype_chk.Bind(wx.EVT_CHECKBOX, lambda e: self.save_project())
+        grid.Add(self.prototype_chk, 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(wx.StaticText(self, label=""), 0)  # spacer
+
         main_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
         
         # Drawing Section (Refactored for Multiple PDFs)
-        self.doc_list = DocumentListPanel(self, label="Plans de la pièce (PDF) :")
+        self.doc_list = DocumentListPanel(self, label="Plans de la pièce (PDF) :",
+                                          project_name_callback=self._get_project_name)
         self.doc_list.on_changed = self.save_project
         main_sizer.Add(self.doc_list, 0, wx.EXPAND | wx.ALL, 10)
 
@@ -114,6 +120,7 @@ class ProjectPanel(wx.Panel):
                 except (ValueError, AttributeError):
                     pass  # Invalid date format, leave empty
             
+            self.prototype_chk.SetValue(bool(getattr(project, 'is_prototype', False)))
             self.doc_list.load_documents(project.documents)
             self._set_preview_bitmap(getattr(project, 'preview_image', None))
             self._update_qty_ui()
@@ -128,14 +135,15 @@ class ProjectPanel(wx.Panel):
         if self.project:
             self.project.reference = self.ref_ctrl.GetValue()
             self.project.client = self.client_ctrl.GetValue()
-            
+            self.project.is_prototype = self.prototype_chk.GetValue()
+
             # Save project date in ISO format
             dt = self.date_ctrl.GetValue()
             if dt.IsValid():
                 self.project.project_date = f"{dt.GetYear()}-{dt.GetMonth() + 1:02d}-{dt.GetDay():02d}"
             else:
                 self.project.project_date = None
-            
+
             self.project.documents = self.doc_list.documents
             
             if hasattr(self, "on_project_changed") and self.on_project_changed:
@@ -301,6 +309,11 @@ class ProjectPanel(wx.Panel):
             if self.on_quantities_changed:
                 self.on_quantities_changed(self.project.sale_quantities)
         dlg.Destroy()
+
+    def _get_project_name(self):
+        if self.project:
+            return self.project.reference or ""
+        return ""
 
     def get_quantities(self):
         return sorted(self.quantities)
