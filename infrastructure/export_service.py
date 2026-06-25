@@ -167,7 +167,10 @@ class ExportService:
     # PRIVATE
     # =========================
     def _get_part_reference(self, project):
-        return getattr(project, "reference", "")
+        ref = getattr(project, "reference", "")
+        if getattr(project, "is_prototype", False):
+            ref = f"{ref} - PROTO"
+        return ref
 
     def _fill_qty_row(self, ws, row_idx, project, qty, global_comment):
         for col_idx in range(1, ws.max_column + 1):
@@ -390,6 +393,16 @@ class ExportService:
                         tooling_comments.append(cost.client_comment.strip())
 
         lines = op_lines + tooling_comments
+
+        if getattr(project, "is_prototype", False):
+            lines.append(
+                "Offre réalisée dans le cadre d'une production prototype - "
+                "aucune validation ISO 13485 formelle n'est assurée."
+            )
+            lines.append(
+                "Offer produced in a prototype context - "
+                "no formal ISO 13485 validation is provided."
+            )
 
         text = "\n".join(lines) if lines else "-"
         logger.info(f"Global comment lines: {len(lines)}")

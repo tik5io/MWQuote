@@ -39,7 +39,8 @@ class Database:
                 content_hash TEXT,
                 is_missing INTEGER DEFAULT 0,
                 mwq_uuid TEXT,
-                has_serie INTEGER DEFAULT 0
+                has_serie INTEGER DEFAULT 0,
+                is_prototype INTEGER DEFAULT 0
             )
         ''')
 
@@ -52,6 +53,7 @@ class Database:
             "ALTER TABLE projects ADD COLUMN is_missing INTEGER DEFAULT 0",
             "ALTER TABLE projects ADD COLUMN mwq_uuid TEXT",
             "ALTER TABLE projects ADD COLUMN has_serie INTEGER DEFAULT 0",
+            "ALTER TABLE projects ADD COLUMN is_prototype INTEGER DEFAULT 0",
         ]
         for migration in migrations:
             try:
@@ -159,7 +161,8 @@ class Database:
                         UPDATE projects
                         SET filepath = ?, is_missing = 0, name = ?, reference = ?, client = ?,
                             drawing_filename = ?, preview_filename = ?, last_modified = ?,
-                            min_qty = ?, max_qty = ?, content_hash = ?, mwq_uuid = ?, has_serie = ?
+                            min_qty = ?, max_qty = ?, content_hash = ?, mwq_uuid = ?, has_serie = ?,
+                            is_prototype = ?
                         WHERE id = ?
                     ''', (
                         filepath,
@@ -174,6 +177,7 @@ class Database:
                         content_hash,
                         project_data.get('mwq_uuid'),
                         1 if project_data.get('has_serie') else 0,
+                        1 if project_data.get('is_prototype') else 0,
                         project_id
                     ))
                     return project_id
@@ -184,7 +188,7 @@ class Database:
                     UPDATE projects
                     SET name = ?, reference = ?, client = ?, drawing_filename = ?, preview_filename = ?,
                         last_modified = ?, min_qty = ?, max_qty = ?,
-                        content_hash = ?, is_missing = 0, mwq_uuid = ?, has_serie = ?
+                        content_hash = ?, is_missing = 0, mwq_uuid = ?, has_serie = ?, is_prototype = ?
                     WHERE id = ?
                 ''', (
                     project_data['name'],
@@ -198,13 +202,15 @@ class Database:
                     content_hash,
                     project_data.get('mwq_uuid'),
                     1 if project_data.get('has_serie') else 0,
+                    1 if project_data.get('is_prototype') else 0,
                     project_id
                 ))
             else:
                 cursor.execute('''
                     INSERT INTO projects (name, reference, client, filepath, drawing_filename, preview_filename,
-                                        last_modified, min_qty, max_qty, content_hash, is_missing, mwq_uuid, has_serie)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                                        last_modified, min_qty, max_qty, content_hash, is_missing, mwq_uuid,
+                                        has_serie, is_prototype)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                 ''', (
                     project_data['name'],
                     project_data['reference'],
@@ -218,6 +224,7 @@ class Database:
                     content_hash,
                     project_data.get('mwq_uuid'),
                     1 if project_data.get('has_serie') else 0,
+                    1 if project_data.get('is_prototype') else 0,
                 ))
                 project_id = cursor.lastrowid
 

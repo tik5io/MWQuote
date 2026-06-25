@@ -34,6 +34,7 @@ class Project:
         sale_quantities: List[int] = None,
         volume_margin_rates: dict = None,
         serie_data: Optional[SerieData] = None,
+        is_prototype: bool = False,
         # Champs obsolètes — acceptés en lecture pour compatibilité fichiers anciens
         export_history: List[dict] = None,
         status: str = None,
@@ -47,6 +48,7 @@ class Project:
         self.mwq_uuid = mwq_uuid
         self.project_date = project_date
         self.preview_image = preview_image
+        self.is_prototype: bool = bool(is_prototype)
         self._current_version_index: int = current_version_index
 
         if versions:
@@ -170,7 +172,7 @@ class Project:
     # Champs obsolètes — propriétés fantômes pour compatibilité code existant
     @property
     def tags(self) -> list:
-        return []
+        return ["Prototype"] if self.is_prototype else []
 
     @tags.setter
     def tags(self, value: list):

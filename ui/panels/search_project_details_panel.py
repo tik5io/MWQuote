@@ -68,7 +68,15 @@ class ProjectDetailsPanel(wx.Panel):
         vbox.Add(self.open_preview_btn, 0, wx.ALIGN_CENTER | wx.ALL, 5)
 
         vbox.Add(wx.StaticLine(self), 0, wx.EXPAND | wx.ALL, 10)
-        
+
+        # Version selector row
+        version_row = wx.BoxSizer(wx.HORIZONTAL)
+        version_row.Add(wx.StaticText(self, label="Version :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 6)
+        self.version_choice = wx.Choice(self, choices=[])
+        self.version_choice.Bind(wx.EVT_CHOICE, self._on_version_changed)
+        version_row.Add(self.version_choice, 1, wx.EXPAND | wx.RIGHT, 6)
+        vbox.Add(version_row, 0, wx.EXPAND | wx.BOTTOM, 6)
+
         # Splitter for Tree vs Graph
         self.splitter = wx.SplitterWindow(self, style=wx.SP_LIVE_UPDATE | wx.SP_3D)
         self.splitter.SetMinimumPaneSize(100)
@@ -104,11 +112,41 @@ class ProjectDetailsPanel(wx.Panel):
     def load_project(self, project_path):
         try:
             self.project = PersistenceService.load_project(project_path)
+            self._populate_version_selector()
             self.analysis_panel.load_project(self.project)
-            self.comparison_grid.project = self.project # Pre-bind project
+            self.comparison_grid.project = self.project
             self._update_display()
         except Exception as e:
             wx.MessageBox(f"Erreur de chargement: {e}", "Erreur", wx.OK | wx.ICON_ERROR)
+
+    def _populate_version_selector(self):
+        self.version_choice.Clear()
+        if not self.project:
+            return
+        versions = getattr(self.project, 'versions', [])
+        for v in versions:
+            label = f"V{v.version_index}"
+            if getattr(v, 'label', ''):
+                label += f" — {v.label}"
+            self.version_choice.Append(label, v.version_index)
+        # Select current version
+        cur = self.project.current_version_index
+        for i in range(self.version_choice.GetCount()):
+            if self.version_choice.GetClientData(i) == cur:
+                self.version_choice.SetSelection(i)
+                break
+
+    def _on_version_changed(self, event):
+        if not self.project:
+            return
+        idx = self.version_choice.GetSelection()
+        if idx == wx.NOT_FOUND:
+            return
+        v_index = self.version_choice.GetClientData(idx)
+        self.project.switch_to_version(v_index)
+        self.analysis_panel.load_project(self.project)
+        self.comparison_grid.project = self.project
+        self._update_display()
 
     def reset_view(self, title: str = "Aucun projet sélectionné"):
         """Reset details panel state when nothing should be displayed."""
@@ -116,6 +154,7 @@ class ProjectDetailsPanel(wx.Panel):
         self.title_lbl.SetLabel(title)
         self._badge_proto.Hide()
         self._badge_serie.Hide()
+        self.version_choice.Clear()
         self.tree.DeleteAllItems()
         self.tree.AddRoot("Root")
         self.analysis_panel.Show()

@@ -486,13 +486,22 @@ class SearchFrame(wx.Frame):
 
         self.list_ctrl.DeleteAllItems()
 
-        SERIE_BG = wx.Colour(210, 240, 220)   # soft green tint
+        SERIE_BG  = wx.Colour(210, 240, 220)   # soft green tint
+        PROTO_BG  = wx.Colour(255, 235, 205)   # soft orange tint
 
         for i, p in enumerate(results):
             has_preview = bool(p.get('preview_filename'))
-            has_serie   = bool(p.get('has_serie', 0))
+            has_serie    = bool(p.get('has_serie', 0))
+            is_prototype = bool(p.get('is_prototype', 0))
 
-            mode_label = "SÉRIE" if has_serie else "—"
+            if is_prototype and has_serie:
+                mode_label = "PROTO + SÉRIE"
+            elif is_prototype:
+                mode_label = "PROTOTYPE"
+            elif has_serie:
+                mode_label = "SÉRIE"
+            else:
+                mode_label = "—"
 
             idx = self.list_ctrl.InsertItem(i, "Oui" if has_preview else "")
             self.list_ctrl.SetItem(idx, 1, str(p.get('reference') or ""))
@@ -504,7 +513,9 @@ class SearchFrame(wx.Frame):
             ts = p.get('last_modified', "")
             self.list_ctrl.SetItem(idx, 7, str(ts)[:16])
 
-            if has_serie:
+            if is_prototype:
+                self.list_ctrl.SetItemBackgroundColour(idx, PROTO_BG)
+            elif has_serie:
                 self.list_ctrl.SetItemBackgroundColour(idx, SERIE_BG)
 
             self.project_map[idx] = p
@@ -1285,7 +1296,12 @@ class SearchFrame(wx.Frame):
         
         # Create context menu
         menu = wx.Menu()
-        
+
+        # Export as XLSX (works with single or multiple selections)
+        export_item = menu.Append(wx.ID_ANY, f"💾 Exporter vers XLSX" + (f" ({selection_count} fichiers)" if selection_count > 1 else ""),
+                                  "Export vers fichier Excel")
+        self.Bind(wx.EVT_MENU, self._on_quick_export_xlsx, export_item)
+
         # Export Fabrication/Qualité (works with single selection only)
         if selection_count == 1:
             fab_export_item = menu.Append(wx.ID_ANY, "🏭 Exporter Fabrication/Qualité",
