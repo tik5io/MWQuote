@@ -2,6 +2,7 @@ import wx
 import os
 import base64
 import io
+import tempfile
 from infrastructure.persistence import PersistenceService
 from ui.panels.graph_analysis_panel import GraphAnalysisPanel
 from ui.components.offers_comparison_grid import OffersComparisonGrid
@@ -106,7 +107,14 @@ class ProjectDetailsPanel(wx.Panel):
         self.splitter.SetSashGravity(1.0) # Bottom keeps its size on resize
         
         vbox.Add(self.splitter, 1, wx.EXPAND | wx.ALL, 5)
-        
+
+        # Export history section
+        history_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Historique des exports XLSX (double-clic pour ouvrir)")
+        self.history_list = wx.ListBox(self, size=(-1, 80))
+        self.history_list.Bind(wx.EVT_LISTBOX_DCLICK, self._on_history_double_click)
+        history_box.Add(self.history_list, 1, wx.EXPAND | wx.ALL, 4)
+        vbox.Add(history_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+
         self.SetSizer(vbox)
         
     def load_project(self, project_path):
@@ -116,6 +124,7 @@ class ProjectDetailsPanel(wx.Panel):
             self.analysis_panel.load_project(self.project)
             self.comparison_grid.project = self.project
             self._update_display()
+            self._update_history_ui()
         except Exception as e:
             wx.MessageBox(f"Erreur de chargement: {e}", "Erreur", wx.OK | wx.ICON_ERROR)
 
@@ -155,6 +164,7 @@ class ProjectDetailsPanel(wx.Panel):
         self._badge_proto.Hide()
         self._badge_serie.Hide()
         self.version_choice.Clear()
+        self.history_list.Clear()
         self.tree.DeleteAllItems()
         self.tree.AddRoot("Root")
         self.analysis_panel.Show()
@@ -162,7 +172,49 @@ class ProjectDetailsPanel(wx.Panel):
         self.bottom_sizer.Layout()
         self.bottom_container.Layout()
         self.Layout()
-            
+
+    def _update_history_ui(self):
+        self.history_list.Clear()
+        if not self.project:
+            return
+        history = getattr(self.project, 'export_history', [])
+        for entry in reversed(history):
+            has_xlsx = "💾 " if entry.get('xlsx_data_b64') else "   "
+            v_idx = entry.get('version_index', 1)
+            time_str = f" {entry['time']}" if 'time' in entry else ""
+            self.history_list.Append(
+                f"{has_xlsx}{entry['devis_ref']} [V{v_idx}] - {entry['date']}{time_str}"
+            )
+
+    def _on_history_double_click(self, event):
+        if not self.project:
+            return
+        sel = self.history_list.GetSelection()
+        if sel == wx.NOT_FOUND:
+            return
+        history = list(reversed(getattr(self.project, 'export_history', [])))
+        if sel >= len(history):
+            return
+        entry = history[sel]
+        xlsx_b64 = entry.get('xlsx_data_b64')
+        if not xlsx_b64:
+            wx.MessageBox(
+                "Aucun fichier XLSX stocké pour cet export.\n"
+                "Les exports futurs seront automatiquement sauvegardés.",
+                "Fichier non disponible",
+                wx.OK | wx.ICON_INFORMATION
+            )
+            return
+        try:
+            xlsx_bytes = base64.b64decode(xlsx_b64)
+            filename = entry.get('xlsx_filename', f"{entry.get('devis_ref', 'export')}.xlsx")
+            tmp_path = os.path.join(tempfile.gettempdir(), filename)
+            with open(tmp_path, 'wb') as f:
+                f.write(xlsx_bytes)
+            os.startfile(tmp_path)
+        except Exception as e:
+            wx.MessageBox(f"Erreur lors de l'ouverture du XLSX:\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
+
     def _update_display(self):
         if not self.project:
             return

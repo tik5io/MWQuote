@@ -5,6 +5,7 @@ import base64
 import io
 import os
 import time
+import tempfile
 from domain.document import Document
 
 from ui.dialogs.quantity_manager_dialog import QuantityManagerDialog
@@ -100,6 +101,13 @@ class ProjectPanel(wx.Panel):
         
         main_sizer.Add(qty_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
+        # Export History Section
+        history_sizer = wx.StaticBoxSizer(wx.VERTICAL, self, "Historique des Exports XLSX (double-clic pour ouvrir)")
+        self.history_list = wx.ListBox(self, size=(-1, 80))
+        self.history_list.Bind(wx.EVT_LISTBOX_DCLICK, self._on_history_double_click)
+        history_sizer.Add(self.history_list, 1, wx.EXPAND | wx.ALL, 5)
+        main_sizer.Add(history_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
         self.SetSizer(main_sizer)
 
     def load_project(self, project):
@@ -124,6 +132,7 @@ class ProjectPanel(wx.Panel):
             self.doc_list.load_documents(project.documents)
             self._set_preview_bitmap(getattr(project, 'preview_image', None))
             self._update_qty_ui()
+            self._update_history_ui()
         finally:
             self._is_loading = False
 
@@ -314,6 +323,48 @@ class ProjectPanel(wx.Panel):
         if self.project:
             return self.project.reference or ""
         return ""
+
+    def _update_history_ui(self):
+        self.history_list.Clear()
+        if not self.project:
+            return
+        history = getattr(self.project, 'export_history', [])
+        for entry in reversed(history):
+            has_xlsx = "💾 " if entry.get('xlsx_data_b64') else "   "
+            v_idx = entry.get('version_index', 1)
+            time_str = f" {entry['time']}" if 'time' in entry else ""
+            self.history_list.Append(
+                f"{has_xlsx}{entry['devis_ref']} [V{v_idx}] - {entry['date']}{time_str}"
+            )
+
+    def _on_history_double_click(self, event):
+        if not self.project:
+            return
+        sel = self.history_list.GetSelection()
+        if sel == wx.NOT_FOUND:
+            return
+        history = list(reversed(getattr(self.project, 'export_history', [])))
+        if sel >= len(history):
+            return
+        entry = history[sel]
+        xlsx_b64 = entry.get('xlsx_data_b64')
+        if not xlsx_b64:
+            wx.MessageBox(
+                "Aucun fichier XLSX stocké pour cet export.\n"
+                "Les exports futurs seront automatiquement sauvegardés.",
+                "Fichier non disponible",
+                wx.OK | wx.ICON_INFORMATION
+            )
+            return
+        try:
+            xlsx_bytes = base64.b64decode(xlsx_b64)
+            filename = entry.get('xlsx_filename', f"{entry.get('devis_ref', 'export')}.xlsx")
+            tmp_path = os.path.join(tempfile.gettempdir(), filename)
+            with open(tmp_path, 'wb') as f:
+                f.write(xlsx_bytes)
+            os.startfile(tmp_path)
+        except Exception as e:
+            wx.MessageBox(f"Erreur lors de l'ouverture du XLSX:\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
 
     def get_quantities(self):
         return sorted(self.quantities)

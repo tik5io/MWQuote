@@ -1401,6 +1401,7 @@ class SearchFrame(wx.Frame):
                                 project,
                                 template_path,
                                 output_path,
+                                project_save_path=p_data['filepath'],
                                 devis_ref=reference
                             )
 
@@ -1467,6 +1468,7 @@ class SearchFrame(wx.Frame):
                         project,
                         template_path,
                         output_path,
+                        project_save_path=p_data['filepath'],
                         devis_ref=reference
                     )
 

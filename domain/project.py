@@ -50,6 +50,7 @@ class Project:
         self.preview_image = preview_image
         self.is_prototype: bool = bool(is_prototype)
         self._current_version_index: int = current_version_index
+        self.export_history: List[dict] = export_history if export_history is not None else []
 
         if versions:
             self._versions: List[ProjectVersion] = versions
@@ -195,14 +196,6 @@ class Project:
         pass  # ignored
 
     @property
-    def export_history(self) -> list:
-        return []
-
-    @export_history.setter
-    def export_history(self, value: list):
-        pass  # ignored
-
-    @property
     def validation_report(self) -> dict:
         return {}
 
@@ -256,6 +249,7 @@ class Project:
         new_project = copy.deepcopy(self)
         new_uuid = str(uuid.uuid4())
         new_project.mwq_uuid = new_uuid
+        new_project.export_history = []
         new_project._regenerate_document_filenames(new_uuid)
         return new_project
 

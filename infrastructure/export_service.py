@@ -1,4 +1,5 @@
 import os
+import base64
 import datetime
 import calendar
 from copy import copy
@@ -84,16 +85,28 @@ class ExportService:
     # =========================
     # PUBLIC
     # =========================
-    def export_excel(self, project, template_path, output_path, devis_ref=None):
+    def export_excel(self, project, template_path, output_path, project_save_path=None, devis_ref=None):
         try:
             wb = load_workbook(template_path)
             ws = wb.active
 
             # 0. Generate devis reference
+            if not hasattr(project, 'export_history'):
+                project.export_history = []
+
             if devis_ref is None:
                 devis_ref = self.get_devis_reference(project)
 
             self._current_export_ref = devis_ref
+
+            import datetime as _dt
+            ref_date = _dt.date.today()
+            project.export_history.append({
+                "devis_ref": devis_ref,
+                "date": ref_date.strftime("%d/%m/%Y"),
+                "time": _dt.datetime.now().strftime("%H:%M"),
+                "version_index": getattr(project, 'current_version_index', 1),
+            })
 
             # 1. Trier les quantités par ordre croissant
             quantities = sorted(project.sale_quantities)
@@ -154,6 +167,25 @@ class ExportService:
             wb.save(output_path)
 
             logger.info(f"Export Excel réussi → {output_path}")
+
+            # Embed the generated XLSX bytes in the last export_history entry
+            try:
+                with open(output_path, 'rb') as f:
+                    xlsx_bytes = f.read()
+                xlsx_filename = os.path.basename(output_path)
+                if project.export_history:
+                    last_entry = project.export_history[-1]
+                    last_entry['xlsx_filename'] = xlsx_filename
+                    last_entry['xlsx_data_b64'] = base64.b64encode(xlsx_bytes).decode('ascii')
+                    last_entry['_xlsx_path'] = f"documents/exports/{xlsx_filename}"
+            except Exception as e:
+                logger.warning(f"Impossible d'embarquer le XLSX dans le projet: {e}")
+
+            # Save project to persist history if path provided
+            if project_save_path:
+                from infrastructure.persistence import PersistenceService
+                PersistenceService.save_project(project, project_save_path)
+                logger.info(f"Projet mis à jour avec historique export → {project_save_path}")
 
         except PermissionError:
             msg = f"Impossible d'enregistrer le fichier '{os.path.basename(output_path)}'. Vérifiez qu'il n'est pas déjà ouvert dans Excel."
