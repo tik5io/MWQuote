@@ -411,9 +411,13 @@ class MainFrame(wx.Frame):
                 self.project,
                 template_path,
                 output_path,
+                project_save_path=self.current_path,
                 devis_ref=reference
             )
             progress.Destroy()
+
+            # Refresh history list in project panel
+            self.project_panel._update_history_ui()
 
             # Ouvrir le fichier automatiquement
             try:

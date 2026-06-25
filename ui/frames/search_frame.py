@@ -1488,9 +1488,10 @@ class SearchFrame(wx.Frame):
                         "Succès",
                         wx.OK | wx.ICON_INFORMATION
                     )
-                    
-                    # Refresh list to show updated export info
+
+                    # Refresh list and reload details panel to show updated history
                     self._refresh_list()
+                    self.details_panel.load_project(p_data['filepath'])
                     
                 except PermissionError as perm_error:
                     progress.Destroy()
