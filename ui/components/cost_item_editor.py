@@ -36,6 +36,31 @@ class CostItemEditor(wx.Panel):
             self._update_timer.Stop()
         event.Skip()
 
+    @staticmethod
+    def get_analysis_preview_metrics(cost, qty):
+        """Return the cost and sale price metrics used by the real-time analysis panel."""
+        from domain.calculator import Calculator
+
+        if not cost or qty <= 0:
+            return {
+                "cost_per_piece": 0.0,
+                "sale_price_per_piece": 0.0,
+                "sale_price_total": 0.0,
+                "batch_supplier_cost": 0.0,
+                "quote_qty_ordered": 0.0,
+                "margin_rate": getattr(cost, "margin_rate", 0.0),
+            }
+
+        res = Calculator.calculate_item(cost, qty)
+        return {
+            "cost_per_piece": res.unit_cost_converted,
+            "sale_price_per_piece": res.unit_sale_price,
+            "sale_price_total": res.unit_sale_price * qty,
+            "batch_supplier_cost": res.batch_supplier_cost,
+            "quote_qty_ordered": res.quote_qty_ordered,
+            "margin_rate": getattr(cost, "margin_rate", 0.0),
+        }
+
     def _ctrl_get_value(self, attr_name, default="", strip=False):
         """Safely read a wx control value; returns default if control is absent or deleted."""
         ctrl = getattr(self, attr_name, None)
@@ -622,12 +647,19 @@ class CostItemEditor(wx.Panel):
             st_need.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
             grid.Add(st_need, 1, wx.EXPAND)
             
-            # Unit Cost (converted by factor)
-            grid.Add(wx.StaticText(card, label="Coût Amorti:"), 0, wx.ALIGN_LEFT)
-            st_cost = wx.StaticText(card, label=f"{res.unit_cost_converted:.2f} €/pc")
+            metrics = self.get_analysis_preview_metrics(cost, qty)
+
+            grid.Add(wx.StaticText(card, label="Coût de revient:"), 0, wx.ALIGN_LEFT)
+            st_cost = wx.StaticText(card, label=f"{metrics['cost_per_piece']:.2f} €/pc")
             st_cost.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
             st_cost.SetForegroundColour(wx.Colour(0, 100, 0)) # Green
             grid.Add(st_cost, 1, wx.EXPAND)
+
+            grid.Add(wx.StaticText(card, label="Prix vente (marge incl.):"), 0, wx.ALIGN_LEFT)
+            st_sale = wx.StaticText(card, label=f"{metrics['sale_price_per_piece']:.2f} €/pc")
+            st_sale.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            st_sale.SetForegroundColour(wx.Colour(0, 0, 180))
+            grid.Add(st_sale, 1, wx.EXPAND)
 
             card_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 5)
             card.SetSizer(card_sizer)
