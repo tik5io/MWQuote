@@ -50,6 +50,10 @@ class OperationCostEditorPanel(wx.Panel):
         add_cost_btn.Bind(wx.EVT_BUTTON, self._on_add_cost_to_selected_op)
         tree_toolbar.Add(add_cost_btn, 0, wx.ALL, 2)
 
+        add_tooling_btn = wx.Button(left_panel, label="+ Outillage", size=(80, -1))
+        add_tooling_btn.Bind(wx.EVT_BUTTON, self._on_add_tooling_cost_to_selected_op)
+        tree_toolbar.Add(add_tooling_btn, 0, wx.ALL, 2)
+
         del_btn = wx.Button(left_panel, label="X", size=(30, -1))
         del_btn.Bind(wx.EVT_BUTTON, self._on_delete)
         tree_toolbar.Add(del_btn, 0, wx.ALL, 2)
@@ -520,6 +524,40 @@ class OperationCostEditorPanel(wx.Panel):
         else:
             self.template_status.SetForegroundColour(wx.Colour(40, 120, 40))
 
+    def _create_tooling_cost(self, op, base_name="Outillage"):
+        """Create a tooling cost child with a unique display name."""
+        name = base_name
+        counter = 2
+        while name in op.costs:
+            name = f"{base_name} {counter}"
+            counter += 1
+
+        pricing = domain_cost.PricingStructure(domain_cost.PricingType.PER_UNIT)
+        cost = domain_cost.CostItem(name, domain_cost.CostType.TOOLING, pricing)
+        cost.name = name
+        return cost
+
+    def _on_add_tooling_cost_to_selected_op(self, event):
+        item = self.tree.GetSelection()
+        if not item.IsOk(): return
+        data = self.tree.GetItemData(item)
+        op = data["operation"] if data else None
+        if not op: return
+
+        cost = self._create_tooling_cost(op)
+        op.costs[cost.name] = cost
+
+        self._refresh_tree()
+        if self.root and self.root.IsOk():
+            op_item = self._find_item_by_op(op, self.root)
+            if op_item and op_item.IsOk():
+                new_item = self._find_item_by_cost(cost, op_item)
+                if new_item and new_item.IsOk():
+                    self.tree.SelectItem(new_item)
+
+        if self.on_operation_updated:
+            self.on_operation_updated(op, reload_header=True)
+
     def _on_add_cost_to_selected_op(self, event):
         item = self.tree.GetSelection()
         if not item.IsOk(): return
@@ -527,22 +565,6 @@ class OperationCostEditorPanel(wx.Panel):
         op = data["operation"] if data else None
         if not op: return
 
-        if self._is_tooling_operation(op) and len(op.costs) >= 1:
-            wx.MessageBox(
-                "L'opération OUTILLAGE n'accepte qu'un seul coût nommé 'Outillage'.",
-                "Règle OUTILLAGE",
-                wx.OK | wx.ICON_INFORMATION
-            )
-            if op.costs:
-                tooling_cost = next(iter(op.costs.values()))
-                op_item = self._find_item_by_op(op, self.root) if self.root and self.root.IsOk() else None
-                if op_item:
-                    existing_item = self._find_item_by_cost(tooling_cost, op_item)
-                    if existing_item:
-                        self.tree.SelectItem(existing_item)
-            return
-        
-        # Generate unique name
         base_name = "Nouveau coût"
         name = base_name
         counter = 1
@@ -550,23 +572,19 @@ class OperationCostEditorPanel(wx.Panel):
             name = f"{base_name} {counter}"
             counter += 1
 
-        ct = domain_cost.CostType.TOOLING if self._is_tooling_operation(op) else domain_cost.CostType.INTERNAL_OPERATION
+        ct = domain_cost.CostType.INTERNAL_OPERATION
         pricing = domain_cost.PricingStructure(domain_cost.PricingType.PER_UNIT)
         cost = domain_cost.CostItem(name, ct, pricing)
-        if self._is_tooling_operation(op):
-            cost.name = "Outillage"
-            name = "Outillage"
         op.costs[name] = cost
-        
+
         self._refresh_tree()
-        # After refresh_tree, the 'item' handle is invalid. Must re-find.
         if self.root and self.root.IsOk():
             op_item = self._find_item_by_op(op, self.root)
             if op_item and op_item.IsOk():
                 new_item = self._find_item_by_cost(cost, op_item)
                 if new_item and new_item.IsOk():
                     self.tree.SelectItem(new_item)
-            
+
         if self.on_operation_updated:
             self.on_operation_updated(op, reload_header=True)
 
@@ -581,13 +599,6 @@ class OperationCostEditorPanel(wx.Panel):
             else: 
                 op = data["operation"]
                 cost = data["cost"]
-                if self._is_tooling_operation(op) and len(op.costs) <= 1:
-                    wx.MessageBox(
-                        "L'opération OUTILLAGE doit conserver son coût unique 'Outillage'.",
-                        "Règle OUTILLAGE",
-                        wx.OK | wx.ICON_INFORMATION
-                    )
-                    return
                 cost_key = data.get("cost_key", cost.name)
                 if cost_key in op.costs:
                     del op.costs[cost_key]
@@ -622,10 +633,6 @@ class OperationCostEditorPanel(wx.Panel):
         else: 
             op = data["operation"]
             cost = data["cost"]
-            if self._is_tooling_operation(op) and new_label != "Outillage":
-                event.Veto()
-                wx.MessageBox("Le coût de l'opération OUTILLAGE doit rester nommé 'Outillage'.", "Règle OUTILLAGE")
-                return
             current_key = self._resolve_cost_key(op, cost, data.get("cost_key", cost.name))
             if not op.rename_cost(current_key, new_label):
                 event.Veto()
@@ -900,31 +907,6 @@ class OperationCostEditorPanel(wx.Panel):
             cost.cost_type = domain_cost.CostType.TOOLING
         if not cost.pricing:
             cost.pricing = domain_cost.PricingStructure(domain_cost.PricingType.PER_UNIT)
-        if cost.name != "Outillage":
-            current_key = self._resolve_cost_key(op, cost, cost.name)
-            if current_key != "Outillage":
-                op.rename_cost(current_key, "Outillage")
-            else:
-                cost.name = "Outillage"
 
     def _enforce_operation_constraints(self, op):
-        if not self._is_tooling_operation(op):
-            return
-
-        if not op.costs:
-            pricing = domain_cost.PricingStructure(domain_cost.PricingType.PER_UNIT)
-            op.costs["Outillage"] = domain_cost.CostItem("Outillage", domain_cost.CostType.TOOLING, pricing)
-            return
-
-        tooling_key = None
-        for key, cost in op.costs.items():
-            if cost.cost_type == domain_cost.CostType.TOOLING:
-                tooling_key = key
-                break
-        if tooling_key is None:
-            tooling_key = next(iter(op.costs.keys()))
-
-        keep_cost = op.costs[tooling_key]
-        self._enforce_tooling_cost_shape(keep_cost, op)
-
-        op.costs = {"Outillage": keep_cost}
+        return

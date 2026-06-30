@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Tuple
 from domain.project import Project
 from domain.project_version import ProjectVersion
 from domain.operation import Operation
+from domain.operation import TOOLING_TYPOLOGY
 from domain.cost import CostItem, CostType, PricingType, PricingStructure, PricingTier, ConversionType
 from domain.document import Document
 from domain.serie_data import SerieData, CapexItem, ToolingItem, MachinePost
@@ -262,6 +263,8 @@ class PersistenceService:
                 version_docs.append(Document(filename=doc_ref['filename'], data=None))
 
         operations = PersistenceService._load_operations(zf, v_data.get('operations', []), v_prefix)
+        # Migrate legacy TOOLING operations into tooling cost children
+        operations = PersistenceService._migrate_tooling_operations_in_ops(operations)
 
         return ProjectVersion(
             version_index=v_data['version_index'],
@@ -312,6 +315,70 @@ class PersistenceService:
             )
             operations.append(op)
         return operations
+
+    @staticmethod
+    def _migrate_tooling_operations_in_ops(operations: List[Operation]) -> List[Operation]:
+        """Convert legacy operations with typology TOOLING into tooling cost items under the previous operation.
+
+        Rules:
+        - If an operation has typology 'OUTILLAGE' (legacy), its tooling costs are converted into CostItem(s)
+          and appended to the previous non-tooling operation in the list. If no previous operation exists,
+          they are attached back to the first operation.
+        - The operation of typology 'OUTILLAGE' is removed from the operations list after migration.
+        - Multiple tooling operations are preserved in order and appended sequentially.
+        """
+        migrated = []
+        buffer_toolings = []
+        for op in operations:
+            if (op.typology or "").strip().upper() == TOOLING_TYPOLOGY:
+                # Collect tooling op to be migrated
+                buffer_toolings.append(op)
+                continue
+
+            # Attach any buffered tooling ops to this op
+            if buffer_toolings:
+                for t_op in buffer_toolings:
+                    # Move all costs from tooling op as TOOLING CostItem(s)
+                    for k, c in list(t_op.costs.items()):
+                        # Ensure cost type is TOOLING
+                        c.cost_type = CostType.TOOLING
+                        # Create a unique name if collision
+                        base = c.name or "Outillage"
+                        name = base
+                        counter = 2
+                        while name in op.costs:
+                            name = f"{base} {counter}"
+                            counter += 1
+                        c.name = name
+                        op.costs[name] = c
+                buffer_toolings = []
+
+            migrated.append(op)
+
+        # If tooling ops were at the end with no following op, attach them to the last operation
+        if buffer_toolings and migrated:
+            last = migrated[-1]
+            for t_op in buffer_toolings:
+                for k, c in list(t_op.costs.items()):
+                    c.cost_type = CostType.TOOLING
+                    base = c.name or "Outillage"
+                    name = base
+                    counter = 2
+                    while name in last.costs:
+                        name = f"{base} {counter}"
+                        counter += 1
+                    c.name = name
+                    last.costs[name] = c
+
+        # If there were only tooling ops and no regular ops, keep them but normalize their costs
+        if not migrated and buffer_toolings:
+            # Convert each tooling op into a normal op with its tooling costs kept
+            for t_op in buffer_toolings:
+                for k, c in list(t_op.costs.items()):
+                    c.cost_type = CostType.TOOLING
+                migrated.append(t_op)
+
+        return migrated
 
     @staticmethod
     def _load_project_legacy(filepath: str) -> Project:
