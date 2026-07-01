@@ -554,6 +554,10 @@ class MainFrame(wx.Frame):
 
     def _on_close(self, event):
         """Appelé à la fermeture de la fenêtre principale"""
+        # Cleanup temporary files created during document viewing
+        if hasattr(self.project_panel, 'doc_list') and hasattr(self.project_panel.doc_list, 'cleanup_temp_files'):
+            self.project_panel.doc_list.cleanup_temp_files()
+        
         if self._dirty:
             res = wx.MessageBox(
                 "Des modifications n'ont pas été enregistrées.\nSouhaitez-vous enregistrer avant de fermer ?",

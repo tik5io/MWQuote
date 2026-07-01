@@ -12,6 +12,7 @@ class DocumentListPanel(wx.Panel):
         self.documents = []
         self.on_changed = None
         self.project_name_callback = project_name_callback
+        self._temp_files = []  # Track temporary files for cleanup
 
         self._build_ui(label)
 
@@ -122,6 +123,8 @@ class DocumentListPanel(wx.Panel):
                 data = base64.b64decode(doc.data)
                 tmp.write(data)
                 tmp_path = tmp.name
+            # Track this temporary file for later cleanup
+            self._temp_files.append(tmp_path)
             os.startfile(tmp_path)
         except Exception as e:
             wx.MessageBox(f"Erreur lors de l'ouverture du document : {e}", "Erreur", wx.OK | wx.ICON_ERROR)
@@ -166,3 +169,14 @@ class DocumentListPanel(wx.Panel):
             wx.MessageBox(f"Document exporté avec succès :\n{dest_path}", "Export réussi", wx.OK | wx.ICON_INFORMATION)
         except Exception as e:
             wx.MessageBox(f"Erreur lors de l'export : {e}", "Erreur", wx.OK | wx.ICON_ERROR)
+
+    def cleanup_temp_files(self):
+        """Supprime tous les fichiers temporaires créés lors de l'affichage des documents."""
+        for tmp_path in self._temp_files:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                # Ignore les erreurs (fichier verrouillé, etc.)
+                pass
+        self._temp_files.clear()

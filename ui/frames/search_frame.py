@@ -1762,3 +1762,37 @@ class SearchFrame(wx.Frame):
         """Handle window close event"""
         self.indexer.stop()
         self.Destroy()
+
+    def _select_and_display_quote(self, filepath):
+        """
+        Find and display a quote in the list and details panel.
+        Used to display newly created quotes.
+        
+        Args:
+            filepath: Path to the .mwq file to display
+        """
+        try:
+            # Find the item in project_map that matches this filepath
+            target_idx = None
+            for idx, p_data in self.project_map.items():
+                if p_data.get('filepath') == filepath:
+                    target_idx = idx
+                    break
+            
+            if target_idx is not None:
+                # Clear previous selection and select the target item
+                self.list_ctrl.Select(target_idx, on=True)
+                self.list_ctrl.Focus(target_idx)
+                
+                # Load project in details panel (in normal view, not timeline)
+                if self._timeline_mode:
+                    self._on_toggle_view(None)  # Switch to normal list view
+                
+                # Trigger selection event to load details
+                p_data = self.project_map[target_idx]
+                self.details_panel.load_project(p_data['filepath'])
+                
+                # Ensure it's visible
+                self.list_ctrl.EnsureVisible(target_idx)
+        except Exception as e:
+            logger.warning(f"Could not display quote {filepath}: {e}")
