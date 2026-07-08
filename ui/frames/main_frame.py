@@ -167,19 +167,21 @@ class MainFrame(wx.Frame):
         self._reload_all_panels()
         self._update_title()
 
-    def _reload_all_panels(self, preserve_editor_selection=False):
+    def _reload_all_panels(self, editor_selection_path=None):
         """Recharge tous les panels depuis le projet courant.
 
         Args:
-            preserve_editor_selection: si True, restaure la sélection de l'arbre
-                Gamme & Coûts (même position op/coût) après rechargement — utile
-                lors d'une bascule de version pour un rendu fluide.
+            editor_selection_path: si fourni, restaure cette sélection dans l'arbre
+                Gamme & Coûts (identifiant (op_index, cost_key) capturé AVANT la
+                bascule de version) → rendu fluide au changement de version.
         """
         self.project_panel.load_project(self.project)
-        self.editor_panel.load_project(self.project, preserve_selection=preserve_editor_selection)
+        self.editor_panel.load_project(self.project)
         self.sales_panel.load_project(self.project)
         self.analysis_panel.load_project(self.project)
         self.serie_panel.load_project(self.project)
+        if editor_selection_path is not None:
+            self.editor_panel.restore_selection_path(editor_selection_path)
 
     # ------------------------------------------------------------------ #
     # Version management                                                    #
@@ -255,10 +257,17 @@ class MainFrame(wx.Frame):
                     self._rebuild_version_bar()
                     return
 
+        # Capturer AVANT la bascule : current_data pointe encore vers la version
+        # courante, donc get_selection_path() peut résoudre la position op/coût.
+        sel_path = self.editor_panel.get_selection_path()
+        tab_idx = self.notebook.GetSelection()
+
         self.project.switch_to_version(version_index)
         self._rebuild_version_bar()
-        # Bascule fluide : conserver la sélection arbre (même position op/coût)
-        self._reload_all_panels(preserve_editor_selection=True)
+        # Bascule fluide : conserver la sélection arbre (même position op/coût) + l'onglet actif
+        self._reload_all_panels(editor_selection_path=sel_path)
+        if tab_idx != wx.NOT_FOUND:
+            self.notebook.SetSelection(tab_idx)
         self._dirty = False
         self._update_title()
 
@@ -292,11 +301,17 @@ class MainFrame(wx.Frame):
         label = dlg.GetValue().strip()
         dlg.Destroy()
 
+        # Capturer la sélection avant de basculer sur la nouvelle version
+        sel_path = self.editor_panel.get_selection_path()
+        tab_idx = self.notebook.GetSelection()
+
         new_version = self.project.add_version(label)
         self.project.switch_to_version(new_version.version_index)
         self._rebuild_version_bar()
-        # La nouvelle version est une copie : conserver la sélection courante
-        self._reload_all_panels(preserve_editor_selection=True)
+        # La nouvelle version est une copie : conserver la sélection courante + l'onglet
+        self._reload_all_panels(editor_selection_path=sel_path)
+        if tab_idx != wx.NOT_FOUND:
+            self.notebook.SetSelection(tab_idx)
         self._dirty = True  # La création d'une version est une modification
         self._update_title()
 

@@ -165,18 +165,13 @@ class OperationCostEditorPanel(wx.Panel):
         self.prop_op_label.Bind(wx.EVT_TEXT, self._on_op_field_changed)
         self.prop_op_comment.Bind(wx.EVT_TEXT, self._on_op_field_changed)
 
-    def load_project(self, project, preserve_selection=False):
-        # Capturer la sélection courante (par position) avant de recharger, afin de
-        # la restaurer sur la nouvelle version → bascule fluide entre versions.
-        path = self.get_selection_path() if preserve_selection else None
+    def load_project(self, project):
         self.project = project
         logger.info(f"load_project | ops={len(project.operations) if project else 0}")
         if self.project:
             for op in self.project.operations:
                 self._enforce_operation_constraints(op)
         self._refresh_tree()
-        if path is not None:
-            self.restore_selection_path(path)
 
     def get_selection_path(self):
         """Identifiant stable (indépendant des objets) de la sélection courante.
