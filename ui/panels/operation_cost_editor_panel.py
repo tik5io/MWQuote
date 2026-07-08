@@ -223,7 +223,10 @@ class OperationCostEditorPanel(wx.Panel):
 
     def _add_cost_to_tree(self, cost, parent, op, cost_key=None):
         if not parent or not parent.IsOk(): return None
-        cost_icon = "💰" if cost.cost_type in [domain_cost.CostType.MATERIAL, domain_cost.CostType.SUBCONTRACTING] else "⚙️" if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION else "🛠️" if cost.cost_type == domain_cost.CostType.TOOLING else "📈"
+        if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION and getattr(cost, 'is_temps_masque', False):
+            cost_icon = "⏱️"
+        else:
+            cost_icon = "💰" if cost.cost_type in [domain_cost.CostType.MATERIAL, domain_cost.CostType.SUBCONTRACTING] else "⚙️" if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION else "🛠️" if cost.cost_type == domain_cost.CostType.TOOLING else "📈"
         label = f"{cost_icon} {cost.name}"
         # from domain.operation import SUBCONTRACTING_TYPOLOGY # Already imported at top
         if op.typology == SUBCONTRACTING_TYPOLOGY and not cost.is_active:
@@ -252,13 +255,16 @@ class OperationCostEditorPanel(wx.Panel):
             if data and data["type"] == "cost":
                 cost = data["cost"]
                 
-                icons = {
-                    domain_cost.CostType.MATERIAL: "💰",
-                    domain_cost.CostType.SUBCONTRACTING: "💰",
-                    domain_cost.CostType.INTERNAL_OPERATION: "⚙️",
-                    domain_cost.CostType.TOOLING: "🛠️"
-                }
-                cost_icon = icons.get(cost.cost_type, "📈")
+                if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION and getattr(cost, 'is_temps_masque', False):
+                    cost_icon = "⏱️"
+                else:
+                    icons = {
+                        domain_cost.CostType.MATERIAL: "💰",
+                        domain_cost.CostType.SUBCONTRACTING: "💰",
+                        domain_cost.CostType.INTERNAL_OPERATION: "⚙️",
+                        domain_cost.CostType.TOOLING: "🛠️"
+                    }
+                    cost_icon = icons.get(cost.cost_type, "📈")
                 label = f"{cost_icon} {cost.name}"
                 # from domain.operation import SUBCONTRACTING_TYPOLOGY # Already imported at top
                 if op.typology == SUBCONTRACTING_TYPOLOGY and not cost.is_active:
@@ -748,7 +754,8 @@ class OperationCostEditorPanel(wx.Panel):
             lines.append("Parametres operation interne")
             lines.append(f"- Taux horaire: {euros(cost.hourly_rate)} / h")
             lines.append(f"- Temps fixe: {number(cost.fixed_time)} h")
-            lines.append(f"- Temps par piece: {number(cost.per_piece_time)} h/pc")
+            tp_suffix = " (Temps masqué)" if getattr(cost, 'is_temps_masque', False) else ""
+            lines.append(f"- Temps par piece: {number(cost.per_piece_time)} h/pc{tp_suffix}")
             lines.append("")
         else:
             ptype = cost.pricing.pricing_type.value if cost.pricing else "-"
@@ -784,8 +791,9 @@ class OperationCostEditorPanel(wx.Panel):
 
             lines.append("Etape 3 - Cout lot fournisseur")
             if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION:
-                total_time = cost.fixed_time + (cost.per_piece_time * qty)
-                lines.append(f"- Temps total = {number(cost.fixed_time)} + ({number(cost.per_piece_time)} x {qty}) = {number(total_time)} h")
+                eff_per_piece = 0.0 if getattr(cost, 'is_temps_masque', False) else cost.per_piece_time
+                total_time = cost.fixed_time + (eff_per_piece * qty)
+                lines.append(f"- Temps total = {number(cost.fixed_time)} + ({number(eff_per_piece)} x {qty}) = {number(total_time)} h")
                 lines.append(f"- Cout lot = Temps total x taux horaire = {number(total_time)} x {euros(cost.hourly_rate)} = {euros(res.batch_supplier_cost)}")
             else:
                 if cost.pricing and cost.pricing.pricing_type == domain_cost.PricingType.TIERED and cost.pricing.tiers:

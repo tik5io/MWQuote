@@ -69,12 +69,13 @@ class Calculator:
         if cost_item.cost_type == CostType.INTERNAL_OPERATION:
             # Internal operations are always time-based
             hourly_rate = cost_item.hourly_rate or 0.0
-            total_time = cost_item.fixed_time + (cost_item.per_piece_time * total_pieces)
+            eff_per_piece_time = 0.0 if getattr(cost_item, 'is_temps_masque', False) else cost_item.per_piece_time
+            total_time = cost_item.fixed_time + (eff_per_piece_time * total_pieces)
             batch_supplier_cost = total_time * hourly_rate
             supplier_unit_price = hourly_rate
             supplier_fixed_price = 0.0  # Time-based is mixed
             f_batch = cost_item.fixed_time * hourly_rate
-            v_batch = cost_item.per_piece_time * total_pieces * hourly_rate
+            v_batch = eff_per_piece_time * total_pieces * hourly_rate
             if cost_item.conversion_type == ConversionType.DIVIDE:
                 internal_time_hours = total_time / conv_factor
             else:

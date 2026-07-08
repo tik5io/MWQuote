@@ -118,8 +118,17 @@ class SerieData:
 
             for cost in op.costs.values():
                 if cost.cost_type == CostType.INTERNAL_OPERATION and getattr(cost, 'is_active', True):
-                    tc_h += cost.per_piece_time
-                    rate_x_time += cost.per_piece_time * cost.hourly_rate
+                    if getattr(cost, 'is_temps_masque', False):
+                        eff_time = 0.0
+                    else:
+                        factor = cost.conversion_factor if cost.conversion_factor != 0 else 1.0
+                        from domain.cost import ConversionType
+                        if cost.conversion_type == ConversionType.DIVIDE:
+                            eff_time = cost.per_piece_time / factor
+                        else:
+                            eff_time = cost.per_piece_time * factor
+                    tc_h += eff_time
+                    rate_x_time += eff_time * cost.hourly_rate
 
             # Inclure l'opération même si TC = 0 (pour info), sauf si aucun coût interne du tout
             avg_rate = (rate_x_time / tc_h) if tc_h > 0 else self.mo_production_rate

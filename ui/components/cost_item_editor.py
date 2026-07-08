@@ -315,6 +315,19 @@ class CostItemEditor(wx.Panel):
                 op_grid.Add(self.prop_internal_rate, 1, wx.EXPAND)
                 self._add_detailed_time_row(op_grid, "Temps fixe:", cost.fixed_time, "fixed")
                 self._add_detailed_time_row(op_grid, "Temps/pièce:", cost.per_piece_time, "piece")
+                
+                # Checkbox for Temps masqué
+                self.prop_temps_masque = wx.CheckBox(self.left_column, label="Temps masqué (neutralise le temps/pièce)")
+                self.prop_temps_masque.SetValue(getattr(cost, 'is_temps_masque', False))
+                self.prop_temps_masque.Bind(wx.EVT_CHECKBOX, self._on_temps_masque_changed)
+                op_grid.Add(self.prop_temps_masque, 0, wx.ALIGN_CENTER_VERTICAL)
+                op_grid.Add(wx.StaticText(self.left_column, label=""), 1, wx.EXPAND)
+                
+                is_masked = getattr(cost, 'is_temps_masque', False)
+                self.prop_piece_h.Enable(not is_masked)
+                self.prop_piece_m.Enable(not is_masked)
+                self.prop_piece_s.Enable(not is_masked)
+                
                 self.dynamic_sizer.Add(op_sizer, 0, wx.EXPAND | wx.BOTTOM, 10)
 
             case CostType.TOOLING:
@@ -339,30 +352,38 @@ class CostItemEditor(wx.Panel):
                 tool_grid.Add(self.prop_client_comment, 1, wx.EXPAND | wx.TOP, 5)
                 self.dynamic_sizer.Add(tool_sizer, 0, wx.EXPAND)
 
-        # SECTION 3: PARAMÈTRES COMMERCIAUX & MÉTHODE (non outillage)
+        # SECTION 3: MÉTHODE & PARAMÈTRES COMMERCIAUX (non outillage)
         if cost.cost_type != CostType.TOOLING:
-            comm_sizer, comm_grid = create_box_grid("PARAMÈTRES COMMERCIAUX")
+            # 3a. Box: ORGANISATION / MÉTHODE
+            method_sizer, method_grid = create_box_grid("ORGANISATION / MÉTHODE")
             
-            comm_grid.Add(wx.StaticText(self.left_column, label="Type de conversion:"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.prop_conv_type = wx.Choice(self.left_column, choices=[ct.value for ct in ConversionType])
-            self.prop_conv_type.SetStringSelection(cost.conversion_type.value)
+            method_grid.Add(wx.StaticText(self.left_column, label="Mode d'exécution :"), 0, wx.ALIGN_CENTER_VERTICAL)
+            choices_ui = ["Série (Multiplier)", "Parallèle (Diviser)"]
+            self.prop_conv_type = wx.Choice(self.left_column, choices=choices_ui)
+            sel_str = "Série (Multiplier)" if cost.conversion_type == ConversionType.MULTIPLY else "Parallèle (Diviser)"
+            self.prop_conv_type.SetStringSelection(sel_str)
             self.prop_conv_type.Bind(wx.EVT_CHOICE, lambda e: self.notify_change())
-            comm_grid.Add(self.prop_conv_type, 1, wx.EXPAND)
+            method_grid.Add(self.prop_conv_type, 1, wx.EXPAND)
 
-            comm_grid.Add(wx.StaticText(self.left_column, label="Facteur conversion:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            method_grid.Add(wx.StaticText(self.left_column, label="Facteur multiplicateur/diviseur :"), 0, wx.ALIGN_CENTER_VERTICAL)
             self.prop_conv_factor = wx.TextCtrl(self.left_column, value=f"{cost.conversion_factor:.4f}")
             self.prop_conv_factor.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
-            comm_grid.Add(self.prop_conv_factor, 1, wx.EXPAND)
+            method_grid.Add(self.prop_conv_factor, 1, wx.EXPAND)
 
+            method_grid.Add(wx.StaticText(self.left_column, label="Commentaire Méthode :"), 0, wx.TOP, 5)
+            self.prop_comment = wx.TextCtrl(self.left_column, value=cost.comment or "", style=wx.TE_MULTILINE | wx.TE_WORDWRAP, size=(-1, 150))
+            self.prop_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
+            method_grid.Add(self.prop_comment, 1, wx.EXPAND | wx.TOP, 5)
+
+            self.dynamic_sizer.Add(method_sizer, 0, wx.EXPAND | wx.BOTTOM, 10)
+
+            # 3b. Box: PARAMÈTRES COMMERCIAUX
+            comm_sizer, comm_grid = create_box_grid("PARAMÈTRES COMMERCIAUX")
+            
             comm_grid.Add(wx.StaticText(self.left_column, label="Marge (%):"), 0, wx.ALIGN_CENTER_VERTICAL)
             self.prop_margin_rate = wx.TextCtrl(self.left_column, value=f"{cost.margin_rate:.1f}")
             self.prop_margin_rate.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
             comm_grid.Add(self.prop_margin_rate, 1, wx.EXPAND)
-
-            comm_grid.Add(wx.StaticText(self.left_column, label="Commentaire Méthode:"), 0, wx.TOP, 5)
-            self.prop_comment = wx.TextCtrl(self.left_column, value=cost.comment or "", style=wx.TE_MULTILINE | wx.TE_WORDWRAP, size=(-1, 150))
-            self.prop_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
-            comm_grid.Add(self.prop_comment, 1, wx.EXPAND | wx.TOP, 5)
 
             self.dynamic_sizer.Add(comm_sizer, 0, wx.EXPAND)
         
@@ -459,6 +480,8 @@ class CostItemEditor(wx.Panel):
                     self.cost.fixed_time = safe_float(self.prop_fixed_h.GetValue())
                 if hasattr(self, 'prop_piece_h'):
                     self.cost.per_piece_time = safe_float(self.prop_piece_h.GetValue())
+                if hasattr(self, 'prop_temps_masque'):
+                    self.cost.is_temps_masque = self.prop_temps_masque.GetValue()
                 
                 # Clear pricing structure to avoid conflict in Calculator
                 if self.cost.pricing:
@@ -484,7 +507,7 @@ class CostItemEditor(wx.Panel):
                 self.cost.margin_rate = safe_float(self.prop_margin_rate.GetValue())
                 self.cost.comment = self.prop_comment.GetValue()
                 cv_val = self.prop_conv_type.GetStringSelection()
-                self.cost.conversion_type = ConversionType.MULTIPLY if cv_val == "Multiplier" else ConversionType.DIVIDE
+                self.cost.conversion_type = ConversionType.MULTIPLY if "Série" in cv_val else ConversionType.DIVIDE
             self.cost.is_active = self.prop_active.GetValue()
             logger.debug(
                 f"apply_changes done | name={self.cost.name} type={self.cost.cost_type} "
@@ -545,8 +568,8 @@ class CostItemEditor(wx.Panel):
             else:
                 temp_cost.conversion_factor = safe_float(str(self._ctrl_get_value('prop_conv_factor', 1.0)), 1.0)
                 temp_cost.margin_rate = safe_float(str(self._ctrl_get_value('prop_margin_rate', 0.0)))
-                cv_val = self._ctrl_get_selection('prop_conv_type', "Multiplier")
-                temp_cost.conversion_type = ConversionType.MULTIPLY if cv_val == "Multiplier" else ConversionType.DIVIDE
+                cv_val = self._ctrl_get_selection('prop_conv_type', "Série (Multiplier)")
+                temp_cost.conversion_type = ConversionType.MULTIPLY if "Série" in cv_val else ConversionType.DIVIDE
             
             # Include quantity per piece
             temp_cost.quantity_per_piece = safe_float(str(self._ctrl_get_value('prop_qty_per_piece', 1.0)), 1.0)
@@ -563,6 +586,7 @@ class CostItemEditor(wx.Panel):
                 temp_cost.hourly_rate = safe_float(str(self._ctrl_get_value('prop_internal_rate', 0.0)))
                 temp_cost.fixed_time = safe_float(str(self._ctrl_get_value('prop_fixed_h', 0.0)))
                 temp_cost.per_piece_time = safe_float(str(self._ctrl_get_value('prop_piece_h', 0.0)))
+                temp_cost.is_temps_masque = bool(self._ctrl_get_value('prop_temps_masque', False))
 
             if self.cost.cost_type == CostType.TOOLING:
                 self.analysis_scroll.Hide()
@@ -594,6 +618,14 @@ class CostItemEditor(wx.Panel):
             self.cost.pricing.tiers = dlg.get_tiers()
             self.notify_change()
         dlg.Destroy()
+    
+    def _on_temps_masque_changed(self, event):
+        if not hasattr(self, 'prop_temps_masque'): return
+        is_masked = self.prop_temps_masque.GetValue()
+        if hasattr(self, 'prop_piece_h'): self.prop_piece_h.Enable(not is_masked)
+        if hasattr(self, 'prop_piece_m'): self.prop_piece_m.Enable(not is_masked)
+        if hasattr(self, 'prop_piece_s'): self.prop_piece_s.Enable(not is_masked)
+        self.notify_change()
     
     
     def _update_quantity_reminder(self, preview_cost=None):

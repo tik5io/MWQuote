@@ -109,6 +109,7 @@ class CostItem:
     client_comment: Optional[str] = None
     supplier_quote_ref: Optional[str] = None # Still useful for the reference ID
     is_active: bool = True  # Used for multi-offer subcontracting
+    is_temps_masque: bool = False  # If True, this internal operation is in masked time (0s effective cycle time)
 
     @property
     def supplier_quote_filename(self):

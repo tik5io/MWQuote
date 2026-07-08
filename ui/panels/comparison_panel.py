@@ -226,7 +226,8 @@ class ComparisonPanel(wx.Panel):
                         for cost in op._get_active_costs():
                             if cost.cost_type == CostType.INTERNAL_OPERATION:
                                 res = Calculator.calculate_item(cost, qty)
-                                th += cost.fixed_time + (cost.per_piece_time * qty)
+                                eff_per_piece = 0.0 if getattr(cost, 'is_temps_masque', False) else cost.per_piece_time
+                                th += cost.fixed_time + (eff_per_piece * qty)
                                 ps += res.unit_sale_price * qty
                     val = f"{ps/th:.2f} €/h" if th > 0 else "0 €/h"
                 elif row_idx == 6:
@@ -234,7 +235,8 @@ class ComparisonPanel(wx.Panel):
                     for op in p.operations:
                         for cost in op._get_active_costs():
                             if cost.cost_type == CostType.INTERNAL_OPERATION:
-                                th += cost.fixed_time + (cost.per_piece_time * qty)
+                                eff_per_piece = 0.0 if getattr(cost, 'is_temps_masque', False) else cost.per_piece_time
+                                th += cost.fixed_time + (eff_per_piece * qty)
                     val = f"{th:.2f} h"
                 
                 v = wx.StaticText(self.scroll, label=val)

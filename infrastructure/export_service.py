@@ -804,7 +804,8 @@ class ExportService:
                 for cost_name, cost in op.costs.items():
                     if cost.cost_type == CostType.INTERNAL_OPERATION:
                         total_fixed_time += cost.fixed_time
-                        total_per_piece_time += cost.per_piece_time
+                        if not getattr(cost, 'is_temps_masque', False):
+                            total_per_piece_time += cost.per_piece_time
 
                     # Collecter les commentaires méthode
                     if hasattr(cost, 'comment') and cost.comment and cost.comment.strip():

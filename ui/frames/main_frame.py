@@ -137,7 +137,7 @@ class MainFrame(wx.Frame):
 
         self.editor_panel = OperationCostEditorPanel(self.notebook)
         self.editor_panel.set_database(self.db)
-        self.notebook.AddPage(self.editor_panel, "Structure et Coûts")
+        self.notebook.AddPage(self.editor_panel, "Gamme & Coûts")
 
         self.sales_panel = SalesPricingPanel(self.notebook)
         self.notebook.AddPage(self.sales_panel, "Tarif de Vente")
