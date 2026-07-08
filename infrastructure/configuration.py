@@ -74,10 +74,11 @@ class ConfigurationService:
             print(f"Error saving config: {e}")
 
     def get_cost_typologies(self) -> List[str]:
-        typologies = list(self.config.get("cost_typologies", []))
-        if "OUTILLAGE" not in typologies:
-            typologies.append("OUTILLAGE")
-        return typologies
+        # Le type d'opération "OUTILLAGE" n'est plus proposé : les coûts outillage
+        # se créent uniquement via le bouton "+ Outillage". La conversion legacy des
+        # anciennes opérations OUTILLAGE en coût enfant reste gérée au chargement.
+        # On filtre systématiquement (les configs persistées peuvent encore le contenir).
+        return [t for t in self.config.get("cost_typologies", []) if t.strip().upper() != "OUTILLAGE"]
 
     def get_project_tags(self) -> List[str]:
         return self.config.get("project_tags", [])

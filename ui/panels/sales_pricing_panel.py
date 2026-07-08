@@ -17,6 +17,7 @@ class SalesPricingPanel(wx.Panel):
         self.project = None
         self.current_cost = None
         self.on_operation_updated = None
+        self.on_generate_offer = None  # callback → MainFrame._on_export_xlsx
         self._build_ui()
 
     def _build_ui(self):
@@ -37,7 +38,10 @@ class SalesPricingPanel(wx.Panel):
 
         header_sizer.AddStretchSpacer()
 
-        header_sizer.AddStretchSpacer()
+        self.offer_btn = wx.Button(self.grid_panel, label="💾  Créer Offre XLSX")
+        self.offer_btn.SetToolTip("Exporter la version courante vers un devis XLSX (offre de prix)")
+        self.offer_btn.Bind(wx.EVT_BUTTON, self._on_generate_offer)
+        header_sizer.Add(self.offer_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
 
         grid_sizer.Add(header_sizer, 0, wx.EXPAND)
 
@@ -80,6 +84,10 @@ class SalesPricingPanel(wx.Panel):
 
         self.grid.Bind(gridlib.EVT_GRID_SELECT_CELL, self._on_select_cell)
         self.grid.Bind(gridlib.EVT_GRID_CELL_CHANGED, self._on_grid_cell_changed)
+
+    def _on_generate_offer(self, event):
+        if callable(self.on_generate_offer):
+            self.on_generate_offer()
 
     def load_project(self, project: Project):
         self.project = project

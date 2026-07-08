@@ -117,18 +117,6 @@ class MainFrame(wx.Frame):
         self._version_btns = []  # list of (version_index, ToggleButton)
         self._version_bar_sizer.AddStretchSpacer(1)
 
-        # Bouton export XLSX — côté droit, permanent
-        self._export_xlsx_btn = wx.Button(
-            self.version_bar, label="💾  Créer Offre XLSX", size=(-1, 26)
-        )
-        self._export_xlsx_btn.SetToolTip(
-            "Exporter la version courante vers un devis XLSX (offre de prix)"
-        )
-        self._export_xlsx_btn.Bind(wx.EVT_BUTTON, self._on_export_xlsx)
-        self._version_bar_sizer.Add(
-            self._export_xlsx_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 8
-        )
-
         self.version_bar.SetSizer(self._version_bar_sizer)
         right_sizer.Add(self.version_bar, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 5)
 
@@ -162,6 +150,10 @@ class MainFrame(wx.Frame):
         self.project_panel.on_quantities_changed = self._on_quantities_changed
         self.serie_panel.on_serie_updated = self._on_serie_updated
 
+        # Génération d'offres depuis les onglets dédiés
+        self.sales_panel.on_generate_offer = self._on_export_xlsx
+        self.serie_panel.on_generate_serie_offer = self._on_export_serie_xlsx
+
         def on_proj_changed():
             self.editor_panel.update_root_label()
             self._mark_dirty()
@@ -172,12 +164,22 @@ class MainFrame(wx.Frame):
         """Met à jour tous les panels avec un nouveau projet"""
         self.project = project
         self._rebuild_version_bar()
+        self._reload_all_panels()
+        self._update_title()
+
+    def _reload_all_panels(self, preserve_editor_selection=False):
+        """Recharge tous les panels depuis le projet courant.
+
+        Args:
+            preserve_editor_selection: si True, restaure la sélection de l'arbre
+                Gamme & Coûts (même position op/coût) après rechargement — utile
+                lors d'une bascule de version pour un rendu fluide.
+        """
         self.project_panel.load_project(self.project)
-        self.editor_panel.load_project(self.project)
+        self.editor_panel.load_project(self.project, preserve_selection=preserve_editor_selection)
         self.sales_panel.load_project(self.project)
         self.analysis_panel.load_project(self.project)
         self.serie_panel.load_project(self.project)
-        self._update_title()
 
     # ------------------------------------------------------------------ #
     # Version management                                                    #
@@ -208,10 +210,12 @@ class MainFrame(wx.Frame):
             btn.SetToolTip(
                 f"Version {v_idx}" + (f" — {version.label}" if version.label.strip() else "") +
                 f"\nCréée le {version.created_at[:10]}" +
-                (f"\nDepuis V{version.created_from_version}" if version.created_from_version else "")
+                (f"\nDepuis V{version.created_from_version}" if version.created_from_version else "") +
+                "\n\nDouble-clic : renommer"
             )
             v_idx_captured = v_idx
             btn.Bind(wx.EVT_TOGGLEBUTTON, lambda e, idx=v_idx_captured: self._on_version_selected(idx))
+            btn.Bind(wx.EVT_LEFT_DCLICK, lambda e, idx=v_idx_captured: self._on_rename_version(idx))
             sizer.Insert(insert_pos, btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
             self._version_btns.append((v_idx, btn))
             insert_pos += 1
@@ -253,11 +257,8 @@ class MainFrame(wx.Frame):
 
         self.project.switch_to_version(version_index)
         self._rebuild_version_bar()
-        self.project_panel.load_project(self.project)
-        self.editor_panel.load_project(self.project)
-        self.sales_panel.load_project(self.project)
-        self.analysis_panel.load_project(self.project)
-        self.serie_panel.load_project(self.project)
+        # Bascule fluide : conserver la sélection arbre (même position op/coût)
+        self._reload_all_panels(preserve_editor_selection=True)
         self._dirty = False
         self._update_title()
 
@@ -294,12 +295,39 @@ class MainFrame(wx.Frame):
         new_version = self.project.add_version(label)
         self.project.switch_to_version(new_version.version_index)
         self._rebuild_version_bar()
-        self.project_panel.load_project(self.project)
-        self.editor_panel.load_project(self.project)
-        self.sales_panel.load_project(self.project)
-        self.analysis_panel.load_project(self.project)
-        self.serie_panel.load_project(self.project)
+        # La nouvelle version est une copie : conserver la sélection courante
+        self._reload_all_panels(preserve_editor_selection=True)
         self._dirty = True  # La création d'une version est une modification
+        self._update_title()
+
+    def _on_rename_version(self, version_index: int):
+        """Renomme une version (y compris V1) via double-clic sur son bouton."""
+        if not self.project:
+            return
+        version = next(
+            (v for v in self.project.versions if v.version_index == version_index),
+            None
+        )
+        if version is None:
+            return
+
+        dlg = wx.TextEntryDialog(
+            self,
+            f"Nouveau libellé pour la version V{version_index} :",
+            "Renommer la version",
+            version.label or ""
+        )
+        if dlg.ShowModal() != wx.ID_OK:
+            dlg.Destroy()
+            return
+        new_label = dlg.GetValue().strip()
+        dlg.Destroy()
+
+        version.label = new_label
+        self._rebuild_version_bar()
+        # L'historique des offres affiche le libellé de version → rafraîchir
+        self.project_panel._update_history_ui()
+        self._mark_dirty()
         self._update_title()
 
     def _on_split_version(self, event):
@@ -366,8 +394,27 @@ class MainFrame(wx.Frame):
     # Export XLSX                                                          #
     # ------------------------------------------------------------------ #
 
-    def _on_export_xlsx(self, event):
-        """Exporte la version courante du projet en devis XLSX."""
+    def _on_export_serie_xlsx(self, event=None):
+        """Exporte une offre Série (chiffrage gros volumes) depuis l'onglet Production Série."""
+        if not self.project:
+            return
+        if getattr(self.project, 'serie_data', None) is None:
+            wx.MessageBox(
+                "Le mode Série n'est pas activé pour ce projet.\n"
+                "Activez-le dans l'onglet « Production Série » avant de générer une offre série.",
+                "Mode Série inactif",
+                wx.OK | wx.ICON_INFORMATION
+            )
+            return
+        # S'assurer que les données série sont à jour vis-à-vis de la gamme
+        try:
+            self.project.serie_data.sync_from_project(self.project)
+        except Exception:
+            pass
+        self._on_export_xlsx(serie_offer=True)
+
+    def _on_export_xlsx(self, event=None, serie_offer=False):
+        """Exporte la version courante du projet en devis XLSX (offre standard ou série)."""
         if not self.project:
             return
 
@@ -382,16 +429,21 @@ class MainFrame(wx.Frame):
             )
             return
 
+        offer_kind = "Série" if serie_offer else "standard"
+
         # Générer la référence devis
         reference = self.export_service.get_devis_reference(project=self.project)
         default_filename = self.export_service.get_default_filename(
             self.project, devis_ref=reference
         )
+        if serie_offer:
+            base, ext = os.path.splitext(default_filename)
+            default_filename = f"{base}-SERIE{ext}"
 
         # Demander le chemin de sortie
         with wx.FileDialog(
             self,
-            "Enregistrer le devis XLSX",
+            f"Enregistrer l'offre {offer_kind} XLSX",
             defaultDir=os.path.expanduser("~\\Desktop"),
             defaultFile=default_filename,
             wildcard="Fichiers Excel (*.xlsx)|*.xlsx",
@@ -402,7 +454,7 @@ class MainFrame(wx.Frame):
             output_path = fd.GetPath()
 
         progress = wx.ProgressDialog(
-            "Création de l'offre XLSX",
+            f"Création de l'offre {offer_kind} XLSX",
             "Génération du document à partir du template...",
             style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE
         )
@@ -412,7 +464,8 @@ class MainFrame(wx.Frame):
                 template_path,
                 output_path,
                 project_save_path=self.current_path,
-                devis_ref=reference
+                devis_ref=reference,
+                serie_offer=serie_offer
             )
             progress.Destroy()
 
@@ -426,7 +479,7 @@ class MainFrame(wx.Frame):
                 pass
 
             wx.MessageBox(
-                f"Offre XLSX créée avec succès !\n\n"
+                f"Offre {offer_kind} XLSX créée avec succès !\n\n"
                 f"Référence : {reference}\n"
                 f"Version   : V{self.project.current_version_index}\n"
                 f"Fichier   : {os.path.basename(output_path)}",

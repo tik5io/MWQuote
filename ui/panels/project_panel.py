@@ -332,10 +332,19 @@ class ProjectPanel(wx.Panel):
         for entry in reversed(history):
             has_xlsx = "💾 " if entry.get('xlsx_data_b64') else "   "
             v_idx = entry.get('version_index', 1)
+            v_label = self._resolve_version_label(v_idx)
+            serie_tag = "[SERIE]" if entry.get('is_serie') else ""
             time_str = f" {entry['time']}" if 'time' in entry else ""
             self.history_list.Append(
-                f"{has_xlsx}{entry['devis_ref']} [V{v_idx}] - {entry['date']}{time_str}"
+                f"{has_xlsx}{entry['devis_ref']} [{v_label}]{serie_tag} - {entry['date']}{time_str}"
             )
+
+    def _resolve_version_label(self, version_index):
+        """Retourne le libellé de la version (ou V{n} si non nommée)."""
+        for v in getattr(self.project, 'versions', []):
+            if v.version_index == version_index:
+                return v.label.strip() if v.label and v.label.strip() else f"V{version_index}"
+        return f"V{version_index}"
 
     def _on_history_double_click(self, event):
         if not self.project:

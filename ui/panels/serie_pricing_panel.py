@@ -380,6 +380,7 @@ class SeriePricingPanel(wx.Panel):
         super().__init__(parent)
         self.project = None
         self.on_serie_updated = None  # callback → MainFrame._mark_dirty + save
+        self.on_generate_serie_offer = None  # callback → MainFrame._on_export_serie_xlsx
         self._building = False        # guard contre les boucles EVT_TEXT
         self._eur_usd_rate: float = None
         self._rate_date: str = ""
@@ -401,6 +402,16 @@ class SeriePricingPanel(wx.Panel):
         self.lbl_status = wx.StaticText(self, label="Mode Série non activé pour ce projet")
         self.lbl_status.SetForegroundColour(wx.Colour(120, 120, 120))
         top.Add(self.lbl_status, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
+
+        top.AddStretchSpacer(1)
+
+        self.serie_offer_btn = wx.Button(self, label="💾  Créer Offre Série XLSX")
+        self.serie_offer_btn.SetToolTip(
+            "Exporter une offre série (chiffrage gros volumes) vers un devis XLSX"
+        )
+        self.serie_offer_btn.Bind(wx.EVT_BUTTON, self._on_generate_serie_offer)
+        top.Add(self.serie_offer_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
+
         outer.Add(top, 0, wx.EXPAND)
 
         outer.Add(wx.StaticLine(self), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
@@ -1015,7 +1026,12 @@ class SeriePricingPanel(wx.Panel):
             self.lbl_status.SetLabel("Mode Série non activé pour ce projet")
             self.lbl_status.SetForegroundColour(wx.Colour(120, 120, 120))
         self.nb.Show(active)
+        self.serie_offer_btn.Enable(active)
         self.Layout()
+
+    def _on_generate_serie_offer(self, event):
+        if callable(self.on_generate_serie_offer):
+            self.on_generate_serie_offer()
 
     # ------------------------------------------------------------------ EUR/USD
 

@@ -165,13 +165,61 @@ class OperationCostEditorPanel(wx.Panel):
         self.prop_op_label.Bind(wx.EVT_TEXT, self._on_op_field_changed)
         self.prop_op_comment.Bind(wx.EVT_TEXT, self._on_op_field_changed)
 
-    def load_project(self, project):
+    def load_project(self, project, preserve_selection=False):
+        # Capturer la sélection courante (par position) avant de recharger, afin de
+        # la restaurer sur la nouvelle version → bascule fluide entre versions.
+        path = self.get_selection_path() if preserve_selection else None
         self.project = project
         logger.info(f"load_project | ops={len(project.operations) if project else 0}")
         if self.project:
             for op in self.project.operations:
                 self._enforce_operation_constraints(op)
         self._refresh_tree()
+        if path is not None:
+            self.restore_selection_path(path)
+
+    def get_selection_path(self):
+        """Identifiant stable (indépendant des objets) de la sélection courante.
+
+        Retourne (op_index, cost_key_or_None) ou None si rien de sélectionné.
+        Permet de restaurer la même position après un rechargement/changement de version.
+        """
+        data = self.current_data
+        if not data or not self.project:
+            return None
+        op = data.get("operation")
+        if op is None:
+            return None
+        try:
+            op_index = self.project.operations.index(op)
+        except ValueError:
+            return None
+        if data.get("type") == "cost":
+            return (op_index, data.get("cost_key"))
+        return (op_index, None)
+
+    def restore_selection_path(self, path):
+        """Restaure la sélection à partir d'un path (op_index, cost_key_or_None)."""
+        if not path or not self.project:
+            return
+        op_index, cost_key = path
+        if op_index < 0 or op_index >= len(self.project.operations):
+            return
+        op = self.project.operations[op_index]
+        op_item = self._find_item_by_op(op, self.root)
+        if not op_item or not op_item.IsOk():
+            return
+        if cost_key is not None:
+            cost = op.costs.get(cost_key)
+            if cost is not None:
+                cost_item = self._find_item_by_cost(cost, op_item)
+                if cost_item and cost_item.IsOk():
+                    self.tree.SelectItem(cost_item)
+                    self.tree.EnsureVisible(cost_item)
+                    return
+        # Repli : sélectionner l'opération
+        self.tree.SelectItem(op_item)
+        self.tree.EnsureVisible(op_item)
 
     def set_database(self, db):
         self.template_manager = TemplateManager(db)

@@ -24,6 +24,7 @@ class ExportService:
         """Initialize avec optionnel DB pour numbering service."""
         self.db = db
         self.numbering_service = None
+        self._serie_offer = False
         if db:
             from infrastructure.quote_numbering_service import QuoteNumberingService
             self.numbering_service = QuoteNumberingService(db)
@@ -85,8 +86,11 @@ class ExportService:
     # =========================
     # PUBLIC
     # =========================
-    def export_excel(self, project, template_path, output_path, project_save_path=None, devis_ref=None):
+    def export_excel(self, project, template_path, output_path, project_save_path=None, devis_ref=None, serie_offer=False):
         try:
+            # Offre Série : chiffrage basé sur la logique série (une seule quantité).
+            self._serie_offer = bool(serie_offer)
+
             wb = load_workbook(template_path)
             ws = wb.active
 
@@ -106,10 +110,15 @@ class ExportService:
                 "date": ref_date.strftime("%d/%m/%Y"),
                 "time": _dt.datetime.now().strftime("%H:%M"),
                 "version_index": getattr(project, 'current_version_index', 1),
+                "is_serie": self._serie_offer,
             })
 
             # 1. Trier les quantités par ordre croissant
-            quantities = sorted(project.sale_quantities)
+            if self._serie_offer and getattr(project, 'serie_data', None) is not None:
+                # Une seule ligne : le volume du scénario série.
+                quantities = [int(project.serie_data.annual_volume)]
+            else:
+                quantities = sorted(project.sale_quantities)
             qty_count = len(quantities)
             qty_processed = 0
 
@@ -217,7 +226,10 @@ class ExportService:
             elif token == "QTY_REF":
                 cell.value = qty
             elif token == "PU_REF":
-                pu = project.total_price(qty)
+                if getattr(self, '_serie_offer', False) and getattr(project, 'serie_data', None) is not None:
+                    pu = project.serie_data.selling_price_per_piece()
+                else:
+                    pu = project.total_price(qty)
                 cell.value = pu
                 cell.number_format = '€ #,##0.00'
             else:
