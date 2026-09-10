@@ -499,15 +499,6 @@ class MainFrame(wx.Frame):
             except Exception:
                 pass
 
-            wx.MessageBox(
-                f"Offre {offer_kind} XLSX créée avec succès !\n\n"
-                f"Référence : {reference}\n"
-                f"Version   : V{self.project.current_version_index}\n"
-                f"Fichier   : {os.path.basename(output_path)}",
-                "Succès",
-                wx.OK | wx.ICON_INFORMATION
-            )
-
         except PermissionError as e:
             progress.Destroy()
             wx.MessageBox(
@@ -585,10 +576,6 @@ class MainFrame(wx.Frame):
             os.startfile(output_path)
         except Exception:
             pass
-        wx.MessageBox(
-            f"Export Fabrication/Qualité réussi !\n\nFichier : {output_path}",
-            "Export réussi", wx.OK | wx.ICON_INFORMATION
-        )
 
     def _maybe_prompt_legacy_project_folder(self):
         """Pour un article ancien sans dossier projet : proposer de le créer.
