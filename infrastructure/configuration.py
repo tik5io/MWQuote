@@ -8,6 +8,11 @@ class ConfigurationService:
 
     _instance = None  # Singleton instance
 
+    # Racine par défaut des projets série (dossier réseau).
+    DEFAULT_SERIES_ROOT = r"Z:\0 - PROJET SERIE"
+    # Nom du dossier modèle dont l'arborescence est copiée pour un nouveau projet.
+    DEFAULT_EMPTY_PROJECT_NAME = "0 - EMPTY PROJECT"
+
     @classmethod
     def get_instance(cls) -> 'ConfigurationService':
         """Get singleton instance."""
@@ -32,7 +37,9 @@ class ConfigurationService:
             "project_tags": [],
             "quotes_root_folder": None,
             "auto_migrate_on_root_change": True,
-            "use_uuid_for_filenames": True
+            "use_uuid_for_filenames": True,
+            "series_projects_root_folder": self.DEFAULT_SERIES_ROOT,
+            "series_empty_project_name": self.DEFAULT_EMPTY_PROJECT_NAME,
         }
         
         # 1. Try to load from persistent AppData path
@@ -110,6 +117,20 @@ class ConfigurationService:
         """Enable/disable automatic migration on root folder change."""
         self.config["auto_migrate_on_root_change"] = enabled
         self.save()
+
+    def get_series_root_folder(self) -> str:
+        """Racine des projets série (ex. Z:\\0 - PROJET SERIE). Paramétrable globalement."""
+        folder = self.config.get("series_projects_root_folder")
+        return folder if folder else self.DEFAULT_SERIES_ROOT
+
+    def set_series_root_folder(self, folder: str):
+        """Définit la racine des projets série."""
+        self.config["series_projects_root_folder"] = folder
+        self.save()
+
+    def get_empty_project_name(self) -> str:
+        """Nom du dossier modèle (arborescence copiée pour un nouveau projet)."""
+        return self.config.get("series_empty_project_name") or self.DEFAULT_EMPTY_PROJECT_NAME
 
     def use_uuid_for_filenames(self) -> bool:
         """Check if UUID-based filenames should be used."""

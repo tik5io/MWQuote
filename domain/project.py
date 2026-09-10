@@ -25,6 +25,7 @@ class Project:
         client: str,
         mwq_uuid: str = "",
         project_date: str = None,
+        project_folder: str = "",
         preview_image: Document = None,
         versions: List[ProjectVersion] = None,
         current_version_index: int = 1,
@@ -47,6 +48,7 @@ class Project:
         self.client = client
         self.mwq_uuid = mwq_uuid
         self.project_date = project_date
+        self.project_folder = project_folder or ""
         self.preview_image = preview_image
         self.is_prototype: bool = bool(is_prototype)
         self._current_version_index: int = current_version_index
@@ -119,6 +121,7 @@ class Project:
             client=self.client,
             mwq_uuid=str(uuid.uuid4()),
             project_date=self.project_date,
+            project_folder=self.project_folder,
             preview_image=copy.deepcopy(self.preview_image),
             versions=[new_v],
             current_version_index=1,

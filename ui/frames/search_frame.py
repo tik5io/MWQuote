@@ -289,6 +289,21 @@ class SearchFrame(wx.Frame):
 
         top_bar.AddStretchSpacer(1)
 
+        # Master "select all" checkbox (acts on all displayed/filtered rows)
+        self.select_all_cb = wx.CheckBox(top_bar_container, label="Tout sélectionner")
+        self.select_all_cb.SetToolTip("Cocher / décocher toutes les offres affichées (filtre en cours)")
+        self.select_all_cb.Bind(wx.EVT_CHECKBOX, self._on_master_check)
+        top_bar.Add(self.select_all_cb, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+
+        # Export synthesis (single Excel with preview + gamme + prices for all checked offers)
+        self.synth_export_btn = wx.Button(top_bar_container, label="📊 Exporter synthèse Excel")
+        self.synth_export_btn.SetToolTip("Générer un Excel unique de synthèse pour les offres cochées")
+        self.synth_export_btn.Bind(wx.EVT_BUTTON, self._on_export_synthesis)
+        self.synth_export_btn.Disable()
+        top_bar.Add(self.synth_export_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+
+        top_bar.Add(wx.StaticLine(top_bar_container, style=wx.LI_VERTICAL), 0, wx.EXPAND | wx.ALL, 5)
+
         # View toggle button
         self.view_toggle_btn = wx.Button(top_bar_container, label="📅 Chronologie")
         self.view_toggle_btn.SetToolTip("Basculer entre vue liste et vue chronologique")
@@ -316,6 +331,14 @@ class SearchFrame(wx.Frame):
         self.list_ctrl.InsertColumn(5, "Q. Max", width=60)
         self.list_ctrl.InsertColumn(6, "Date Proj.", width=90)
         self.list_ctrl.InsertColumn(7, "Modifié le", width=110)
+
+        # Checkboxes for multi-selection export (wxPython >= 4.1)
+        try:
+            self.list_ctrl.EnableCheckBoxes(True)
+            self.list_ctrl.Bind(wx.EVT_LIST_ITEM_CHECKED, self._on_item_checked)
+            self.list_ctrl.Bind(wx.EVT_LIST_ITEM_UNCHECKED, self._on_item_checked)
+        except AttributeError:
+            logger.warning("EnableCheckBoxes non disponible (wxPython < 4.1)")
 
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_item_selected)
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_item_activated)
@@ -374,6 +397,8 @@ class SearchFrame(wx.Frame):
         m_open = file_menu.Append(wx.ID_OPEN, "&Ouvrir...\tCtrl+O", "Ouvrir un fichier .mwq")
         file_menu.AppendSeparator()
         m_maintenance = file_menu.Append(wx.ID_ANY, "Maintenance de la base...", "Ouvrir les outils de maintenance")
+        m_series_root = file_menu.Append(wx.ID_ANY, "Dossier racine PROJET SERIE...",
+                                         "Définir la racine réseau des dossiers projet")
         file_menu.AppendSeparator()
         m_exit = file_menu.Append(wx.ID_EXIT, "Quitter", "Quitter l'application")
 
@@ -385,12 +410,28 @@ class SearchFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self._on_new_quote, m_new)
         self.Bind(wx.EVT_MENU, self._on_open_file, m_open)
         self.Bind(wx.EVT_MENU, self._on_maintenance, m_maintenance)
+        self.Bind(wx.EVT_MENU, self._on_set_series_root, m_series_root)
         self.Bind(wx.EVT_MENU, self._on_open_business_dashboard, m_business_dashboard)
         self.Bind(wx.EVT_MENU, lambda e: self.Close(), m_exit)
 
     def _on_open_business_dashboard(self, event):
         frame = BusinessDashboardFrame(self, self.analytics_service)
         frame.Show()
+
+    def _on_set_series_root(self, event):
+        """Définir la racine réseau des dossiers projet série (paramètre global)."""
+        current = self.config.get_series_root_folder()
+        default_path = current if os.path.isdir(current) else ""
+        with wx.DirDialog(self, "Choisir la racine des dossiers PROJET SERIE",
+                          defaultPath=default_path, style=wx.DD_DEFAULT_STYLE) as dlg:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            new_root = dlg.GetPath()
+        self.config.set_series_root_folder(new_root)
+        wx.MessageBox(
+            f"Racine des projets série définie :\n{new_root}",
+            "Dossier racine PROJET SERIE", wx.OK | wx.ICON_INFORMATION
+        )
 
     def _on_new_quote(self, event):
         """Créer une nouvelle quote et ouvrir l'éditeur (modal)"""
@@ -482,6 +523,7 @@ class SearchFrame(wx.Frame):
         if self._timeline_mode:
             self.timeline_panel.load_events(results)
             self.SetStatusText(f"{len(results)} projets trouvés")
+            self._update_checked_ui()
             return
 
         self.list_ctrl.DeleteAllItems()
@@ -521,6 +563,69 @@ class SearchFrame(wx.Frame):
             self.project_map[idx] = p
 
         self.SetStatusText(f"{len(results)} projets trouvés")
+        # New filtered set -> checkboxes are cleared; refresh master checkbox + button.
+        self._update_checked_ui()
+
+    # ------------------------------------------------------------------ #
+    # Multi-selection via checkboxes                                        #
+    # ------------------------------------------------------------------ #
+    def _get_checked_indices(self):
+        """Indices of rows whose checkbox is ticked (empty if unsupported)."""
+        indices = []
+        try:
+            for idx in range(self.list_ctrl.GetItemCount()):
+                if self.list_ctrl.IsItemChecked(idx):
+                    indices.append(idx)
+        except AttributeError:
+            pass
+        return indices
+
+    def _get_checked_projects(self):
+        """p_data of checked rows; falls back to highlighted selection if none."""
+        indices = self._get_checked_indices()
+        if not indices:
+            idx = self.list_ctrl.GetFirstSelected()
+            while idx != -1:
+                indices.append(idx)
+                idx = self.list_ctrl.GetNextSelected(idx)
+        return [self.project_map[i] for i in indices if i in self.project_map]
+
+    def _update_checked_ui(self):
+        """Sync master checkbox tri-state, export button label/state."""
+        if self._timeline_mode:
+            self.select_all_cb.SetValue(False)
+            self.select_all_cb.Disable()
+            self.synth_export_btn.Disable()
+            self.synth_export_btn.SetLabel("📊 Exporter synthèse Excel")
+            return
+
+        self.select_all_cb.Enable()
+        total = self.list_ctrl.GetItemCount()
+        checked = len(self._get_checked_indices())
+
+        # Plain 2-state checkbox: ticked as soon as at least one row is checked.
+        self.select_all_cb.SetValue(total > 0 and checked > 0)
+
+        if checked > 0:
+            self.synth_export_btn.Enable()
+            self.synth_export_btn.SetLabel(f"📊 Exporter synthèse Excel ({checked})")
+        else:
+            self.synth_export_btn.Disable()
+            self.synth_export_btn.SetLabel("📊 Exporter synthèse Excel")
+
+    def _on_item_checked(self, event):
+        self._update_checked_ui()
+        event.Skip()
+
+    def _on_master_check(self, event):
+        """Check/uncheck every displayed (filtered) row."""
+        check = self.select_all_cb.GetValue()
+        try:
+            for idx in range(self.list_ctrl.GetItemCount()):
+                self.list_ctrl.CheckItem(idx, check)
+        except AttributeError:
+            pass
+        self._update_checked_ui()
 
     def _on_item_selected(self, event):
         """Update display based on selection count (Details vs Comparison)"""
@@ -1302,6 +1407,15 @@ class SearchFrame(wx.Frame):
                                   "Export vers fichier Excel")
         self.Bind(wx.EVT_MENU, self._on_quick_export_xlsx, export_item)
 
+        # Synthesis export (single consolidated Excel) — uses checked rows if any.
+        checked_count = len(self._get_checked_indices())
+        synth_label = "📊 Exporter synthèse Excel"
+        if checked_count > 0:
+            synth_label += f" ({checked_count} cochées)"
+        synth_item = menu.Append(wx.ID_ANY, synth_label,
+                                 "Générer un Excel unique de synthèse (preview + gamme + prix)")
+        self.Bind(wx.EVT_MENU, self._on_export_synthesis, synth_item)
+
         # Export Fabrication/Qualité (works with single selection only)
         if selection_count == 1:
             fab_export_item = menu.Append(wx.ID_ANY, "🏭 Exporter Fabrication/Qualité",
@@ -1522,6 +1636,74 @@ class SearchFrame(wx.Frame):
                 "Erreur",
                 wx.OK | wx.ICON_ERROR
             )
+
+    def _on_export_synthesis(self, event):
+        """Export a single consolidated Excel (preview + gamme + prices) for checked offers."""
+        projects_data = self._get_checked_projects()
+        if not projects_data:
+            wx.MessageBox(
+                "Cochez au moins une offre (cases à cocher de la liste) pour générer la synthèse.",
+                "Aucune offre sélectionnée", wx.OK | wx.ICON_INFORMATION
+            )
+            return
+
+        default_name = f"Synthese_MWQuote_{dt_module.date.today().strftime('%Y%m%d')}.xlsx"
+        with wx.FileDialog(
+            self, "Enregistrer la synthèse Excel",
+            defaultDir=os.path.expanduser("~\\Desktop"),
+            defaultFile=default_name,
+            wildcard="Fichiers Excel (*.xlsx)|*.xlsx",
+            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
+        ) as fileDialog:
+            if fileDialog.ShowModal() != wx.ID_OK:
+                return
+            output_path = fileDialog.GetPath()
+
+        progress = wx.ProgressDialog(
+            "Export synthèse Excel",
+            "Chargement des offres...",
+            maximum=len(projects_data) + 1,
+            parent=self,
+            style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE
+        )
+        loaded = []
+        errors = []
+        try:
+            for i, p_data in enumerate(projects_data):
+                progress.Update(i, f"Chargement {i + 1}/{len(projects_data)}: {p_data.get('reference', '')}")
+                try:
+                    loaded.append(PersistenceService.load_project(p_data['filepath']))
+                except Exception as e:
+                    errors.append(f"{p_data.get('reference', p_data.get('filepath'))}: {e}")
+                    logger.error(f"Chargement échoué pour la synthèse: {e}")
+
+            if not loaded:
+                progress.Destroy()
+                wx.MessageBox("Aucune offre n'a pu être chargée.", "Erreur", wx.OK | wx.ICON_ERROR)
+                return
+
+            progress.Update(len(projects_data), "Génération du classeur de synthèse...")
+            self.export_service.export_multi_synthesis(loaded, output_path)
+            progress.Destroy()
+
+            try:
+                os.startfile(output_path)
+            except Exception as e:
+                logger.warning(f"Impossible d'ouvrir le fichier automatiquement: {e}")
+
+            msg = (f"Synthèse générée !\n\n{len(loaded)} offre(s) exportée(s).\n"
+                   f"Fichier : {os.path.basename(output_path)}")
+            if errors:
+                msg += f"\n\n{len(errors)} offre(s) ignorée(s) :\n" + "\n".join(errors[:5])
+            wx.MessageBox(msg, "Export synthèse", wx.OK | wx.ICON_INFORMATION)
+
+        except Exception as e:
+            try:
+                progress.Destroy()
+            except Exception:
+                pass
+            logger.error(f"Export synthèse error: {e}", exc_info=True)
+            wx.MessageBox(f"Erreur lors de l'export de la synthèse :\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
 
     def _on_export_fabrication_quality(self, event):
         """Export Fabrication/Qualité pour le projet sélectionné"""

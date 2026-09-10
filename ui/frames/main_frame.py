@@ -3,7 +3,8 @@ import wx
 import os
 import io
 from domain.project import Project
-from ui.panels.project_panel import ProjectPanel
+from ui.panels.project_panel import ProjectPanel, create_project_folder_interactive
+from infrastructure.project_folder_service import ProjectFolderService
 from ui.panels.operation_cost_editor_panel import OperationCostEditorPanel
 from ui.panels.sales_pricing_panel import SalesPricingPanel
 from ui.panels.graph_analysis_panel import GraphAnalysisPanel
@@ -50,8 +51,12 @@ class MainFrame(wx.Frame):
         
         if self.project:
             self._update_app_with_project(self.project)
-        
+
         self.Show()
+
+        # Article ancien ouvert sans dossier projet → proposer de le créer.
+        if filepath and self.project and not getattr(self.project, 'project_folder', ""):
+            wx.CallAfter(self._maybe_prompt_legacy_project_folder)
 
     def _set_app_icon(self):
         try:
@@ -148,6 +153,7 @@ class MainFrame(wx.Frame):
         self.editor_panel.on_operation_updated = self._on_operation_updated
         self.sales_panel.on_operation_updated = self._on_operation_updated
         self.project_panel.on_quantities_changed = self._on_quantities_changed
+        self.project_panel.on_export_fabrication = self._on_export_fabrication_quality
         self.serie_panel.on_serie_updated = self._on_serie_updated
 
         # Génération d'offres depuis les onglets dédiés
@@ -518,6 +524,110 @@ class MainFrame(wx.Frame):
                 "Erreur",
                 wx.OK | wx.ICON_ERROR
             )
+
+    def _on_export_fabrication_quality(self, event=None):
+        """Exporte le XLSX Fabrication/Qualité (gamme, temps, commentaires).
+
+        Destination : <dossier projet>\\PROCESS si un dossier projet est défini,
+        sinon on demande l'emplacement.
+        """
+        if not self.project:
+            return
+
+        # Nom de fichier proposé
+        ref = (self.project.reference or self.project.name or "Projet").strip()
+        safe_ref = "".join(c if c.isalnum() or c in " -_" else "_" for c in ref).strip() or "Projet"
+        filename = f"{safe_ref}_Fabrication_Qualite.xlsx"
+
+        output_path = None
+        project_folder = getattr(self.project, 'project_folder', "") or ""
+        if project_folder:
+            process_dir = ProjectFolderService.process_dir(project_folder)
+            try:
+                os.makedirs(process_dir, exist_ok=True)
+                output_path = os.path.join(process_dir, filename)
+            except Exception as e:
+                wx.MessageBox(
+                    f"Impossible de créer le dossier PROCESS :\n{process_dir}\n\n{e}\n\n"
+                    "Choisissez un emplacement manuellement.",
+                    "Dossier PROCESS", wx.OK | wx.ICON_WARNING
+                )
+                output_path = None
+
+        if not output_path:
+            with wx.FileDialog(
+                self, "Exporter Fabrication/Qualité",
+                defaultDir=os.path.expanduser("~\\Desktop"),
+                defaultFile=filename,
+                wildcard="Fichiers Excel (*.xlsx)|*.xlsx",
+                style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
+            ) as fd:
+                if fd.ShowModal() == wx.ID_CANCEL:
+                    return
+                output_path = fd.GetPath()
+
+        progress = wx.ProgressDialog(
+            "Export Fabrication/Qualité", "Génération du document...",
+            style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE, parent=self
+        )
+        try:
+            self.export_service.export_fabrication_quality(self.project, output_path)
+        except Exception as e:
+            wx.MessageBox(
+                f"Erreur lors de l'export Fabrication/Qualité :\n{e}",
+                "Erreur", wx.OK | wx.ICON_ERROR
+            )
+            return
+        finally:
+            progress.Destroy()
+
+        try:
+            os.startfile(output_path)
+        except Exception:
+            pass
+        wx.MessageBox(
+            f"Export Fabrication/Qualité réussi !\n\nFichier : {output_path}",
+            "Export réussi", wx.OK | wx.ICON_INFORMATION
+        )
+
+    def _maybe_prompt_legacy_project_folder(self):
+        """Pour un article ancien sans dossier projet : proposer de le créer.
+
+        Si accepté, on propose un chemin <racine>\\Client\\Référence (éditable),
+        puis on copie l'arborescence du dossier modèle et on pré-copie les plans
+        (en demandant avant d'écraser un fichier existant).
+        """
+        if not self.project or getattr(self.project, 'project_folder', ""):
+            return
+
+        service = ProjectFolderService()
+        suggestion = service.suggest_folder(self.project.client, self.project.reference)
+
+        msg = "Ce projet n'a pas de dossier projet associé.\nVoulez-vous le créer maintenant ?"
+        if suggestion:
+            msg += f"\n\nChemin proposé :\n{suggestion}"
+        if wx.MessageBox(msg, "Dossier projet", wx.YES_NO | wx.ICON_QUESTION) != wx.YES:
+            return
+
+        # Laisser l'utilisateur ajuster le chemin (facultatif mais proposé).
+        dlg = wx.TextEntryDialog(
+            self, "Chemin du dossier projet :", "Dossier projet",
+            value=suggestion or service.get_root()
+        )
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            folder = dlg.GetValue().strip()
+        finally:
+            dlg.Destroy()
+
+        if not folder:
+            return
+
+        if create_project_folder_interactive(self, self.project, folder, service):
+            # Refléter le nouveau chemin dans le panneau + marquer le projet modifié.
+            self.project_panel.load_project(self.project)
+            self._mark_dirty()
 
     def _update_title(self):
         """Met à jour le titre de la fenêtre avec la référence ou le nom du projet."""

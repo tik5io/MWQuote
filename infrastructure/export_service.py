@@ -853,3 +853,331 @@ class ExportService:
         except Exception as e:
             logger.error("Erreur export Fabrication/Qualité", exc_info=True)
             raise
+
+    # =========================
+    # EXPORT SYNTHESE MULTI-OFFRES
+    # =========================
+    def export_multi_synthesis(self, projects, output_path):
+        """
+        Génère un classeur Excel unique de synthèse pour plusieurs offres.
+
+        - Feuille "Synthèse" : une ligne par offre, prix de vente unitaire par
+          quantité (colonnes = union des quantités), lien vers la feuille détail.
+        - Une feuille par offre : preview + gamme (une ligne par opération),
+          prix de vente unitaire par quantité + ligne Total.
+
+        Prix de vente uniquement (marges incluses). Détail par opération.
+        """
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+        FONT = "Arial"
+        H_BG = "1F4E79"
+        H_FG = "FFFFFF"
+        SUB_BG = "2E75B6"
+        TOT_BG = "375623"
+        COL_BG = "D9E1F2"
+
+        thin = Side(style="thin", color="BFBFBF")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        try:
+            if not projects:
+                raise ValueError("Aucune offre à exporter.")
+
+            wb = Workbook()
+            synth = wb.active
+            synth.title = "Synthèse"
+
+            # -- Union triée des quantités (offres unitaires) --
+            all_quantities = set()
+            has_any_serie = False
+            for project in projects:
+                if getattr(project, "serie_data", None) is not None:
+                    has_any_serie = True
+                for q in getattr(project, "sale_quantities", []) or []:
+                    all_quantities.add(int(q))
+            quantities = sorted(all_quantities)
+
+            # Génère un nom de feuille unique (<=31 car., valide Excel).
+            used_names = set()
+
+            def make_sheet_name(base):
+                clean = "".join(
+                    c for c in str(base or "Offre")
+                    if c not in '[]:*?/\\'
+                ).strip() or "Offre"
+                clean = clean[:31]
+                name = clean
+                i = 2
+                while name.lower() in used_names:
+                    suffix = f"_{i}"
+                    name = clean[:31 - len(suffix)] + suffix
+                    i += 1
+                used_names.add(name.lower())
+                return name
+
+            def mode_label(project):
+                is_proto = bool(getattr(project, "is_prototype", False))
+                is_serie = getattr(project, "serie_data", None) is not None
+                if is_proto and is_serie:
+                    return "PROTO + SÉRIE"
+                if is_proto:
+                    return "PROTOTYPE"
+                if is_serie:
+                    return "SÉRIE"
+                return "Unitaire"
+
+            # =========================================================
+            # 1) FEUILLE SYNTHESE
+            # =========================================================
+            synth.merge_cells(start_row=1, start_column=1, end_row=1,
+                              end_column=max(4, 3 + len(quantities) + (1 if has_any_serie else 0)))
+            c = synth.cell(row=1, column=1, value="SYNTHÈSE DES OFFRES")
+            c.font = Font(name=FONT, bold=True, size=14, color=H_FG)
+            c.fill = PatternFill("solid", fgColor=H_BG)
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            synth.row_dimensions[1].height = 24
+
+            import datetime as _dt
+            sub = synth.cell(
+                row=2, column=1,
+                value=f"{len(projects)} offre(s) — généré le {_dt.date.today().strftime('%d/%m/%Y')}"
+            )
+            sub.font = Font(name=FONT, italic=True, size=9)
+
+            # En-têtes de colonnes (ligne 4)
+            hrow = 4
+            headers = ["Référence", "Client", "Mode"]
+            headers += [f"x{self._format_qty(q)} (€/pc)" for q in quantities]
+            if has_any_serie:
+                headers.append("Série (€/pc)")
+
+            for col_idx, text in enumerate(headers, start=1):
+                cell = synth.cell(row=hrow, column=col_idx, value=text)
+                cell.font = Font(name=FONT, bold=True, size=10, color=H_FG)
+                cell.fill = PatternFill("solid", fgColor=SUB_BG)
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell.border = border
+
+            # Largeurs
+            synth.column_dimensions["A"].width = 24
+            synth.column_dimensions["B"].width = 20
+            synth.column_dimensions["C"].width = 14
+            for i in range(len(quantities) + (1 if has_any_serie else 0)):
+                synth.column_dimensions[get_column_letter(4 + i)].width = 14
+
+            # Lignes offres
+            sheet_names = []
+            r = hrow + 1
+            for project in projects:
+                sheet_name = make_sheet_name(self._get_part_reference(project) or project.display_name)
+                sheet_names.append(sheet_name)
+
+                ref_cell = synth.cell(row=r, column=1, value=self._get_part_reference(project))
+                ref_cell.font = Font(name=FONT, bold=True, size=10, color="0563C1", underline="single")
+                ref_cell.hyperlink = f"#'{sheet_name}'!A1"
+                ref_cell.alignment = Alignment(horizontal="left", vertical="center")
+                ref_cell.border = border
+
+                cl = synth.cell(row=r, column=2, value=getattr(project, "client", "") or "")
+                cl.font = Font(name=FONT, size=10)
+                cl.border = border
+
+                md = synth.cell(row=r, column=3, value=mode_label(project))
+                md.font = Font(name=FONT, size=10)
+                md.alignment = Alignment(horizontal="center", vertical="center")
+                md.border = border
+
+                proj_qtys = set(int(q) for q in (getattr(project, "sale_quantities", []) or []))
+                for i, q in enumerate(quantities):
+                    cell = synth.cell(row=r, column=4 + i)
+                    if q in proj_qtys:
+                        cell.value = round(float(project.total_price(q)), 4)
+                        cell.number_format = '#,##0.0000 €'
+                    cell.font = Font(name=FONT, size=10)
+                    cell.alignment = Alignment(horizontal="right", vertical="center")
+                    cell.border = border
+
+                if has_any_serie:
+                    cell = synth.cell(row=r, column=4 + len(quantities))
+                    sd = getattr(project, "serie_data", None)
+                    if sd is not None:
+                        cell.value = round(float(sd.selling_price_per_piece()), 4)
+                        cell.number_format = '#,##0.0000 €'
+                    cell.font = Font(name=FONT, size=10)
+                    cell.alignment = Alignment(horizontal="right", vertical="center")
+                    cell.border = border
+
+                r += 1
+
+            synth.freeze_panes = f"A{hrow + 1}"
+
+            # =========================================================
+            # 2) UNE FEUILLE PAR OFFRE
+            # =========================================================
+            for project, sheet_name in zip(projects, sheet_names):
+                self._build_offer_detail_sheet(
+                    wb, project, sheet_name, quantities,
+                    FONT, H_BG, H_FG, SUB_BG, TOT_BG, COL_BG, border
+                )
+
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            wb.save(output_path)
+            logger.info(f"Export synthèse multi-offres réussi ({len(projects)} offres) → {output_path}")
+            return True
+
+        except PermissionError:
+            msg = (f"Impossible d'enregistrer le fichier '{os.path.basename(output_path)}'. "
+                   f"Vérifiez qu'il n'est pas déjà ouvert dans Excel.")
+            logger.error(msg)
+            raise Exception(msg)
+        except Exception:
+            logger.error("Erreur export synthèse multi-offres", exc_info=True)
+            raise
+
+    def _build_offer_detail_sheet(self, wb, project, sheet_name, quantities,
+                                  FONT, H_BG, H_FG, SUB_BG, TOT_BG, COL_BG, border):
+        """Construit la feuille détail d'une offre (preview + gamme par opération)."""
+        from openpyxl.styles import Font, PatternFill, Alignment
+
+        ws = wb.create_sheet(sheet_name)
+
+        # Quantités propres à l'offre (triées), sinon union globale.
+        proj_qtys = sorted(int(q) for q in (getattr(project, "sale_quantities", []) or []))
+        if not proj_qtys:
+            proj_qtys = list(quantities)
+
+        n_qty = len(proj_qtys)
+        last_col = 2 + n_qty  # A=opération, B=commentaire, puis quantités
+
+        ws.column_dimensions["A"].width = 34
+        ws.column_dimensions["B"].width = 40
+        for i in range(n_qty):
+            ws.column_dimensions[get_column_letter(3 + i)].width = 14
+
+        # ---- Titre ----
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(2, last_col))
+        c = ws.cell(row=1, column=1, value=f"{self._get_part_reference(project)}")
+        c.font = Font(name=FONT, bold=True, size=13, color=H_FG)
+        c.fill = PatternFill("solid", fgColor=H_BG)
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 24
+
+        # Lien retour synthèse
+        back = ws.cell(row=2, column=1, value="← Retour synthèse")
+        back.font = Font(name=FONT, size=9, color="0563C1", underline="single")
+        back.hyperlink = "#'Synthèse'!A1"
+
+        # ---- Bloc infos ----
+        r = 4
+        info_rows = [
+            ("Client", getattr(project, "client", "") or ""),
+            ("Nom", getattr(project, "name", "") or ""),
+            ("Date projet", getattr(project, "project_date", "") or ""),
+        ]
+        for label, value in info_rows:
+            lc = ws.cell(row=r, column=1, value=label)
+            lc.font = Font(name=FONT, bold=True, size=10)
+            vc = ws.cell(row=r, column=2, value=value)
+            vc.font = Font(name=FONT, size=10)
+            r += 1
+
+        # ---- Preview ----
+        r += 1
+        preview_doc = getattr(project, "preview_image", None)
+        if preview_doc is not None and getattr(preview_doc, "data", None):
+            try:
+                from openpyxl.drawing.image import Image as OpenpyxlImage
+                from PIL import Image as PilImage
+                import io as _io
+
+                raw = base64.b64decode(preview_doc.data)
+                pil_img = PilImage.open(_io.BytesIO(raw))
+                resample = PilImage.Resampling.LANCZOS if hasattr(PilImage, "Resampling") else PilImage.ANTIALIAS
+                pil_img.thumbnail((320, 240), resample)
+                stream = _io.BytesIO()
+                pil_img.save(stream, format="PNG")
+                stream.seek(0)
+                img = OpenpyxlImage(stream)
+                img.anchor = f"A{r}"
+                ws.add_image(img)
+                ws.row_dimensions[r].height = 190
+                r += 12
+            except Exception as e:
+                logger.warning(f"Preview non insérée pour {sheet_name}: {e}")
+                ws.cell(row=r, column=1, value="(preview non disponible)").font = Font(name=FONT, italic=True, size=9)
+                r += 2
+        else:
+            ws.cell(row=r, column=1, value="(pas de preview)").font = Font(name=FONT, italic=True, size=9)
+            r += 2
+
+        # ---- En-tête gamme ----
+        r += 1
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=max(2, last_col))
+        gc = ws.cell(row=r, column=1, value="GAMME — Prix de vente unitaire par opération (€/pc)")
+        gc.font = Font(name=FONT, bold=True, size=11, color=H_FG)
+        gc.fill = PatternFill("solid", fgColor=SUB_BG)
+        gc.alignment = Alignment(horizontal="left", vertical="center")
+        r += 1
+
+        # Colonnes gamme
+        col_headers = ["Opération", "Commentaire"] + [f"x{self._format_qty(q)}" for q in proj_qtys]
+        for col_idx, text in enumerate(col_headers, start=1):
+            cell = ws.cell(row=r, column=col_idx, value=text)
+            cell.font = Font(name=FONT, bold=True, size=10)
+            cell.fill = PatternFill("solid", fgColor=COL_BG)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
+        r += 1
+
+        # Lignes opérations
+        for op in getattr(project, "operations", []):
+            op_name = f"{getattr(op, 'typology', '') or 'Op'} | {getattr(op, 'label', '')}"
+            nc = ws.cell(row=r, column=1, value=op_name)
+            nc.font = Font(name=FONT, size=10)
+            nc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+            nc.border = border
+
+            cm = ws.cell(row=r, column=2, value=(getattr(op, "comment", "") or ""))
+            cm.font = Font(name=FONT, size=9)
+            cm.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+            cm.border = border
+
+            for i, q in enumerate(proj_qtys):
+                cell = ws.cell(row=r, column=3 + i, value=round(float(op.total_with_margins(q)), 4))
+                cell.number_format = '#,##0.0000 €'
+                cell.font = Font(name=FONT, size=10)
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+                cell.border = border
+            r += 1
+
+        # ---- Ligne Total ----
+        tc = ws.cell(row=r, column=1, value="TOTAL / pièce")
+        tc.font = Font(name=FONT, bold=True, size=10, color="FFFFFF")
+        tc.fill = PatternFill("solid", fgColor=TOT_BG)
+        tc.border = border
+        tb = ws.cell(row=r, column=2)
+        tb.fill = PatternFill("solid", fgColor=TOT_BG)
+        tb.border = border
+        for i, q in enumerate(proj_qtys):
+            cell = ws.cell(row=r, column=3 + i, value=round(float(project.total_price(q)), 4))
+            cell.number_format = '#,##0.0000 €'
+            cell.font = Font(name=FONT, bold=True, size=10, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor=TOT_BG)
+            cell.alignment = Alignment(horizontal="right", vertical="center")
+            cell.border = border
+        r += 1
+
+        # ---- Prix série éventuel ----
+        sd = getattr(project, "serie_data", None)
+        if sd is not None:
+            r += 1
+            sc = ws.cell(row=r, column=1, value="Prix de vente SÉRIE / pièce")
+            sc.font = Font(name=FONT, bold=True, size=10, color="FFFFFF")
+            sc.fill = PatternFill("solid", fgColor="2E75B6")
+            vc = ws.cell(row=r, column=3, value=round(float(sd.selling_price_per_piece()), 4))
+            vc.number_format = '#,##0.0000 €'
+            vc.font = Font(name=FONT, bold=True, size=10)
+            vol = ws.cell(row=r, column=2, value=f"Volume annuel : {int(sd.annual_volume):,} pcs")
+            vol.font = Font(name=FONT, italic=True, size=9)
