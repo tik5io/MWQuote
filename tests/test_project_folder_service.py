@@ -211,6 +211,67 @@ class TestProjectFolderService(unittest.TestCase):
         self.assertEqual(stats["copied_files"], 0)
         self.assertFalse(os.path.isdir(os.path.join(dest, SUPPLIER_QUOTES_SUBPATH)))
 
+    def test_scan_overwrite_candidates_none(self):
+        # Dossier destination vierge → aucun conflit
+        self._build_template()
+        dest = os.path.join(self.root, "ACME", "PRJ")
+        project = Project(name="p", reference="PRJ", client="ACME")
+        self.assertEqual(self.service.scan_overwrite_candidates(project, dest), [])
+
+    def test_scan_overwrite_candidates_template_file(self):
+        self._build_template()
+        dest = os.path.join(self.root, "ACME", "PRJ")
+        os.makedirs(os.path.join(dest, COMMERCIAL_SUBPATH), exist_ok=True)
+        with open(os.path.join(dest, COMMERCIAL_SUBPATH, "modele.txt"), "w") as f:
+            f.write("ORIGINAL")
+        conflicts = self.service.scan_overwrite_candidates(project=Project(
+            name="p", reference="PRJ", client="ACME"), dest_folder=dest)
+        self.assertEqual(conflicts, [os.path.join(COMMERCIAL_SUBPATH, "modele.txt")])
+
+    def test_scan_keys_match_decider_selection(self):
+        # Les clés du scan doivent piloter précisément l'écrasement.
+        self._build_template()
+        dest = os.path.join(self.root, "ACME", "PRJ")
+        os.makedirs(os.path.join(dest, COMMERCIAL_SUBPATH), exist_ok=True)
+        existing = os.path.join(dest, COMMERCIAL_SUBPATH, "modele.txt")
+        with open(existing, "w") as f:
+            f.write("ORIGINAL")
+        project = Project(name="p", reference="PRJ", client="ACME")
+        conflicts = set(self.service.scan_overwrite_candidates(project, dest))
+        # On sélectionne le fichier → il est bien écrasé
+        self.service.create_folder_tree(dest, overwrite_decider=lambda rel: rel in conflicts)
+        with open(existing) as f:
+            self.assertEqual(f.read(), "modele")
+
+    def test_scan_overwrite_candidates_plan_conflict(self):
+        dest = os.path.join(self.root, "ACME", "PRJ")
+        os.makedirs(os.path.join(dest, PLANS_SUBPATH), exist_ok=True)
+        with open(os.path.join(dest, PLANS_SUBPATH, "abc.pdf"), "w") as f:
+            f.write("old")
+        data = base64.b64encode(b"%PDF new").decode("ascii")
+        project = Project(
+            name="p", reference="PRJ", client="ACME",
+            documents=[Document(filename="abc.pdf", data=data)],
+        )
+        conflicts = self.service.scan_overwrite_candidates(project, dest)
+        self.assertEqual(conflicts, [os.path.join(PLANS_SUBPATH, "abc.pdf")])
+
+    def test_fabrication_export_path(self):
+        dest = os.path.join(self.root, "ACME", "PRJ")
+        project = Project(name="p", reference="PRJ-001", client="ACME")
+        expected = os.path.join(dest, PROCESS_SUBPATH, "PRJ-001_Fabrication_Qualite.xlsx")
+        self.assertEqual(self.service.fabrication_export_path(project, dest), expected)
+
+    def test_scan_includes_existing_fabrication_file(self):
+        dest = os.path.join(self.root, "ACME", "PRJ")
+        project = Project(name="p", reference="PRJ-001", client="ACME")
+        fab = self.service.fabrication_export_path(project, dest)
+        os.makedirs(os.path.dirname(fab), exist_ok=True)
+        with open(fab, "w") as f:
+            f.write("old xlsx")
+        conflicts = self.service.scan_overwrite_candidates(project, dest)
+        self.assertIn(os.path.join(PROCESS_SUBPATH, "PRJ-001_Fabrication_Qualite.xlsx"), conflicts)
+
     def test_copy_project_plans_strips_uuid_prefix(self):
         dest = os.path.join(self.root, "ACME", "PRJ")
         uuid_name = "550e8400-e29b-41d4-a716-446655440000_plan.pdf"

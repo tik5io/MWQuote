@@ -13,30 +13,70 @@ from ui.components.document_list_panel import DocumentListPanel
 from infrastructure.project_folder_service import ProjectFolderService
 
 
+class OverwriteSelectionDialog(wx.Dialog):
+    """Liste les fichiers déjà présents qui seraient écrasés et laisse
+    l'utilisateur sélectionner ceux à écraser (documente la validation)."""
+
+    def __init__(self, parent, folder, conflicts):
+        super().__init__(
+            parent, title="Dossier existant — fichiers à écraser",
+            size=(600, 460),
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        sizer = wx.BoxSizer(wx.VERTICAL)
+
+        intro = wx.StaticText(self, label=(
+            f"Le dossier existe déjà :\n{folder}\n\n"
+            f"{len(conflicts)} fichier(s) portant le même nom sont déjà présents.\n"
+            "Cochez ceux à écraser ; décochez ceux à conserver."
+        ))
+        sizer.Add(intro, 0, wx.ALL, 10)
+
+        self.check_list = wx.CheckListBox(self, choices=conflicts)
+        for i in range(len(conflicts)):
+            self.check_list.Check(i, True)
+        sizer.Add(self.check_list, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+
+        toggle_row = wx.BoxSizer(wx.HORIZONTAL)
+        all_btn = wx.Button(self, label="Tout cocher")
+        none_btn = wx.Button(self, label="Tout décocher")
+        all_btn.Bind(wx.EVT_BUTTON, lambda e: self._set_all(True))
+        none_btn.Bind(wx.EVT_BUTTON, lambda e: self._set_all(False))
+        toggle_row.Add(all_btn, 0, wx.RIGHT, 6)
+        toggle_row.Add(none_btn, 0)
+        sizer.Add(toggle_row, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+
+        btns = self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL)
+        ok_btn = self.FindWindowById(wx.ID_OK)
+        if ok_btn:
+            ok_btn.SetLabel("Continuer")
+        sizer.Add(btns, 0, wx.EXPAND | wx.ALL, 10)
+
+        self.SetSizer(sizer)
+
+    def _set_all(self, state):
+        for i in range(self.check_list.GetCount()):
+            self.check_list.Check(i, state)
+
+    def get_selected(self):
+        return {
+            self.check_list.GetString(i)
+            for i in range(self.check_list.GetCount())
+            if self.check_list.IsChecked(i)
+        }
+
+
 def create_project_folder_interactive(parent, project, folder, service=None):
     """Crée l'arborescence du dossier projet en copiant le dossier modèle.
 
-    Demande une confirmation d'écrasement si des fichiers existent déjà, puis
-    pré-copie les plans du projet dans TECHNIQUE\\PLAN CLIENT\\CHIFFRAGE.
+    Effectue d'abord un pré-scan des fichiers déjà présents qui seraient
+    écrasés, puis affiche la liste pour que l'utilisateur valide/sélectionne
+    ceux à écraser. Pré-copie ensuite les plans du projet dans
+    TECHNIQUE\\PLAN CLIENT\\CHIFFRAGE.
 
     Retourne True si l'opération s'est déroulée (même partiellement).
     """
     service = service or ProjectFolderService()
-
-    overwrite_all = False
-    if os.path.isdir(folder):
-        try:
-            non_empty = bool(os.listdir(folder))
-        except Exception:
-            non_empty = False
-        if non_empty:
-            res = wx.MessageBox(
-                f"Le dossier existe déjà :\n{folder}\n\n"
-                "Écraser les fichiers existants portant le même nom ?\n"
-                "(Non = conserver les fichiers existants)",
-                "Dossier existant", wx.YES_NO | wx.ICON_QUESTION
-            )
-            overwrite_all = (res == wx.YES)
 
     if not service.template_available():
         res = wx.MessageBox(
@@ -47,7 +87,27 @@ def create_project_folder_interactive(parent, project, folder, service=None):
         if res != wx.YES:
             return False
 
-    decider = (lambda rel: True) if overwrite_all else (lambda rel: False)
+    # Pré-scan : documenter les fichiers qui seraient écrasés puis laisser choisir.
+    selected_overwrites = set()
+    if os.path.isdir(folder):
+        try:
+            conflicts = service.scan_overwrite_candidates(project, folder)
+        except Exception as e:
+            wx.MessageBox(
+                f"Impossible d'analyser le dossier existant :\n{e}",
+                "Dossier existant", wx.OK | wx.ICON_ERROR
+            )
+            return False
+        if conflicts:
+            dlg = OverwriteSelectionDialog(parent, folder, conflicts)
+            try:
+                if dlg.ShowModal() != wx.ID_OK:
+                    return False  # annulé par l'utilisateur
+                selected_overwrites = dlg.get_selected()
+            finally:
+                dlg.Destroy()
+
+    decider = lambda rel: rel in selected_overwrites
 
     try:
         tree_stats = service.create_folder_tree(folder, decider)
@@ -58,6 +118,21 @@ def create_project_folder_interactive(parent, project, folder, service=None):
         wx.MessageBox(f"Erreur lors de la création du dossier :\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
         return False
 
+    # Export Fabrication/Qualité → PROCESS (régénéré à la création, honore la sélection).
+    fab_stats = {"copied_files": 0, "skipped_files": 0, "errors": []}
+    try:
+        fab_path = service.fabrication_export_path(project, folder)
+        rel_fab = os.path.relpath(fab_path, folder)
+        if os.path.exists(fab_path) and rel_fab not in selected_overwrites:
+            fab_stats["skipped_files"] = 1
+        else:
+            from infrastructure.export_service import ExportService
+            os.makedirs(os.path.dirname(fab_path), exist_ok=True)
+            ExportService().export_fabrication_quality(project, fab_path)
+            fab_stats["copied_files"] = 1
+    except Exception as e:
+        fab_stats["errors"].append(f"Fabrication/Qualité: {e}")
+
     # Mémoriser le chemin sur le projet
     project.project_folder = folder
 
@@ -66,6 +141,7 @@ def create_project_folder_interactive(parent, project, folder, service=None):
         + plan_stats.get("errors", [])
         + devis_stats.get("errors", [])
         + supplier_stats.get("errors", [])
+        + fab_stats.get("errors", [])
     )
     summary = (
         f"Dossier projet prêt :\n{folder}\n\n"
@@ -77,7 +153,9 @@ def create_project_folder_interactive(parent, project, folder, service=None):
         f"• Devis XLSX copié : {devis_stats.get('copied_files', 0)} "
         f"(ignorés : {devis_stats.get('skipped_files', 0)})\n"
         f"• Devis fournisseur copiés : {supplier_stats.get('copied_files', 0)} "
-        f"(ignorés : {supplier_stats.get('skipped_files', 0)})"
+        f"(ignorés : {supplier_stats.get('skipped_files', 0)})\n"
+        f"• Fabrication/Qualité (PROCESS) : {fab_stats.get('copied_files', 0)} "
+        f"(ignoré : {fab_stats.get('skipped_files', 0)})"
     )
     if errors:
         summary += "\n\n⚠ Erreurs :\n" + "\n".join(f"- {e}" for e in errors[:8])

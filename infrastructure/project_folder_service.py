@@ -97,6 +97,23 @@ class ProjectFolderService:
     def process_dir(project_folder: str) -> str:
         return os.path.join(project_folder, PROCESS_SUBPATH)
 
+    @staticmethod
+    def fabrication_filename(project) -> str:
+        """Nom de fichier du document Fabrication/Qualité (même règle que l'UI)."""
+        ref = (
+            getattr(project, "reference", None)
+            or getattr(project, "name", None)
+            or "Projet"
+        ).strip()
+        safe_ref = "".join(
+            c if c.isalnum() or c in " -_" else "_" for c in ref
+        ).strip() or "Projet"
+        return f"{safe_ref}_Fabrication_Qualite.xlsx"
+
+    def fabrication_export_path(self, project, project_folder: str) -> str:
+        """Chemin cible du XLSX Fabrication/Qualité dans PROCESS."""
+        return os.path.join(self.process_dir(project_folder), self.fabrication_filename(project))
+
     def template_available(self) -> bool:
         return os.path.isdir(self.get_template_folder())
 
@@ -194,7 +211,9 @@ class ProjectFolderService:
             dst = os.path.join(target, clean_name)
             try:
                 if os.path.exists(dst):
-                    if overwrite_decider is None or not overwrite_decider(clean_name):
+                    if overwrite_decider is None or not overwrite_decider(
+                        os.path.relpath(dst, project_folder)
+                    ):
                         stats["skipped_files"] += 1
                         continue
                 with open(dst, "wb") as f:
@@ -229,7 +248,10 @@ class ProjectFolderService:
         try:
             os.makedirs(target, exist_ok=True)
             dst = os.path.join(target, filename)
-            if os.path.exists(dst) and (overwrite_decider is None or not overwrite_decider(filename)):
+            if os.path.exists(dst) and (
+                overwrite_decider is None
+                or not overwrite_decider(os.path.relpath(dst, project_folder))
+            ):
                 stats["skipped_files"] += 1
                 return stats
             with open(dst, "wb") as f:
@@ -283,7 +305,8 @@ class ProjectFolderService:
                     dst = os.path.join(target, clean_name)
                     try:
                         if os.path.exists(dst) and (
-                            overwrite_decider is None or not overwrite_decider(clean_name)
+                            overwrite_decider is None
+                            or not overwrite_decider(os.path.relpath(dst, project_folder))
                         ):
                             stats["skipped_files"] += 1
                             continue
@@ -293,6 +316,79 @@ class ProjectFolderService:
                     except Exception as e:
                         stats["errors"].append(f"{clean_name}: {e}")
         return stats
+
+    # ------------------------------------------------------------------ #
+    # Pré-scan des écrasements                                            #
+    # ------------------------------------------------------------------ #
+
+    def scan_overwrite_candidates(self, project, dest_folder: str) -> List[str]:
+        """Liste triée des chemins (relatifs à `dest_folder`) des fichiers déjà
+        présents qui seraient écrasés par une création/copie complète du dossier.
+
+        Ne modifie rien sur le disque : sert à documenter la validation avant
+        écrasement. Les chemins retournés correspondent exactement aux clés
+        passées à `overwrite_decider` par les méthodes de copie.
+        """
+        candidates: List[str] = []
+
+        def _rel(dst: str) -> str:
+            return os.path.relpath(dst, dest_folder)
+
+        # 1) Arborescence du dossier modèle.
+        template = self.get_template_folder()
+        if os.path.isdir(template):
+            for root, _dirs, files in os.walk(template):
+                rel = os.path.relpath(root, template)
+                target_dir = dest_folder if rel == "." else os.path.join(dest_folder, rel)
+                for fname in files:
+                    dst = os.path.join(target_dir, fname)
+                    if os.path.exists(dst):
+                        candidates.append(_rel(dst))
+
+        # 2) Plans du projet → TECHNIQUE\PLAN CLIENT\CHIFFRAGE
+        plans_target = self.plans_dir(dest_folder)
+        for doc in (getattr(project, "documents", None) or []):
+            filename = getattr(doc, "filename", None)
+            data = getattr(doc, "data", None)
+            if not filename or not data:
+                continue
+            clean_name = _strip_uuid_prefix(os.path.basename(filename))
+            dst = os.path.join(plans_target, clean_name)
+            if os.path.exists(dst):
+                candidates.append(_rel(dst))
+
+        # 3) Dernier devis XLSX → COMMERCIAL
+        history = getattr(project, "export_history", None) or []
+        entry = next((e for e in reversed(history) if e.get("xlsx_data_b64")), None)
+        if entry is not None:
+            filename = entry.get("xlsx_filename") or f"{entry.get('devis_ref', 'devis')}.xlsx"
+            dst = os.path.join(self.commercial_dir(dest_folder), os.path.basename(filename))
+            if os.path.exists(dst):
+                candidates.append(_rel(dst))
+
+        # 4) Devis fournisseur → COMMERCIAL\DEVIS (même dédoublonnage que la copie)
+        quotes_target = self.supplier_quotes_dir(dest_folder)
+        used_names: set = set()
+        for op in (getattr(project, "operations", None) or []):
+            for cost in getattr(op, "costs", {}).values():
+                for doc in (getattr(cost, "documents", None) or []):
+                    filename = getattr(doc, "filename", None)
+                    data = getattr(doc, "data", None)
+                    if not filename or not data:
+                        continue
+                    clean_name = _strip_uuid_prefix(os.path.basename(filename))
+                    clean_name = _dedupe_name(clean_name, used_names)
+                    dst = os.path.join(quotes_target, clean_name)
+                    if os.path.exists(dst):
+                        candidates.append(_rel(dst))
+
+        # 5) Export Fabrication/Qualité → PROCESS (toujours régénéré à la création).
+        fab_dst = self.fabrication_export_path(project, dest_folder)
+        if os.path.exists(fab_dst):
+            candidates.append(_rel(fab_dst))
+
+        # Dédoublonnage en conservant un ordre déterministe.
+        return sorted(set(candidates))
 
 
 def _dedupe_name(name: str, used: set) -> str:
