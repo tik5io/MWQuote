@@ -2,12 +2,13 @@
 import wx
 import os
 import io
+import datetime
+import tempfile
 from domain.project import Project
 from ui.panels.project_panel import ProjectPanel, create_project_folder_interactive
 from infrastructure.project_folder_service import ProjectFolderService
 from ui.panels.operation_cost_editor_panel import OperationCostEditorPanel
 from ui.panels.sales_pricing_panel import SalesPricingPanel
-from ui.panels.graph_analysis_panel import GraphAnalysisPanel
 from ui.panels.serie_pricing_panel import SeriePricingPanel
 from infrastructure.persistence import PersistenceService
 from infrastructure.logging_service import clear_logs_directory
@@ -27,7 +28,7 @@ from infrastructure.template_manager import TemplateManager
 class MainFrame(wx.Frame):
     """Fenêtre principale de l'application de chiffrage"""
 
-    def __init__(self, project=None, clear_logs=False, filepath=None):
+    def __init__(self, project=None, clear_logs=False, filepath=None, new_quote=False):
         super().__init__(None, title="MWQuote", size=(1200, 800))
         
         if clear_logs:
@@ -53,6 +54,10 @@ class MainFrame(wx.Frame):
             self._update_app_with_project(self.project)
 
         self.Show()
+
+        # Nouvelle quote → création de la première phase (type de calcul + quantités).
+        if new_quote:
+            wx.CallAfter(self._on_new_quote_opened)
 
         # Article ancien ouvert sans dossier projet → proposer de le créer.
         if filepath and self.project and not getattr(self.project, 'project_folder', ""):
@@ -114,13 +119,29 @@ class MainFrame(wx.Frame):
         # --- Version bar ---
         self.version_bar = wx.Panel(right_panel, style=wx.BORDER_SIMPLE)
         self.version_bar.SetBackgroundColour(wx.Colour(230, 235, 245))
-        self._version_bar_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self._version_bar_sizer = wx.WrapSizer(wx.HORIZONTAL)  # les versions passent à la ligne si besoin
         self._version_bar_sizer.Add(
             wx.StaticText(self.version_bar, label="  Versions :"),
             0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4
         )
+        # Navigation : version précédente / suivante
+        self.btn_prev_version = wx.Button(self.version_bar, label="◀", size=(30, 26))
+        self.btn_prev_version.SetToolTip("Version précédente")
+        self.btn_prev_version.Bind(wx.EVT_BUTTON, lambda e: self._navigate_version(-1))
+        self.btn_next_version = wx.Button(self.version_bar, label="▶", size=(30, 26))
+        self.btn_next_version.SetToolTip("Version suivante")
+        self.btn_next_version.Bind(wx.EVT_BUTTON, lambda e: self._navigate_version(+1))
+        self._version_bar_sizer.Add(self.btn_prev_version, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
+        self._version_bar_sizer.Add(self.btn_next_version, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 2)
         self._version_btns = []  # list of (version_index, ToggleButton)
-        self._version_bar_sizer.AddStretchSpacer(1)
+
+        # Alertes de cohérence de la version (prix manquant au-delà des pièces fournies…)
+        self.phase_warn_lbl = wx.StaticText(self.version_bar, label="")
+        self.phase_warn_lbl.SetForegroundColour(wx.Colour(190, 90, 0))
+        self.phase_warn_lbl.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+        self.phase_warn_lbl.Bind(wx.EVT_LEFT_DOWN, self._on_show_phase_warnings)
+        self._phase_warnings = []
+        self._version_bar_sizer.Add(self.phase_warn_lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
 
         self.version_bar.SetSizer(self._version_bar_sizer)
         right_sizer.Add(self.version_bar, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 5)
@@ -130,16 +151,15 @@ class MainFrame(wx.Frame):
 
         self.editor_panel = OperationCostEditorPanel(self.notebook)
         self.editor_panel.set_database(self.db)
-        self.notebook.AddPage(self.editor_panel, "Gamme & Coûts")
+        self.notebook.AddPage(self.editor_panel, "Gamme")
 
         self.sales_panel = SalesPricingPanel(self.notebook)
         self.notebook.AddPage(self.sales_panel, "Tarif de Vente")
 
-        self.analysis_panel = GraphAnalysisPanel(self.notebook)
-        self.notebook.AddPage(self.analysis_panel, "Analyse Graphique")
-
+        # Le panneau Décomposé n'a pas d'onglet propre : dans une version Décomposé il prend la
+        # place de l'onglet Gamme (voir _update_gamme_tab).
         self.serie_panel = SeriePricingPanel(self.notebook)
-        self.notebook.AddPage(self.serie_panel, "Production Série")
+        self.serie_panel.Hide()
 
         right_sizer.Add(self.notebook, 1, wx.EXPAND | wx.ALL, 5)
         right_panel.SetSizer(right_sizer)
@@ -152,13 +172,20 @@ class MainFrame(wx.Frame):
         """Connecte les événements entre les panels"""
         self.editor_panel.on_operation_updated = self._on_operation_updated
         self.sales_panel.on_operation_updated = self._on_operation_updated
-        self.project_panel.on_quantities_changed = self._on_quantities_changed
         self.project_panel.on_export_fabrication = self._on_export_fabrication_quality
         self.serie_panel.on_serie_updated = self._on_serie_updated
+        self.serie_panel.on_steps_changed = self.editor_panel.reload_selected_properties
 
         # Génération d'offres depuis les onglets dédiés
-        self.sales_panel.on_generate_offer = self._on_export_xlsx
+        self.sales_panel.on_generate_offer = self._on_new_offer
+        self.sales_panel.on_preview_offer = self._on_preview_current
+        self.sales_panel.on_select_revision = self._on_offer_revision_selected
+        self.sales_panel.on_select_version = self._on_offer_version_selected
+        self.sales_panel.on_open_revision = self._open_offer_xlsx
+        self.editor_panel.on_request_new_version = lambda: self._on_add_version(None)
+        self.serie_panel.on_request_new_version = lambda: self._on_add_version(None)
         self.serie_panel.on_generate_serie_offer = self._on_export_serie_xlsx
+        self.serie_panel.on_preview_serie_offer = lambda: self._on_preview_offer(serie_offer=True)
 
         def on_proj_changed():
             self.editor_panel.update_root_label()
@@ -184,10 +211,149 @@ class MainFrame(wx.Frame):
         self.project_panel.load_project(self.project)
         self.editor_panel.load_project(self.project)
         self.sales_panel.load_project(self.project)
-        self.analysis_panel.load_project(self.project)
         self.serie_panel.load_project(self.project)
         if editor_selection_path is not None:
             self.editor_panel.restore_selection_path(editor_selection_path)
+        self._update_gamme_tab()
+        self._apply_freeze_state()
+
+    def _update_gamme_tab(self):
+        """Premier onglet : « Gamme » en Taux horaire, « Décomposé » dans une version Décomposé.
+
+        Dans une version Décomposé, la structure et les temps ont été copiés à la
+        création de la version : le panneau Décomposé les exploite, il n'y a plus de
+        gamme à éditer à part.
+        """
+        if not self.project:
+            return
+        is_serie = self.project.current_phase.is_serie
+        wanted, other = (self.serie_panel, self.editor_panel) if is_serie else (self.editor_panel, self.serie_panel)
+        title = "Décomposé" if is_serie else "Gamme"
+        if self.notebook.FindPage(wanted) == 0:
+            self.notebook.SetPageText(0, title)
+            return
+        selected = self.notebook.GetSelection()
+        current_page = self.notebook.GetPage(selected) if selected not in (wx.NOT_FOUND, 0) else None
+        old = self.notebook.FindPage(other)
+        if old != wx.NOT_FOUND:
+            self.notebook.RemovePage(old)
+        other.Hide()
+        show_it = selected in (0, wx.NOT_FOUND)
+        self.notebook.InsertPage(0, wanted, title, select=show_it)
+        # Ne jamais afficher de force : sur un autre onglet (Tarif…), la page insérée
+        # recouvrirait l'onglet courant.
+        wanted.Show(show_it)
+        self.notebook.Layout()
+        if not show_it and current_page is not None:
+            idx = self.notebook.FindPage(current_page)
+            if idx != wx.NOT_FOUND:
+                self.notebook.SetSelection(idx)
+                current_page.Show()
+
+    # ------------------------------------------------------------------ #
+    # Offres (indices) et gel de version                                    #
+    # ------------------------------------------------------------------ #
+
+    def _apply_freeze_state(self):
+        """Une version portant une offre émise est figée : gamme en lecture seule."""
+        if not self.project:
+            return
+        frozen = self.project.is_version_frozen()
+        self.editor_panel.set_locked(frozen, self.project.version_frozen_by() or "")
+        self.serie_panel.set_locked(frozen and self.project.current_phase.is_serie, self.project.version_frozen_by() or "")
+
+    def _on_new_offer(self):
+        """Ruban « Convertir en offre ».
+
+        Version sans offre : nouvelle offre (nouveau numéro de devis, indice A), la gamme est figée.
+        Version déjà convertie : l'indice suivant est créé automatiquement, à condition que les
+        coefficients aient changé depuis le dernier indice (l'utilisateur ne déclare jamais d'indice).
+        """
+        from domain import offers
+        if not self.project:
+            return
+        serie = self.project.current_phase.is_serie
+        ref = offers.latest_offer_ref(self.project.export_history, self.project.current_version_index)
+        if not ref:
+            self._on_export_xlsx(serie_offer=serie)
+            return
+        history = [e for e in self.project.export_history
+                   if e.get("devis_ref") == ref and e.get("version_index") == self.project.current_version_index]
+        last = sorted(history, key=lambda e: offers.revision_of(e))[-1]
+        if last.get("coeffs") and offers.same_coefficients(
+                last.get("coeffs"), offers.snapshot_coefficients(self.project.current_version)):
+            wx.MessageBox(
+                f"Les coefficients n'ont pas changé depuis l'indice {offers.revision_of(last)} de l'offre {ref}.\n"
+                "Modifiez les coefficients (ou le prix fixé) pour créer un nouvel indice.",
+                "Aucun changement", wx.OK | wx.ICON_INFORMATION)
+            return
+        self._on_export_xlsx(serie_offer=serie, revise_ref=ref)
+
+    def _on_preview_current(self):
+        if self.project:
+            self._on_preview_offer(serie_offer=self.project.current_phase.is_serie)
+
+    def _after_offer_issued(self, was_frozen: bool):
+        """Offre émise : l'arbre se met à jour et la gamme se fige (avec information au 1er passage)."""
+        self._reload_keeping_selection()
+        if not was_frozen and self.project.is_version_frozen():
+            v = self.project.current_version_index
+            wx.MessageBox(
+                f"L'offre {self.project.version_frozen_by()} est émise : la gamme de la version V{v} est "
+                "désormais figée.\n\nToute modification de gamme passera par une nouvelle version (« + Nouvelle version »). "
+                "Une modification des coefficients, suivie de « Convertir en offre », crée automatiquement "
+                "l'indice suivant de cette offre.",
+                "Version figée", wx.OK | wx.ICON_INFORMATION)
+
+    def _on_offer_version_selected(self, version_index: int):
+        """Clic sur une version dans l'arbre d'offres : on bascule dessus."""
+        if self.project and version_index != self.project.current_version_index:
+            self._on_version_selected(version_index)
+
+    def _on_offer_revision_selected(self, entry: dict):
+        """Clic sur un indice : bascule sur sa version et recharge ses paramètres de vente."""
+        from domain import offers
+        if not self.project:
+            return
+        idx = entry.get("version_index", 1)
+        if idx != self.project.current_version_index:
+            self._on_version_selected(idx)
+            if self.project.current_version_index != idx:
+                return                      # bascule annulée (modifications non enregistrées)
+        coeffs = entry.get("coeffs")
+        if not coeffs:
+            self.sales_panel.select_revision(entry)
+            return
+        version = self.project.current_version
+        current = offers.snapshot_coefficients(version)
+        if not offers.same_coefficients(current, coeffs):
+            known = [e.get("coeffs") for e in self.project.export_history if e.get("version_index", 1) == idx]
+            if not any(offers.same_coefficients(current, k) for k in known):
+                if wx.MessageBox(
+                        "Les paramètres de vente actuels n'ont été émis dans aucune offre.\n"
+                        f"Les remplacer par ceux de l'indice {offers.revision_of(entry)} de {entry.get('devis_ref')} ?",
+                        "Recharger l'indice", wx.YES_NO | wx.NO_DEFAULT | wx.ICON_QUESTION) != wx.YES:
+                    self.sales_panel.select_revision(None)
+                    return
+            if offers.apply_snapshot(version, coeffs):
+                self._reload_keeping_selection()
+                self._mark_dirty()
+        self.sales_panel.select_revision(entry)
+
+    def _open_offer_xlsx(self, entry: dict):
+        """Ouvre le XLSX remis au client pour cet indice (copie temporaire nommée d'après la référence d'offre)."""
+        from infrastructure.offer_files import offer_workbook_path
+        try:
+            path = offer_workbook_path(entry)
+        except ValueError:
+            wx.MessageBox("Aucun fichier XLSX stocké pour cette offre.\n"
+                          "Les offres futures sont automatiquement sauvegardées.",
+                          "Fichier non disponible", wx.OK | wx.ICON_INFORMATION)
+            return
+        try:
+            os.startfile(path)
+        except Exception as e:
+            wx.MessageBox(f"Erreur lors de l'ouverture du XLSX :\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
 
     # ------------------------------------------------------------------ #
     # Version management                                                    #
@@ -209,34 +375,135 @@ class MainFrame(wx.Frame):
         sizer = self._version_bar_sizer
 
         # Insert version buttons after the label (index 1)
-        insert_pos = 1
+        insert_pos = 3           # après le libellé et les deux boutons de navigation
         for version in sorted(self.project.versions, key=lambda v: v.version_index):
             v_idx = version.version_index
-            label = version.label.strip() if version.label.strip() else f"V{v_idx}"
-            btn = wx.ToggleButton(self.version_bar, label=label, size=(-1, 26))
+            btn = wx.ToggleButton(self.version_bar, label=self._version_button_label(version), size=(-1, 26))
             btn.SetValue(v_idx == current_idx)
             btn.SetToolTip(
                 f"Version {v_idx}" + (f" — {version.label}" if version.label.strip() else "") +
+                f"\n{version.describe()}" +
+                f"\nOutillage : {version.phase.effective_tooling_billing.value}" +
+                (f"\n🔒 Gamme figée (offre {self.project.version_frozen_by(v_idx)})"
+                 if self.project.is_version_frozen(v_idx) else "") +
                 f"\nCréée le {version.created_at[:10]}" +
                 (f"\nDepuis V{version.created_from_version}" if version.created_from_version else "") +
-                "\n\nDouble-clic : renommer"
+                "\n\nDouble-clic : modifier (nom, quantités)"
             )
             v_idx_captured = v_idx
             btn.Bind(wx.EVT_TOGGLEBUTTON, lambda e, idx=v_idx_captured: self._on_version_selected(idx))
-            btn.Bind(wx.EVT_LEFT_DCLICK, lambda e, idx=v_idx_captured: self._on_rename_version(idx))
+            btn.Bind(wx.EVT_LEFT_DCLICK, lambda e, idx=v_idx_captured: self._on_edit_version(idx))
             sizer.Insert(insert_pos, btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
             self._version_btns.append((v_idx, btn))
             insert_pos += 1
 
         # "+" button to create a new version
         add_btn = wx.Button(self.version_bar, label="+  Nouvelle version", size=(-1, 26))
-        add_btn.SetToolTip("Créer une nouvelle version à partir de la version courante")
+        add_btn.SetToolTip("Créer une nouvelle version (copie de la gamme courante) : autres quantités, "
+                           "autre mode de calcul (Taux horaire / Décomposé)")
         add_btn.Bind(wx.EVT_BUTTON, self._on_add_version)
         sizer.Insert(insert_pos, add_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 6)
         self._version_btns.append((-1, add_btn))  # -1 = not a real version btn
 
+        self._refresh_phase_warnings()
+        self._update_version_nav()
         self.version_bar.Layout()
         self.version_bar.GetParent().Layout()
+
+    def _version_order(self):
+        return [v.version_index for v in sorted(self.project.versions, key=lambda v: v.version_index)] if self.project else []
+
+    def _update_version_nav(self):
+        order = self._version_order()
+        pos = order.index(self.project.current_version_index) if self.project and self.project.current_version_index in order else -1
+        self.btn_prev_version.Enable(pos > 0)
+        self.btn_next_version.Enable(0 <= pos < len(order) - 1)
+
+    def _navigate_version(self, step: int):
+        """◀ ▶ : passe à la version précédente / suivante."""
+        order = self._version_order()
+        if not order or self.project.current_version_index not in order:
+            return
+        pos = order.index(self.project.current_version_index) + step
+        if 0 <= pos < len(order):
+            self._on_version_selected(order[pos])
+
+    # ------------------------------------------------------------------ #
+    # Configuration de vente de la version (mode de calcul, quantités)      #
+    # ------------------------------------------------------------------ #
+
+    def _version_button_label(self, version) -> str:
+        """« V1 · Taux horaire · 10 / 100 pc » — ou le nom donné à la version ; 🔒 si figée."""
+        name = version.label.strip() if version.label.strip() else f"V{version.version_index}"
+        qtys = sorted(version.phase.sale_quantities or [])
+        if version.is_serie:
+            sd = version.phase.serie_data
+            detail = f"{int(sd.annual_volume):,} pc/an".replace(",", " ") if sd else "—"
+        else:
+            shown = [f"{q:,}".replace(",", " ") for q in qtys[:3]]
+            detail = (" / ".join(shown) + (" …" if len(qtys) > 3 else "") + " pc") if qtys else "—"
+        lock = " 🔒" if self.project and self.project.is_version_frozen(version.version_index) else ""
+        return f"{name} · {version.display_mode} · {detail}{lock}"
+
+    def _refresh_phase_warnings(self):
+        """Indicateur des incohérences de la version (prix manquant au-delà des pièces fournies…)."""
+        from domain.quote_validator import QuoteValidator
+        try:
+            self._phase_warnings = QuoteValidator.phase_warnings(self.project) if self.project else []
+        except Exception:
+            self._phase_warnings = []
+        n = len(self._phase_warnings)
+        self.phase_warn_lbl.SetLabel(f"⚠ {n} point{'s' if n > 1 else ''} à vérifier" if n else "")
+        self.phase_warn_lbl.SetToolTip("\n".join(w.message for w in self._phase_warnings) if n else "")
+        self.version_bar.Layout()
+
+    def _on_show_phase_warnings(self, event):
+        if not self._phase_warnings:
+            return
+        text = "\n\n".join(f"• {w.message}" for w in self._phase_warnings)
+        wx.MessageBox(text, "Cohérence de la version", wx.OK | wx.ICON_INFORMATION)
+
+    def _reload_keeping_selection(self):
+        sel_path = self.editor_panel.get_selection_path()
+        tab_idx = self.notebook.GetSelection()
+        self._rebuild_version_bar()
+        self._reload_all_panels(editor_selection_path=sel_path)
+        if tab_idx != wx.NOT_FOUND:
+            self.notebook.SetSelection(tab_idx)
+        self.version_bar.GetParent().Layout()
+
+    def _on_edit_version(self, version_index: int):
+        """Double-clic sur une version : nom, quantités / volume, facturation de l'outillage.
+
+        Le mode de calcul ne change pas ici : pour vendre la gamme autrement,
+        on crée une nouvelle version.
+        """
+        if not self.project:
+            return
+        from domain.phase import PhaseKind
+        from ui.dialogs.phase_dialog import PhaseDialog
+        version = next((v for v in self.project.versions if v.version_index == version_index), None)
+        if version is None:
+            return
+        phase = version.phase
+        dlg = PhaseDialog(self, phase, title=f"Modifier la version V{version_index}", label=version.label)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            version.label = dlg.get_label()
+            phase.label = version.label or phase.label
+            phase.tooling_billing = dlg.get_tooling_billing()
+            if version.is_serie:
+                if phase.serie_data:
+                    phase.serie_data.annual_volume = dlg.get_annual_volume()
+            else:
+                phase.sale_quantities = dlg.get_quantities()
+        finally:
+            dlg.Destroy()
+        self._reload_keeping_selection()
+        self.sales_panel.refresh_offers()   # l'arbre d'offres affiche le nom de version
+        self._mark_dirty()
+        self._update_title()
 
     def _on_version_selected(self, version_index: int):
         """Bascule vers une version du projet."""
@@ -247,8 +514,8 @@ class MainFrame(wx.Frame):
                     btn.SetValue(True)
             return
 
-        # Proposer la sauvegarde si des modifications en attente
-        if self._dirty:
+        # Version figée par une offre : la gamme n'est plus éditable, rien à confirmer
+        if self._dirty and not self.project.is_version_frozen():
             res = wx.MessageBox(
                 "Des modifications n'ont pas été enregistrées.\nSouhaitez-vous enregistrer avant de changer de version ?",
                 "Modifications non enregistrées",
@@ -263,6 +530,7 @@ class MainFrame(wx.Frame):
                     self._rebuild_version_bar()
                     return
 
+        was_frozen = self.project.is_version_frozen()
         # Capturer AVANT la bascule : current_data pointe encore vers la version
         # courante, donc get_selection_path() peut résoudre la position op/coût.
         sel_path = self.editor_panel.get_selection_path()
@@ -274,7 +542,7 @@ class MainFrame(wx.Frame):
         self._reload_all_panels(editor_selection_path=sel_path)
         if tab_idx != wx.NOT_FOUND:
             self.notebook.SetSelection(tab_idx)
-        self._dirty = False
+        self._dirty = self._dirty and was_frozen     # figée : l'état à enregistrer est conservé, sans confirmation
         self._update_title()
 
     def _on_add_version(self, event):
@@ -282,8 +550,8 @@ class MainFrame(wx.Frame):
         if not self.project:
             return
 
-        # Proposer la sauvegarde si des modifications en attente
-        if self._dirty:
+        # Version figée par une offre : la gamme n'est plus éditable, rien à confirmer
+        if self._dirty and not self.project.is_version_frozen():
             res = wx.MessageBox(
                 "Des modifications n'ont pas été enregistrées.\nSouhaitez-vous enregistrer avant de créer une nouvelle version ?",
                 "Modifications non enregistrées",
@@ -295,23 +563,35 @@ class MainFrame(wx.Frame):
                 if not self._save_project(allow_dialog=True):
                     return
 
-        dlg = wx.TextEntryDialog(
-            self,
-            "Libellé de la nouvelle version (optionnel) :",
-            "Nouvelle version",
-            ""
-        )
-        if dlg.ShowModal() != wx.ID_OK:
+        from ui.dialogs.phase_dialog import PhaseDialog
+        # Versions Taux horaire proposables comme départ d'une version Décomposé
+        bases = [(v.version_index, self._version_button_label(v)) for v in
+                 sorted(self.project.versions, key=lambda v: v.version_index) if not v.is_serie]
+        cur = self.project.current_version
+        default_base = cur.version_index if not cur.is_serie else (bases[0][0] if bases else None)
+        dlg = PhaseDialog(self, title="Nouvelle version", template=self.project.current_phase,
+                          bases=bases, default_base=default_base)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            label = dlg.get_label()
+            phase_label = dlg.get_phase_label()
+            kind = dlg.get_kind()
+            qtys = dlg.get_quantities()
+            volume = dlg.get_annual_volume()
+            billing = dlg.get_tooling_billing()
+            base_version = dlg.get_base_version()
+        finally:
             dlg.Destroy()
-            return
-        label = dlg.GetValue().strip()
-        dlg.Destroy()
 
         # Capturer la sélection avant de basculer sur la nouvelle version
         sel_path = self.editor_panel.get_selection_path()
         tab_idx = self.notebook.GetSelection()
 
-        new_version = self.project.add_version(label)
+        new_version = self.project.add_version_variant(label, kind, sale_quantities=qtys, annual_volume=volume,
+                                                        base_version_index=base_version)
+        new_version.phase.label = phase_label
+        new_version.phase.tooling_billing = billing
         self.project.switch_to_version(new_version.version_index)
         self._rebuild_version_bar()
         # La nouvelle version est une copie : conserver la sélection courante + l'onglet
@@ -319,36 +599,6 @@ class MainFrame(wx.Frame):
         if tab_idx != wx.NOT_FOUND:
             self.notebook.SetSelection(tab_idx)
         self._dirty = True  # La création d'une version est une modification
-        self._update_title()
-
-    def _on_rename_version(self, version_index: int):
-        """Renomme une version (y compris V1) via double-clic sur son bouton."""
-        if not self.project:
-            return
-        version = next(
-            (v for v in self.project.versions if v.version_index == version_index),
-            None
-        )
-        if version is None:
-            return
-
-        dlg = wx.TextEntryDialog(
-            self,
-            f"Nouveau libellé pour la version V{version_index} :",
-            "Renommer la version",
-            version.label or ""
-        )
-        if dlg.ShowModal() != wx.ID_OK:
-            dlg.Destroy()
-            return
-        new_label = dlg.GetValue().strip()
-        dlg.Destroy()
-
-        version.label = new_label
-        self._rebuild_version_bar()
-        # L'historique des offres affiche le libellé de version → rafraîchir
-        self.project_panel._update_history_ui()
-        self._mark_dirty()
         self._update_title()
 
     def _on_split_version(self, event):
@@ -421,9 +671,9 @@ class MainFrame(wx.Frame):
             return
         if getattr(self.project, 'serie_data', None) is None:
             wx.MessageBox(
-                "Le mode Série n'est pas activé pour ce projet.\n"
-                "Activez-le dans l'onglet « Production Série » avant de générer une offre série.",
-                "Mode Série inactif",
+                "Cette version n'a pas de phase Série.\n"
+                "Ajoutez-en une avec « + Phase » (type : Série) avant de générer une offre série.",
+                "Pas de phase Série",
                 wx.OK | wx.ICON_INFORMATION
             )
             return
@@ -434,8 +684,47 @@ class MainFrame(wx.Frame):
             pass
         self._on_export_xlsx(serie_offer=True)
 
-    def _on_export_xlsx(self, event=None, serie_offer=False):
-        """Exporte la version courante du projet en devis XLSX (offre standard ou série)."""
+    def _on_preview_offer(self, serie_offer=False):
+        """Aperçu de l'offre : XLSX brouillon dans un dossier temporaire, ouvert dans Excel.
+
+        Rien n'est enregistré : pas de numéro de devis consommé, pas d'entrée
+        d'historique, projet inchangé.
+        """
+        if not self.project:
+            return
+        template_path = str(get_template_path())
+        if not os.path.exists(template_path):
+            wx.MessageBox(f"Le template XLSX est introuvable :\n{template_path}",
+                          "Template manquant", wx.OK | wx.ICON_ERROR)
+            return
+        if serie_offer:
+            if self.project.serie_data is None:
+                wx.MessageBox("Cette version n'a pas de phase Série.", "Pas de phase Série",
+                              wx.OK | wx.ICON_INFORMATION)
+                return
+            self.project.serie_data.sync_from_project(self.project)
+
+        preview_dir = os.path.join(tempfile.gettempdir(), "MWQuote_apercus")
+        ref = "".join(c for c in (self.project.reference or "offre") if c.isalnum() or c in "-_") or "offre"
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        suffix = "-SERIE" if serie_offer else ""
+        output_path = os.path.join(preview_dir, f"BROUILLON-{ref}{suffix}-{stamp}.xlsx")
+        try:
+            self.export_service.export_excel(self.project, template_path, output_path,
+                                             serie_offer=serie_offer, draft=True)
+        except Exception as e:
+            wx.MessageBox(f"Erreur lors de la génération de l'aperçu :\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
+            return
+        try:
+            os.startfile(output_path)
+        except Exception:
+            wx.MessageBox(f"Aperçu généré :\n{output_path}", "Aperçu de l'offre", wx.OK | wx.ICON_INFORMATION)
+
+    def _on_export_xlsx(self, event=None, serie_offer=False, revise_ref=None):
+        """Exporte la version courante du projet en devis XLSX (offre standard ou série).
+
+        revise_ref : numéro de devis d'une offre existante → nouvel indice de cette offre.
+        """
         if not self.project:
             return
 
@@ -452,10 +741,17 @@ class MainFrame(wx.Frame):
 
         offer_kind = "Série" if serie_offer else "standard"
 
-        # Générer la référence devis
-        reference = self.export_service.get_devis_reference(project=self.project)
+        # Référence devis : nouveau numéro, ou numéro existant pour un nouvel indice
+        from domain import offers
+        was_frozen = self.project.is_version_frozen()
+        if revise_ref:
+            reference = revise_ref
+            revision = offers.next_revision(self.project.export_history, revise_ref)
+        else:
+            reference = self.export_service.get_devis_reference(project=self.project)
+            revision = offers.FIRST_REVISION
         default_filename = self.export_service.get_default_filename(
-            self.project, devis_ref=reference
+            self.project, devis_ref=reference, revision=revision
         )
         if serie_offer:
             base, ext = os.path.splitext(default_filename)
@@ -486,12 +782,13 @@ class MainFrame(wx.Frame):
                 output_path,
                 project_save_path=self.current_path,
                 devis_ref=reference,
-                serie_offer=serie_offer
+                serie_offer=serie_offer,
+                revision=revision
             )
             progress.Destroy()
 
-            # Refresh history list in project panel
-            self.project_panel._update_history_ui()
+            # Arbre d'offres à jour + gel de la gamme
+            self._after_offer_issued(was_frozen)
 
             # Ouvrir le fichier automatiquement
             try:
@@ -623,8 +920,9 @@ class MainFrame(wx.Frame):
             return
         display_name = self.project.display_name
         v_idx = self.project.current_version_index
+        phase = self.project.current_phase.display_label
         dirty_marker = " ●" if self._dirty else ""
-        self.SetTitle(f"MWQuote - {display_name}  [V{v_idx}]{dirty_marker}")
+        self.SetTitle(f"MWQuote - {display_name}  [V{v_idx} · {phase}]{dirty_marker}")
 
     def _on_operation_updated(self, operation, reload_header=False):
         """Appelé quand une opération est modifiée.
@@ -639,23 +937,19 @@ class MainFrame(wx.Frame):
 
         # Rafraîchir tous les panels de données
         self._refresh_all_data_panels()
+        self._refresh_phase_warnings()
         self._mark_dirty()
 
-    def _on_quantities_changed(self, quantities):
-        """Appelé quand les quantités du projet sont modifiées."""
-        self._refresh_all_data_panels()
-        self.editor_panel.refresh_quantities()
-        self.sales_panel.refresh_quantities()
         self._mark_dirty()
 
     def _on_serie_updated(self):
         """Appelé quand les données Série sont modifiées."""
+        self._rebuild_version_bar()
         self._mark_dirty()
 
     def _refresh_all_data_panels(self):
         """Rafraîchit tous les panels de données (grid, graphiques, etc.)."""
         self.sales_panel.refresh_data()
-        self.analysis_panel.refresh_data()
         self.serie_panel.refresh_data()
 
     def _on_new(self, event):
@@ -663,10 +957,45 @@ class MainFrame(wx.Frame):
         if not self._confirm_discard_or_save():
             return
         new_project = Project(name="", reference="", client="", mwq_uuid=FileManager.generate_uuid())
+        self._prompt_first_phase(new_project)
         self._update_app_with_project(new_project)
         self.current_path = None
         self._dirty = False
         self._update_title()
+
+    def _on_new_quote_opened(self):
+        """Fenêtre d'une nouvelle quote ouverte : popup de la première phase."""
+        if not self.project:
+            return
+        self._prompt_first_phase(self.project)
+        self._reload_keeping_selection()
+        self._update_title()
+
+    def _prompt_first_phase(self, project):
+        """Première version d'une nouvelle quote : type de calcul + quantités (ou volume).
+
+        Annulation : la version 1 garde sa configuration par défaut (Taux horaire,
+        quantités standard).
+        """
+        from ui.dialogs.phase_dialog import PhaseDialog
+        dlg = PhaseDialog(self, title="Première version de la quote")
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            kind = dlg.get_kind()
+            label = dlg.get_label()
+            phase_label = dlg.get_phase_label()
+            qtys = dlg.get_quantities()
+            volume = dlg.get_annual_volume()
+            billing = dlg.get_tooling_billing()
+        finally:
+            dlg.Destroy()
+
+        version = project.current_version
+        version.configure(kind, sale_quantities=qtys, annual_volume=volume)
+        version.label = label
+        version.phase.label = phase_label
+        version.phase.tooling_billing = billing
 
     def _on_open(self, event):
         """Ouvre un projet depuis un fichier"""

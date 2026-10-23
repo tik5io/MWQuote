@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, List, Union
 from .document import Document
+from .phase import ToolingBilling
 
 class CostType(Enum):
     MATERIAL = "Matière"
@@ -24,6 +25,19 @@ class PricingTier:
     min_quantity: int = 0  # Quantité minimale pour cet échelon
     unit_price: float = 0.0  # Prix unitaire pour cet échelon
     description: str = ""  # Description optionnelle
+
+@dataclass
+class ToolingLine:
+    """Ligne de détail d'un outillage (réglage, programme, posage…)."""
+    label: str = ""
+    quantity: float = 1.0
+    unit: str = ""
+    unit_price: float = 0.0
+
+    @property
+    def total(self) -> float:
+        return float(self.quantity or 0.0) * float(self.unit_price or 0.0)
+
 
 @dataclass
 class PricingStructure:
@@ -110,6 +124,112 @@ class CostItem:
     supplier_quote_ref: Optional[str] = None # Still useful for the reference ID
     is_active: bool = True  # Used for multi-offer subcontracting
     is_temps_masque: bool = False  # If True, this internal operation is in masked time (0s effective cycle time)
+    # Outillage : surcharge du mode de facturation de la phase (None = mode de la phase).
+    # S'applique aux lignes Outillage et à l'outillage fournisseur ci-dessous.
+    tooling_billing: Optional["ToolingBilling"] = None
+    # Outillage fournisseur rattaché à l'offre (Matière / Sous-traitance) :
+    # montant de l'outil et pièces fournies avec (non facturées au prix pièce).
+    # (legacy : l'outillage fournisseur est désormais une ligne Outillage à part
+    # entière ; ces deux champs ne sont plus renseignés, la conversion les migre.)
+    tooling_amount: float = 0.0
+    tooling_included_pieces: int = 0
+    # Ligne Outillage : détail ligne à ligne ; si renseigné, le montant
+    # (pricing.fixed_price) est la somme des lignes.
+    tooling_lines: List[ToolingLine] = field(default_factory=list)
+    # Ligne Outillage : offre d'achat à laquelle l'outil est rattaché (clé de la
+    # ligne dans l'opération). None = outil commun à toute l'opération.
+    # Les pièces incluses avec l'outil (tooling_included_pieces) sont gratuites
+    # sur les lignes d'achat concernées.
+    linked_offer: Optional[str] = None
+
+    # Étape interne — valorisation SÉRIE. None = hérité de la saisie Proto/Lot.
+    serie_cycle_time_s: Optional[float] = None     # temps de cycle (s)
+    serie_pieces_per_cycle: Optional[float] = None  # pièces par cycle (posage multiple…)
+    serie_setup_h: Optional[float] = None          # réglage par campagne (h)
+    serie_hourly_rate: Optional[float] = None      # taux de l'étape en série (€/h)
+
+    def __post_init__(self):
+        # Pièces gratuites (outillage de l'opération) : posé par Operation, non persisté.
+        self._free_pieces: Optional[int] = None
+
+    # --- Valeurs héritées (calculées depuis la saisie Proto/Lot) ---
+
+    def _conv_factor(self) -> float:
+        return self.conversion_factor if self.conversion_factor not in (None, 0) else 1.0
+
+    def inherited_serie_cycle_time_s(self) -> float:
+        f = self._conv_factor()
+        base = (self.per_piece_time or 0.0) * 3600.0
+        return base * f if self.conversion_type == ConversionType.MULTIPLY else base
+
+    def inherited_serie_pieces_per_cycle(self) -> float:
+        return self._conv_factor() if self.conversion_type == ConversionType.DIVIDE else 1.0
+
+    def inherited_serie_setup_h(self) -> float:
+        f = self._conv_factor()
+        ft = self.fixed_time or 0.0
+        return ft / f if self.conversion_type == ConversionType.DIVIDE else ft * f
+
+    # --- Valeurs effectives en série (saisie Série sinon héritage) ---
+
+    def serie_cycle_s(self, override: Optional[float] = None) -> float:
+        if override is not None:
+            return override
+        return self.serie_cycle_time_s if self.serie_cycle_time_s is not None else self.inherited_serie_cycle_time_s()
+
+    def serie_pieces(self) -> float:
+        n = self.serie_pieces_per_cycle if self.serie_pieces_per_cycle is not None else self.inherited_serie_pieces_per_cycle()
+        return n if n and n > 0 else 1.0
+
+    def serie_rate(self, override: Optional[float] = None) -> float:
+        if override is not None:
+            return override
+        return self.serie_hourly_rate if self.serie_hourly_rate is not None else (self.hourly_rate or 0.0)
+
+    def serie_setup(self) -> float:
+        return self.serie_setup_h if self.serie_setup_h is not None else self.inherited_serie_setup_h()
+
+    def serie_time_per_piece_h(self, cycle_override: Optional[float] = None) -> float:
+        """Temps machine par pièce en série (h), 0 si temps masqué."""
+        if getattr(self, "is_temps_masque", False):
+            return 0.0
+        if cycle_override is None and self.serie_cycle_time_s is None and self.serie_pieces_per_cycle is None:
+            # Héritage complet : formule historique exacte (aucun écart d'arrondi)
+            f = self._conv_factor()
+            pt = self.per_piece_time or 0.0
+            return pt / f if self.conversion_type == ConversionType.DIVIDE else pt * f
+        return self.serie_cycle_s(cycle_override) / self.serie_pieces() / 3600.0
+
+    def serie_is_inherited(self) -> bool:
+        return all(v is None for v in (self.serie_cycle_time_s, self.serie_pieces_per_cycle,
+                                       self.serie_setup_h, self.serie_hourly_rate))
+
+    def tooling_lines_total(self) -> float:
+        return sum(line.total for line in self.tooling_lines)
+
+    def apply_tooling_lines(self) -> None:
+        """Reporte la somme des lignes dans le montant de l'outillage."""
+        if self.cost_type == CostType.TOOLING and self.tooling_lines:
+            if self.pricing is None:
+                self.pricing = PricingStructure(PricingType.PER_UNIT)
+            self.pricing.fixed_price = self.tooling_lines_total()
+
+    @property
+    def has_supplier_tooling(self) -> bool:
+        return (self.cost_type in (CostType.MATERIAL, CostType.SUBCONTRACTING)
+                and (self.tooling_amount or 0) > 0)
+
+    def supplier_tooling_item(self) -> "CostItem":
+        """Ligne d'outillage virtuelle représentant l'outil fournisseur (non persistée)."""
+        item = CostItem(
+            name=f"Outillage {self.name}",
+            cost_type=CostType.TOOLING,
+            pricing=PricingStructure(PricingType.PER_UNIT, fixed_price=float(self.tooling_amount or 0.0),
+                                     unit="forfait"),
+            tooling_billing=self.tooling_billing,
+        )
+        item.supplier_parent = self
+        return item
 
     @property
     def supplier_quote_filename(self):

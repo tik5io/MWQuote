@@ -43,10 +43,17 @@ class ExportService:
         today = datetime.date.today()
         return f"OD{today.strftime('%y%m%d')}_001"
 
-    def get_default_filename(self, project, devis_ref: str = None):
-        """Génère le nom de fichier par défaut : DEVIS_REF-PART_REF-xQTYmin-xQTYmax.xlsx"""
+    @staticmethod
+    def display_ref(devis_ref: str, revision: str = None) -> str:
+        """Référence affichée au client : l'indice A est implicite, les suivants sont annoncés."""
+        return devis_ref if not revision or revision == "A" else f"{devis_ref} ind. {revision}"
+
+    def get_default_filename(self, project, devis_ref: str = None, revision: str = None):
+        """Génère le nom de fichier par défaut : DEVIS_REF[-indX]-PART_REF-xQTYmin-xQTYmax.xlsx"""
         if devis_ref is None:
             devis_ref = self.get_devis_reference(project)
+        if revision and revision != "A":
+            devis_ref = f"{devis_ref}-ind{revision}"
         part_ref = self._get_part_reference(project)
         # Supprimer les espaces et caractères spéciaux du part_ref pour le nom de fichier
         clean_part_ref = "".join(c for c in part_ref if c.isalnum() or c in ('-', '_')).strip()
@@ -86,8 +93,27 @@ class ExportService:
     # =========================
     # PUBLIC
     # =========================
-    def export_excel(self, project, template_path, output_path, project_save_path=None, devis_ref=None, serie_offer=False):
+    DRAFT_REF = "BROUILLON / DRAFT"
+
+    def export_excel(self, project, template_path, output_path, project_save_path=None, devis_ref=None,
+                     serie_offer=False, draft=False, revision=None, currency=None):
+        """Génère l'offre client XLSX.
+
+        revision : indice de l'offre (A, B…). Par défaut, A pour un nouveau numéro de
+        devis, l'indice suivant si ce numéro existe déjà. L'entrée d'historique
+        garde la photo des paramètres de vente (`coeffs`) pour recharger l'indice.
+
+        draft=True : aperçu (brouillon) — aucun numéro de devis consommé, rien
+        n'est ajouté à l'historique ni enregistré dans le projet, et le
+        document est marqué BROUILLON / DRAFT.
+
+        currency : « EUR » ou « USD » (défaut : devise d'affichage courante). En USD les
+        prix sont convertis au dernier taux chargé, enregistré dans l'historique.
+        """
         try:
+            from infrastructure.fx_rate import FxRate
+            self._fx = FxRate.factor(currency)
+            self._currency_symbol = FxRate.symbol(currency)
             # Offre Série : chiffrage basé sur la logique série (une seule quantité).
             self._serie_offer = bool(serie_offer)
 
@@ -98,20 +124,39 @@ class ExportService:
             if not hasattr(project, 'export_history'):
                 project.export_history = []
 
-            if devis_ref is None:
+            if draft:
+                devis_ref = self.DRAFT_REF
+            elif devis_ref is None:
                 devis_ref = self.get_devis_reference(project)
 
-            self._current_export_ref = devis_ref
+            from domain import offers
+            if draft:
+                revision = None
+            elif revision is None:
+                revision = offers.next_revision(project.export_history, devis_ref)
+            self._current_export_ref = self.display_ref(devis_ref, revision)
 
             import datetime as _dt
             ref_date = _dt.date.today()
-            project.export_history.append({
+            phase = self._offer_phase(project)
+            history_entry = {
                 "devis_ref": devis_ref,
                 "date": ref_date.strftime("%d/%m/%Y"),
                 "time": _dt.datetime.now().strftime("%H:%M"),
                 "version_index": getattr(project, 'current_version_index', 1),
                 "is_serie": self._serie_offer,
-            })
+                "phase_id": phase.phase_id if phase else None,
+                "phase_label": phase.display_label if phase else "",
+                "currency": "USD" if self._fx != 1.0 else "EUR",
+            }
+            if self._fx != 1.0:
+                history_entry["fx_rate"] = self._fx
+            if not draft:
+                history_entry["revision"] = revision
+                version = getattr(project, "current_version", None)
+                if version is not None:
+                    history_entry["coeffs"] = offers.snapshot_coefficients(version)
+                project.export_history.append(history_entry)
 
             # 1. Trier les quantités par ordre croissant
             if self._serie_offer and getattr(project, 'serie_data', None) is not None:
@@ -168,12 +213,19 @@ class ExportService:
             # 5.c Sécurise COMMENT_REF (certaines manipulations de lignes peuvent l'effacer)
             self._fill_comment_placeholders(ws, global_comment)
 
-            # 7. Ajouter l'onglet SERIE si le mode série est actif
-            if getattr(project, 'serie_data', None) is not None:
-                self._add_serie_sheet(wb, project.serie_data)
+            # 7. Le client ne voit que les prix globaux : aucun onglet de chiffrage
+            #    interne (détail série, CAPEX, marges…) n'est ajouté à l'offre.
+
+            if draft:
+                self._mark_as_draft(ws)
 
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            self._apply_currency(wb)
             wb.save(output_path)
+
+            if draft:
+                logger.info(f"Aperçu d'offre (brouillon) → {output_path}")
+                return
 
             logger.info(f"Export Excel réussi → {output_path}")
 
@@ -207,6 +259,25 @@ class ExportService:
     # =========================
     # PRIVATE
     # =========================
+    def _apply_currency(self, wb):
+        """Fait suivre la devise à tout le classeur : une cellule numérique au format « € »
+        est un prix (convertie au taux courant, format « $ ») ; les libellés « € » suivent."""
+        fx = getattr(self, "_fx", 1.0)
+        sym = getattr(self, "_currency_symbol", "€")
+        if sym == "€" and fx == 1.0:
+            return
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    v = cell.value
+                    if isinstance(v, (int, float)) and not isinstance(v, bool) and "€" in (cell.number_format or ""):
+                        cell.value = v * fx
+                        cell.number_format = cell.number_format.replace("€", sym)
+                    elif isinstance(v, str) and "€" in v and len(v) <= 60 and not v.startswith("="):   # libellés, pas les commentaires libres
+                        cell.value = v.replace("€", sym)
+                    elif "€" in (cell.number_format or ""):
+                        cell.number_format = cell.number_format.replace("€", sym)
+
     def _get_part_reference(self, project):
         ref = getattr(project, "reference", "")
         if getattr(project, "is_prototype", False):
@@ -230,8 +301,8 @@ class ExportService:
                     pu = project.serie_data.selling_price_per_piece()
                 else:
                     pu = project.total_price(qty)
-                cell.value = pu
-                cell.number_format = '€ #,##0.00'
+                cell.value = pu * getattr(self, '_fx', 1.0)
+                cell.number_format = f"{getattr(self, '_currency_symbol', '€')} #,##0.00"
             else:
                 self._replace_cell_placeholder(cell, project, global_comment)
 
@@ -328,13 +399,58 @@ class ExportService:
             if isinstance(cell.value, str) and cell.value.strip() in placeholders:
                 cell.value = ""
 
+    def _offer_phase(self, project):
+        """Phase chiffrée par l'offre : phase Série pour une offre série, sinon phase Lot."""
+        version = getattr(project, "current_version", None)
+        if version is None or not hasattr(version, "lot_phase"):
+            return None
+        if self._serie_offer and version.serie_phase is not None:
+            return version.serie_phase
+        return version.lot_phase
+
+    def _offer_operations(self, project):
+        """Opérations de la phase de l'offre, avec le contexte de calcul de cette phase."""
+        from domain.phase import PhaseContext
+        ops = list(getattr(project, "operations", []))
+        phase = self._offer_phase(project)
+        if phase is None:
+            return ops
+        ctx = PhaseContext.of(phase)
+        for op in ops:
+            op.set_phase_context(ctx)
+        return ops
+
     def _get_tooling_lines(self, project):
+        """Outillages refacturés de la phase (bloc OUTILLAGE), y compris outillage fournisseur.
+
+        Une ligne par outillage, au montant global (le détail ligne à ligne
+        reste interne). L'outillage fournisseur est désigné par l'opération,
+        jamais par le nom du fournisseur.
+        """
         lines = []
-        for op in getattr(project, "operations", []):
-            for cost in getattr(op, "costs", {}).values():
-                if getattr(cost, "cost_type", None) == CostType.TOOLING:
-                    lines.append(cost)
+        for op in self._offer_operations(project):
+            if hasattr(op, "get_reinvoiced_tooling_costs"):
+                for tool in op.get_reinvoiced_tooling_costs():
+                    if getattr(tool, "supplier_parent", None) is not None:
+                        tool = copy(tool)
+                        tool.name = f"Outillage {op.label}"
+                    lines.append(tool)
+            else:
+                lines.extend(c for c in op.costs.values() if c.cost_type == CostType.TOOLING)
         return lines
+
+    def _mark_as_draft(self, ws):
+        """Signale clairement un aperçu non formalisé (référence, en-tête, onglet)."""
+        from openpyxl.styles import Font
+        red = Font(bold=True, color="C00000", size=14)
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value == self.DRAFT_REF:
+                    cell.font = red
+        ws.title = "BROUILLON"
+        ws.oddHeader.center.text = "BROUILLON / DRAFT — offre non formalisée, sans valeur contractuelle"
+        ws.oddHeader.center.color = "C00000"
+        ws.sheet_properties.tabColor = "C00000"
 
     def _find_rows_with_placeholder(self, ws, placeholder):
         rows = []
@@ -378,8 +494,8 @@ class ExportService:
             elif token == "QTY_REF":
                 cell.value = 1
             elif token == "PTOOL_REF":
-                cell.value = price
-                cell.number_format = '€ #,##0.00'
+                cell.value = price * getattr(self, '_fx', 1.0)
+                cell.number_format = f"{getattr(self, '_currency_symbol', '€')} #,##0.00"
             else:
                 self._replace_cell_placeholder(cell, project, global_comment)
         ws.row_dimensions[row_idx].hidden = False
@@ -428,10 +544,10 @@ class ExportService:
     def _build_global_comment(self, project):
         op_lines = []
         tooling_comments = []
-        for op in getattr(project, "operations", []):
+        for op in self._offer_operations(project):
             if getattr(op, "comment", None) and op.comment.strip():
                 op_lines.append(op.comment.strip())
-            for cost in getattr(op, "costs", {}).values():
+            for cost in op.costs.values():
                 if getattr(cost, "cost_type", None) == CostType.TOOLING:
                     if getattr(cost, "client_comment", None) and cost.client_comment.strip():
                         tooling_comments.append(cost.client_comment.strip())
@@ -584,7 +700,7 @@ class ExportService:
             c.fill = PatternFill("solid", fgColor="FFEB9C")
             c.alignment = Alignment(horizontal="center", vertical="center")
         r += 1
-        for item in sd.tooling_items:
+        for item in sd.effective_tooling_items():
             cost_pc  = (item.cost / item.lifetime_pieces) if item.lifetime_pieces > 0 else 0
             price_pc = cost_pc * (1 + item.margin_rate)
             lbl(ws[f"A{r}"], item.name)
@@ -604,7 +720,7 @@ class ExportService:
         ws.row_dimensions[r].height = 18
         r += 1
         for label, val, fmt in [
-            ("Temps montage outillage", sd.tooling_setup_time_h, "0.00"),
+            ("Temps montage outillage", sd.effective_setup_time_h(), "0.00"),
             ("Validation SOP / 1er art.", sd.sop_validation_time_h, "0.00"),
             ("Taille de lot / campagne", sd.lot_size, "#,##0"),
             ("Campagnes / an", sd.campaigns_per_year(), "0.0"),
@@ -656,7 +772,7 @@ class ExportService:
             ("Tooling",               sd.tooling_cost_per_piece(), sd.tooling_price_per_piece()),
             ("Setup",                 sd.setup_cost_per_piece(), sd.setup_price_per_piece()),
             ("Contrôle qualité",      sd.control_cost_per_piece(), sd.control_cost_per_piece()),
-            ("Matières premières",    sd.material_cost_per_piece, sd.material_cost_per_piece * (1 + sd.material_margin)),
+            ("Matières premières",    sd.purchase_cost_per_piece(), sd.purchase_cost_per_piece() * (1 + sd.material_margin)),
             ("Logistique / emballage",sd.logistics_cost_per_piece, sd.logistics_cost_per_piece * (1 + sd.logistics_margin)),
         ]
         for label, cost, price in syn_items:
@@ -800,11 +916,17 @@ class ExportService:
 
                 row += 5
 
+            # Gamme de la phase active (Proto / Série…)
+            phase = getattr(project, "current_phase", None)
+            if phase is not None and len(getattr(project, "phases", [])) > 1:
+                ws.cell(row=row, column=1, value=f"Phase : {phase.display_label}").font = subheader_font
+                row += 1
+
             # Parcourir les opérations
             for op in getattr(project, "operations", []):
                 # Ligne d'opération
                 ws.cell(row=row, column=1, value=f"🔧 {op.label}").font = subheader_font
-                ws.cell(row=row, column=2, value=op.typology or "").font = normal_font
+                ws.cell(row=row, column=2, value=op.display_family or "").font = normal_font
                 ws.cell(row=row, column=5, value=op.comment or "").font = normal_font
                 ws.cell(row=row, column=5).alignment = Alignment(wrap_text=True)
 
@@ -813,7 +935,7 @@ class ExportService:
                 total_per_piece_time = 0.0
                 method_comments = []
 
-                for cost_name, cost in op.costs.items():
+                for cost in op.costs.values():
                     if cost.cost_type == CostType.INTERNAL_OPERATION:
                         total_fixed_time += cost.fixed_time
                         if not getattr(cost, 'is_temps_masque', False):
@@ -1023,6 +1145,9 @@ class ExportService:
                 )
 
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            from infrastructure.fx_rate import FxRate
+            self._fx, self._currency_symbol = FxRate.factor(), FxRate.symbol()
+            self._apply_currency(wb)
             wb.save(output_path)
             logger.info(f"Export synthèse multi-offres réussi ({len(projects)} offres) → {output_path}")
             return True
@@ -1133,7 +1258,7 @@ class ExportService:
 
         # Lignes opérations
         for op in getattr(project, "operations", []):
-            op_name = f"{getattr(op, 'typology', '') or 'Op'} | {getattr(op, 'label', '')}"
+            op_name = f"{getattr(op, 'display_family', '') or getattr(op, 'typology', '') or 'Op'} | {getattr(op, 'label', '')}"
             nc = ws.cell(row=r, column=1, value=op_name)
             nc.font = Font(name=FONT, size=10)
             nc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)

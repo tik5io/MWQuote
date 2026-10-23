@@ -1,8 +1,11 @@
 # ui/panels/serie_pricing_panel.py
+import dataclasses
 import wx
 import wx.grid as gridlib
 from domain.project import Project
 from domain.serie_data import SerieData, CapexItem, ToolingItem, MachinePost
+from ui.components.serie_sensitivity_panel import SerieSensitivityPanel
+from ui.components.ribbon_button import RibbonButton, TOOLING
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +270,35 @@ class ToolingTable(ItemTable):
         self.lc.SetItem(idx, 5, f"{price_pc:.4f}")
 
 
+class SyncedToolingTable(ToolingTable):
+    """Outillages repris de la gamme de la phase (lignes Outillage amorties).
+
+    Désignation et montant viennent de la gamme ; seules la durée de vie et la
+    marge sont modifiables (mémorisées par outillage).
+    """
+
+    def __init__(self, parent, on_override=None):
+        super().__init__(parent, on_change=None)
+        self.on_override = on_override
+        self.btn_add.Hide()
+        self.btn_del.Hide()
+        self.btn_edit.SetLabel("Durée de vie / marge")
+        self.btn_edit.SetSize((150, 26))
+
+    def _on_edit(self, _):
+        idx = self.lc.GetFirstSelected()
+        if idx < 0:
+            return
+        item = self._items[idx]
+        dlg = ToolingDialog(self, item)
+        dlg.name.Enable(False)
+        dlg.cost.Enable(False)
+        if dlg.ShowModal() == wx.ID_OK and self.on_override:
+            edited = dlg.get_item()
+            self.on_override(item.name, edited.lifetime_pieces, edited.margin_rate)
+        dlg.Destroy()
+
+
 class MachineTable(wx.Panel):
     """Table de postes machine liés aux opérations du projet.
 
@@ -381,7 +413,12 @@ class SeriePricingPanel(wx.Panel):
         self.project = None
         self.on_serie_updated = None  # callback → MainFrame._mark_dirty + save
         self.on_generate_serie_offer = None  # callback → MainFrame._on_export_serie_xlsx
+        self.on_preview_serie_offer = None   # callback → MainFrame._on_preview_offer(serie_offer=True)
+        self.on_steps_changed = None         # callback → rafraîchir l'éditeur de gamme
         self._building = False        # guard contre les boucles EVT_TEXT
+        self._locked = False          # version figée par une offre émise
+        self._locked_controls = []    # contrôles désactivés par le verrouillage
+        self.on_request_new_version = None   # callback → MainFrame : « Nouvelle version »
         self._eur_usd_rate: float = None
         self._rate_date: str = ""
         self._build_ui()
@@ -390,6 +427,21 @@ class SeriePricingPanel(wx.Panel):
 
     def _build_ui(self):
         outer = wx.BoxSizer(wx.VERTICAL)
+
+        # Bandeau « version figée » (affiché seulement quand une offre a été émise)
+        self.lock_banner = wx.Panel(self)
+        self.lock_banner.SetBackgroundColour(wx.Colour(255, 247, 230))
+        banner_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.lock_text = wx.StaticText(self.lock_banner, label="")
+        self.lock_text.SetForegroundColour(wx.Colour(130, 80, 0))
+        banner_sizer.Add(self.lock_text, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 10)
+        self.btn_new_version = RibbonButton(self.lock_banner, "➕", "Nouvelle version",
+                                            "Copie de cette version, modifiable", accent=TOOLING, size=(250, 50))
+        self.btn_new_version.Bind(wx.EVT_BUTTON, lambda e: self.on_request_new_version() if callable(self.on_request_new_version) else None)
+        banner_sizer.Add(self.btn_new_version, 0, wx.ALL, 6)
+        self.lock_banner.SetSizer(banner_sizer)
+        self.lock_banner.Hide()
+        outer.Add(self.lock_banner, 0, wx.EXPAND)
 
         # Top bar: activation toggle + title
         top = wx.BoxSizer(wx.HORIZONTAL)
@@ -405,13 +457,7 @@ class SeriePricingPanel(wx.Panel):
 
         top.AddStretchSpacer(1)
 
-        self.serie_offer_btn = wx.Button(self, label="💾  Créer Offre Série XLSX")
-        self.serie_offer_btn.SetToolTip(
-            "Exporter une offre série (chiffrage gros volumes) vers un devis XLSX"
-        )
-        self.serie_offer_btn.Bind(wx.EVT_BUTTON, self._on_generate_serie_offer)
-        top.Add(self.serie_offer_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
-
+        # Les offres (aperçu, nouvelle offre, indices) se gèrent dans l'onglet « Tarif de Vente ».
         outer.Add(top, 0, wx.EXPAND)
 
         outer.Add(wx.StaticLine(self), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
@@ -423,9 +469,13 @@ class SeriePricingPanel(wx.Panel):
         self._tab_cap   = self._build_tab_capacite(self.nb)
         self._tab_syn   = self._build_tab_synthese(self.nb)
         self.nb.AddPage(self._tab_hyp, "Hypothèses")
-        self.nb.AddPage(self._tab_inv, "CAPEX & Tooling")
-        self.nb.AddPage(self._tab_cap, "Capacité & Coûts")
-        self.nb.AddPage(self._tab_syn, "Synthèse")
+        self.nb.AddPage(self._tab_inv, "CAPEX && Tooling")
+        self.nb.AddPage(self._tab_cap, "Capacité && Coûts")
+        # La synthèse de prix et le LOP sont dans l'onglet « Tarif de Vente » (page jamais affichée).
+        self._tab_syn.Hide()
+        self.sensitivity = SerieSensitivityPanel(self.nb)
+        self.sensitivity.on_applied = self._on_sensitivity_applied
+        self.nb.AddPage(self.sensitivity, "Temps && taux")
         outer.Add(self.nb, 1, wx.EXPAND | wx.ALL, 4)
 
         self.SetSizer(outer)
@@ -437,6 +487,33 @@ class SeriePricingPanel(wx.Panel):
         panel = wx.ScrolledWindow(parent, style=wx.VSCROLL)
         panel.SetScrollRate(0, 20)
         sizer = wx.BoxSizer(wx.VERTICAL)
+
+        # -- Reprise depuis la gamme de la phase --
+        sizer.Add(_section_label(panel, "Reprise depuis la gamme de la phase"), 0, wx.EXPAND | wx.TOP, 6)
+        sync_grid = wx.FlexGridSizer(3, 2, 6, 10)
+        sync_grid.AddGrowableCol(1, 1)
+        self.cb_sync_purchases = wx.CheckBox(panel, label="Achats / pièce ← lignes Matière et Sous-traitance")
+        self.cb_sync_tooling = wx.CheckBox(panel, label="Outillages amortis ← lignes Outillage de la gamme")
+        self.cb_setup_fixed = wx.CheckBox(panel, label="Réglage / campagne ← temps fixes des opérations")
+        self.cb_sync_purchases.SetToolTip(
+            "Ajoute au poste Matières le coût par pièce des achats de la phase, calculé au volume annuel.\n"
+            "La saisie manuelle « Matières / pièce » reste ajoutée (autres achats).")
+        self.cb_sync_tooling.SetToolTip(
+            "Les outillages amortis de la phase (lignes Outillage et outillages fournisseur) sont repris "
+            "dans l'onglet CAPEX & Tooling.\nLes outillages refacturés restent dans le bloc OUTILLAGE de l'offre.")
+        self.cb_setup_fixed.SetToolTip(
+            "Le temps de montage par campagne devient la somme des temps fixes des opérations internes de la phase.")
+        self._lbl_sync_purchases = wx.StaticText(panel, label="")
+        self._lbl_sync_tooling = wx.StaticText(panel, label="")
+        self._lbl_sync_setup = wx.StaticText(panel, label="")
+        for cb, lbl in ((self.cb_sync_purchases, self._lbl_sync_purchases),
+                        (self.cb_sync_tooling, self._lbl_sync_tooling),
+                        (self.cb_setup_fixed, self._lbl_sync_setup)):
+            cb.Bind(wx.EVT_CHECKBOX, self._on_param_changed)
+            sync_grid.Add(cb, 0, wx.ALIGN_CENTER_VERTICAL)
+            lbl.SetForegroundColour(wx.Colour(80, 80, 80))
+            sync_grid.Add(lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
+        sizer.Add(sync_grid, 0, wx.EXPAND | wx.ALL, 8)
 
         # -- Section production --
         sizer.Add(_section_label(panel, "Production"), 0, wx.EXPAND | wx.TOP, 6)
@@ -553,6 +630,11 @@ class SeriePricingPanel(wx.Panel):
         self.tooling_table = ToolingTable(panel, on_change=self._on_table_changed)
         sizer.Add(self.tooling_table, 2, wx.EXPAND | wx.ALL, 6)
 
+        self._synced_tooling_label = _section_label(panel, "Outillages repris de la gamme (amortis)")
+        sizer.Add(self._synced_tooling_label, 0, wx.EXPAND | wx.TOP, 8)
+        self.synced_tooling_table = SyncedToolingTable(panel, on_override=self._on_synced_tooling_override)
+        sizer.Add(self.synced_tooling_table, 1, wx.EXPAND | wx.ALL, 6)
+
         panel.SetSizer(sizer)
         return panel
 
@@ -599,7 +681,7 @@ class SeriePricingPanel(wx.Panel):
         sizer.Add(_section_label(panel, "Achats & Logistique"), 0, wx.EXPAND | wx.TOP, 8)
         buy_grid = wx.FlexGridSizer(4, 3, 6, 10)
         buy_grid.AddGrowableCol(1, 1)
-        self.e_mat_cost   = self._hyp_row(panel, buy_grid, "Matières / pièce",      "0.0", "€/pcs")
+        self.e_mat_cost   = self._hyp_row(panel, buy_grid, "Matières / pièce (saisie)", "0.0", "€/pcs")
         self.e_mat_margin = self._hyp_row(panel, buy_grid, "Marge matières (%)",    "10.0", "%")
         self.e_log_cost   = self._hyp_row(panel, buy_grid, "Logistique / pièce",   "0.0", "€/pcs")
         self.e_log_margin = self._hyp_row(panel, buy_grid, "Marge logistique (%)", "5.0",  "%")
@@ -707,17 +789,27 @@ class SeriePricingPanel(wx.Panel):
 
     # ------------------------------------------------------------------ load / refresh
 
+    def _phase_serie_data(self):
+        """Données série de la phase active si elle est de type Série (créées au besoin)."""
+        if not self.project or not self.project.current_phase.is_serie:
+            return None
+        phase = self.project.current_phase
+        if phase.serie_data is None:
+            phase.serie_data = SerieData.new_for_phase()
+        return phase.serie_data
+
     def load_project(self, project: Project):
         self.project = project
         self._building = True
         try:
-            active = project.serie_data is not None
+            active = self._phase_serie_data() is not None
             self._set_active(active)
             if active:
                 # Synchronise les postes machine depuis les opérations du projet
                 project.serie_data.sync_from_project(project)
                 self._load_fields(project.serie_data)
                 self._refresh_computed()
+                self.sensitivity.load(project)
                 if self._eur_usd_rate is None:
                     self._fetch_eur_usd_rate()
         finally:
@@ -725,12 +817,13 @@ class SeriePricingPanel(wx.Panel):
 
     def refresh_data(self):
         """Appelé depuis MainFrame quand les opérations du projet changent."""
-        if not self.project or not self.project.serie_data:
+        if self._phase_serie_data() is None:
             return
         self._building = True
         try:
             self.project.serie_data.sync_from_project(self.project)
             self._refresh_computed()
+            self.sensitivity.load(self.project)
         finally:
             self._building = False
 
@@ -752,6 +845,10 @@ class SeriePricingPanel(wx.Panel):
         self.capex_table.set_items(sd.capex_items)
         self.tooling_table.set_items(sd.tooling_items)
         self.machine_table.set_items(sd.machine_posts)
+
+        self.cb_sync_purchases.SetValue(sd.sync_purchases)
+        self.cb_sync_tooling.SetValue(sd.sync_tooling)
+        self.cb_setup_fixed.SetValue(sd.setup_from_fixed_times)
 
         self.e_setup_mount.ChangeValue(str(sd.tooling_setup_time_h))
         self.e_setup_sop.ChangeValue(str(sd.sop_validation_time_h))
@@ -791,7 +888,14 @@ class SeriePricingPanel(wx.Panel):
         # Récupère les postes existants avec machines_available mis à jour par MachineTable
         machine_posts = self.machine_table.get_items()
 
-        sd = SerieData(
+        # Partir des données existantes : les champs non affichés (synchronisation,
+        # outillages repris, surcharges…) sont conservés.
+        current = self.project.serie_data if self.project and self.project.serie_data else SerieData()
+        sd = dataclasses.replace(
+            current,
+            sync_purchases=self.cb_sync_purchases.GetValue(),
+            sync_tooling=self.cb_sync_tooling.GetValue(),
+            setup_from_fixed_times=self.cb_setup_fixed.GetValue(),
             annual_volume=i(self.e_volume, 100000),
             working_days_per_year=i(self.e_days, 220),
             shifts_per_day=i(self.e_shifts, 2),
@@ -807,7 +911,8 @@ class SeriePricingPanel(wx.Panel):
             capex_global_margin=self.e_capex_margin.GetValue() / 100.0,
             tooling_items=self.tooling_table.get_items(),
             machine_posts=machine_posts,
-            tooling_setup_time_h=f(self.e_setup_mount, 1.0),
+            tooling_setup_time_h=(current.tooling_setup_time_h if self.cb_setup_fixed.GetValue()
+                                  else f(self.e_setup_mount, 1.0)),
             sop_validation_time_h=f(self.e_setup_sop, 0.5),
             lot_size=i(self.e_lot, 5000),
             setup_margin=f(self.e_setup_margin, 15.0) / 100.0,
@@ -823,11 +928,38 @@ class SeriePricingPanel(wx.Panel):
         )
         return sd
 
+    def _on_synced_tooling_override(self, name, lifetime_pieces, margin_rate):
+        sd = self.project.serie_data if self.project else None
+        if sd is None:
+            return
+        sd.synced_tooling_overrides[name] = {"lifetime_pieces": int(lifetime_pieces),
+                                             "margin_rate": float(margin_rate)}
+        sd.sync_from_project(self.project)
+        self._refresh_computed()
+        self._notify()
+
     def _refresh_computed(self):
         """Met à jour les labels de résultats et la grille de synthèse."""
         if not self.project or not self.project.serie_data:
             return
         sd = self.project.serie_data
+
+        # -- Reprise depuis la gamme --
+        self._lbl_sync_purchases.SetLabel(
+            f"{sd.synced_purchase_cost_per_piece:.4f} €/pcs repris" if sd.sync_purchases else "—")
+        n_tools = len(sd.synced_tooling_items)
+        total_tools = sum(t.cost for t in sd.synced_tooling_items)
+        self._lbl_sync_tooling.SetLabel(
+            f"{n_tools} outillage(s), {total_tools:,.0f} €".replace(",", " ") if sd.sync_tooling else "—")
+        self._lbl_sync_setup.SetLabel(
+            f"{sd.synced_setup_time_h:.2f} h / campagne" if sd.setup_from_fixed_times else "—")
+        self.e_setup_mount.Enable(not sd.setup_from_fixed_times)
+        if sd.setup_from_fixed_times:
+            self.e_setup_mount.ChangeValue(f"{sd.synced_setup_time_h:.2f}")
+        self.synced_tooling_table.set_items(sd.synced_tooling_items if sd.sync_tooling else [])
+        self.synced_tooling_table.Show(sd.sync_tooling)
+        self._synced_tooling_label.Show(sd.sync_tooling)
+        self._tab_inv.Layout()
 
         # -- Rebut --
         prod_vol   = sd.production_volume_per_year()
@@ -894,9 +1026,9 @@ class SeriePricingPanel(wx.Panel):
             ("Contrôle qualité",
              sd.control_cost_per_piece(),
              sd.control_cost_per_piece()),
-            ("Matières premières",
-             sd.material_cost_per_piece,
-             sd.material_cost_per_piece * (1 + sd.material_margin)),
+            ("Matières premières / achats",
+             sd.purchase_cost_per_piece(),
+             sd.purchase_cost_per_piece() * (1 + sd.material_margin)),
             ("Logistique / Emballage",
              sd.logistics_cost_per_piece,
              sd.logistics_cost_per_piece * (1 + sd.logistics_margin)),
@@ -981,7 +1113,7 @@ class SeriePricingPanel(wx.Panel):
         self._notify()
 
     def _on_param_changed(self, event):
-        if self._building:
+        if self._building or self._locked:
             event.Skip()
             return
         self._commit_to_model()
@@ -1004,12 +1136,22 @@ class SeriePricingPanel(wx.Panel):
         self._notify()
 
     def _commit_to_model(self):
-        if not self.project or not self.project.serie_data:
+        if self._locked or not self.project or not self.project.serie_data:
             return
         new_sd = self._collect_serie_data()
         self.project.serie_data = new_sd
+        # Reprise depuis la gamme (cases de synchronisation, volume annuel…)
+        new_sd.sync_from_project(self.project)
         self._refresh_computed()
         self._notify()
+
+    def _on_sensitivity_applied(self):
+        """Valeurs TC / taux simulées enregistrées sur les étapes : recalcul série."""
+        self.project.serie_data.sync_from_project(self.project)
+        self._refresh_computed()
+        self._notify()
+        if callable(self.on_steps_changed):
+            self.on_steps_changed()
 
     def _notify(self):
         if self.on_serie_updated:
@@ -1018,56 +1160,82 @@ class SeriePricingPanel(wx.Panel):
     # ------------------------------------------------------------------ helpers
 
     def _set_active(self, active: bool):
+        # L'activation suit la phase : une phase Série = un chiffrage série
         self.toggle.SetValue(active)
+        self.toggle.Hide()
         if active:
-            self.lbl_status.SetLabel("Mode Série actif")
+            self.lbl_status.SetLabel(f"Version « {self.project.current_phase.display_label} » — chiffrage Décomposé")
             self.lbl_status.SetForegroundColour(wx.Colour(30, 120, 30))
         else:
-            self.lbl_status.SetLabel("Mode Série non activé pour ce projet")
+            self.lbl_status.SetLabel(
+                "Cette version est chiffrée au taux horaire (onglet Tarif de Vente).\n"
+                "Pour la chiffrer en Décomposé, créez une nouvelle version de type Décomposé "
+                "(« + Nouvelle version »).")
             self.lbl_status.SetForegroundColour(wx.Colour(120, 120, 120))
         self.nb.Show(active)
-        self.serie_offer_btn.Enable(active)
         self.Layout()
+
+    # ------------------------------------------------------------------ verrouillage
+
+    @property
+    def is_locked(self) -> bool:
+        return self._locked
+
+    def set_locked(self, locked: bool, frozen_by: str = "") -> None:
+        """Version Décomposé figée (offre émise) : lecture seule, bandeau « Nouvelle version »."""
+        locked = bool(locked)
+        if locked:
+            who = f" (offre {frozen_by})" if frozen_by else ""
+            self.lock_text.SetLabel(f"🔒  Version émise{who} : le chiffrage Décomposé est figé. "
+                                    "Pour le modifier, créez une nouvelle version.")
+        if locked != self._locked or locked:
+            for ctrl in self._locked_controls:
+                try:
+                    ctrl.Enable(True)
+                except RuntimeError:
+                    pass
+            self._locked_controls = []
+            self._locked = locked
+            if locked:
+                self._disable_inputs(self.nb)
+            elif self.project and self.project.serie_data:
+                self._refresh_computed()          # rétablit les champs désactivés par la synchro
+        self.lock_banner.Show(locked)
+        self.Layout()
+
+    def _disable_inputs(self, window):
+        inputs = (wx.TextCtrl, wx.Choice, wx.CheckBox, wx.Button, wx.ComboBox, wx.SpinCtrl, wx.SpinCtrlDouble)
+        for child in window.GetChildren():
+            if isinstance(child, inputs) and child.IsEnabled():
+                child.Enable(False)
+                self._locked_controls.append(child)
+            self._disable_inputs(child)
 
     def _on_generate_serie_offer(self, event):
         if callable(self.on_generate_serie_offer):
             self.on_generate_serie_offer()
 
+    def _on_preview_serie_offer(self, event):
+        if callable(self.on_preview_serie_offer):
+            self.on_preview_serie_offer()
+
     # ------------------------------------------------------------------ EUR/USD
 
     def _fetch_eur_usd_rate(self):
-        """Récupère le taux EUR/USD en arrière-plan (API Frankfurter, données BCE)."""
-        import threading
-
+        """Charge le taux EUR/USD partagé (voir infrastructure/fx_rate.py)."""
+        from infrastructure.fx_rate import FxRate
         self._lbl_rate.SetLabel("EUR/USD : chargement…")
         self._btn_rate.Disable()
 
-        def _worker():
+        def _done(ok, message):
             try:
-                import urllib.request
-                import json
-                url = "https://api.frankfurter.app/latest?from=EUR&to=USD"
-                req = urllib.request.Request(url, headers={"User-Agent": "MWQuote/1.0"})
-                with urllib.request.urlopen(req, timeout=6) as resp:
-                    data = json.loads(resp.read().decode())
-                rate = float(data["rates"]["USD"])
-                date = data.get("date", "")
-                wx.CallAfter(self._on_rate_fetched, rate, date)
-            except Exception as exc:
-                wx.CallAfter(self._on_rate_error, str(exc))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _on_rate_fetched(self, rate: float, date: str):
-        self._eur_usd_rate = rate
-        self._rate_date = date
-        self._lbl_rate.SetLabel(f"1 EUR = {rate:.4f} USD   ({date}, BCE via Frankfurter)")
-        self._btn_rate.Enable()
-        self._refresh_usd_price()
-
-    def _on_rate_error(self, msg: str):
-        self._lbl_rate.SetLabel(f"EUR/USD : erreur — {msg[:60]}")
-        self._btn_rate.Enable()
+                self._eur_usd_rate = FxRate.rate
+                self._lbl_rate.SetLabel(message)
+                self._btn_rate.Enable()
+                self._refresh_usd_price()
+            except RuntimeError:
+                pass
+        FxRate.fetch_async(_done)
 
     def _refresh_usd_price(self):
         if not self.project or not self.project.serie_data:

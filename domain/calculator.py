@@ -62,8 +62,20 @@ class Calculator:
             unit_consumption = cost_item.quantity_per_piece if cost_item.quantity_per_piece is not None else 1.0
             quote_qty_needed = total_pieces * unit_consumption
         
+        # Pièces fournies avec l'outillage : non facturées au prix pièce.
+        # Posées par l'opération (outillage rattaché) ; à défaut, valeur propre
+        # de la ligne (ancien modèle d'outillage fournisseur).
+        included = getattr(cost_item, "_free_pieces", None)
+        if included is None:
+            included = getattr(cost_item, "tooling_included_pieces", 0) or 0
+        if included > 0 and cost_item.cost_type in (CostType.MATERIAL, CostType.SUBCONTRACTING):
+            quote_qty_needed = max(quote_qty_needed - included * unit_consumption, 0)
+
         moq = cost_item.get_moq()
-        quote_qty_ordered = max(quote_qty_needed, moq) if cost_item.cost_type == CostType.SUBCONTRACTING else quote_qty_needed
+        if cost_item.cost_type == CostType.SUBCONTRACTING:
+            quote_qty_ordered = max(quote_qty_needed, moq) if quote_qty_needed > 0 or included <= 0 else 0
+        else:
+            quote_qty_ordered = quote_qty_needed
 
         # 2. Supplier Batch Pricing
         if cost_item.cost_type == CostType.INTERNAL_OPERATION:

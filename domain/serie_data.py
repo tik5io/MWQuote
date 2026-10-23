@@ -92,25 +92,60 @@ class SerieData:
     # ---- Marge commerciale globale ----
     global_commercial_margin: float = 0.25
 
+    # ---- Synchronisation depuis la gamme de la phase (opt-in) ----
+    # Désactivés par défaut : les chiffrages série existants restent inchangés.
+    # Activés pour toute phase SÉRIE créée depuis l'onglet Phases.
+    sync_purchases: bool = False          # achats/pièce ← lignes Matière + Sous-traitance de la phase
+    sync_tooling: bool = False            # outillages ← lignes Outillage amorties de la phase
+    setup_from_fixed_times: bool = False  # réglage/campagne ← Σ temps fixes des opérations internes
+    synced_purchase_cost_per_piece: float = 0.0   # calculé par sync_from_project
+    synced_setup_time_h: float = 0.0              # calculé par sync_from_project
+    # Durée de vie / marge par outillage synchronisé : {nom: {"lifetime_pieces": int, "margin_rate": float}}
+    synced_tooling_overrides: dict = field(default_factory=dict)
+    synced_tooling_items: List[ToolingItem] = field(default_factory=list)  # calculé par sync_from_project
+
+    @classmethod
+    def new_for_phase(cls) -> "SerieData":
+        return cls(sync_purchases=True, sync_tooling=True, setup_from_fixed_times=True)
+
     # ================================================================
     # Synchronisation avec le projet
     # ================================================================
 
-    def sync_from_project(self, project) -> None:
-        """Re-dérive les postes machines depuis les Opérations du projet.
+    def _owning_phase(self, project):
+        """Phase SÉRIE qui porte ces données (None si introuvable)."""
+        for ph in getattr(project, "phases", []) or []:
+            if ph.serie_data is self:
+                return ph
+        return None
+
+    def sync_from_project(self, project, phase=None, overrides=None, operations=None) -> None:
+        """Re-dérive les postes machines depuis les Opérations de la phase.
 
         Seules les opérations NON sous-traitées sont incluses.
         Préserve machines_available existant par operation_code.
         TC = Σ per_piece_time (h) des coûts INTERNAL_OPERATION × 3600.
         TH = moyenne pondérée par temps des TH des mêmes coûts.
+        Si activés : achats/pièce, outillages amortis et temps de réglage sont
+        aussi repris des lignes de la phase (sync_purchases, sync_tooling,
+        setup_from_fixed_times).
+
+        operations : liste d'opérations à utiliser à la place de celles de la
+        version courante (création d'une version Décomposé, pas encore courante).
         """
         from domain.cost import CostType
         from domain.operation import SUBCONTRACTING_TYPOLOGY, TOOLING_TYPOLOGY
 
+        if phase is None:
+            phase = self._owning_phase(project)
+        overrides = overrides or {}
+        if operations is None:
+            operations = project.current_version.operations if hasattr(project, "current_version") else project.operations
+
         old_machines = {p.operation_code: p.machines_available for p in self.machine_posts}
         self.machine_posts = []
 
-        for op in project.operations:
+        for op in operations:
             if op.typology in (SUBCONTRACTING_TYPOLOGY, TOOLING_TYPOLOGY):
                 continue
             tc_h = 0.0
@@ -118,17 +153,12 @@ class SerieData:
 
             for cost in op.costs.values():
                 if cost.cost_type == CostType.INTERNAL_OPERATION and getattr(cost, 'is_active', True):
-                    if getattr(cost, 'is_temps_masque', False):
-                        eff_time = 0.0
-                    else:
-                        factor = cost.conversion_factor if cost.conversion_factor != 0 else 1.0
-                        from domain.cost import ConversionType
-                        if cost.conversion_type == ConversionType.DIVIDE:
-                            eff_time = cost.per_piece_time / factor
-                        else:
-                            eff_time = cost.per_piece_time * factor
+                    # Valeurs Série de l'étape (saisies, sinon héritées du Proto),
+                    # éventuellement remplacées par des valeurs d'essai (sliders).
+                    ov = overrides.get(id(cost), {})
+                    eff_time = cost.serie_time_per_piece_h(ov.get("cycle_s"))
                     tc_h += eff_time
-                    rate_x_time += eff_time * cost.hourly_rate
+                    rate_x_time += eff_time * cost.serie_rate(ov.get("rate"))
 
             # Inclure l'opération même si TC = 0 (pour info), sauf si aucun coût interne du tout
             avg_rate = (rate_x_time / tc_h) if tc_h > 0 else self.mo_production_rate
@@ -140,6 +170,79 @@ class SerieData:
                 mo_rate_euro_per_h=avg_rate,
                 machines_available=old_machines.get(op.code, 1),
             ))
+
+        if self.sync_purchases or self.sync_tooling or self.setup_from_fixed_times:
+            self._sync_costs_from_phase(operations, phase)
+
+    def _sync_costs_from_phase(self, operations, phase) -> None:
+        from domain.phase import PhaseContext
+
+        totals = {"purchases": 0.0, "setup_h": 0.0}
+        tools = []
+        volume = max(int(self.annual_volume or 0), 1)
+        for op in operations:
+            # Le contexte de phase sert au mode de facturation de l'outillage
+            previous_ctx = op.phase_ctx
+            if phase is not None:
+                op.set_phase_context(PhaseContext.of(phase))
+            try:
+                self._sync_operation(op, volume, totals, tools)
+            finally:
+                op.set_phase_context(previous_ctx)
+        self.synced_purchase_cost_per_piece = totals["purchases"]
+        self.synced_setup_time_h = totals["setup_h"]
+        self.synced_tooling_items = tools
+
+    def _sync_operation(self, op, volume, totals, tools) -> None:
+        from domain.calculator import Calculator
+        from domain.cost import CostType, ConversionType
+        from domain.operation import SUBCONTRACTING_TYPOLOGY
+
+        for cost in op.costs.values():
+            if cost.cost_type in (CostType.MATERIAL, CostType.SUBCONTRACTING):
+                if op.typology == SUBCONTRACTING_TYPOLOGY and not cost.is_active:
+                    continue
+                totals["purchases"] += Calculator.calculate_item(cost, volume).unit_cost_converted
+            elif cost.cost_type == CostType.INTERNAL_OPERATION and cost.is_active:
+                totals["setup_h"] += cost.serie_setup()
+        for tool in op.get_amortized_tooling_costs():
+            amount = float(tool.pricing.fixed_price or 0.0) if tool.pricing else 0.0
+            name = f"{op.label} › {tool.name}"
+            ov = self.synced_tooling_overrides.get(name, {})
+            tools.append(ToolingItem(
+                name=name,
+                cost=amount,
+                lifetime_pieces=int(ov.get("lifetime_pieces", ToolingItem.lifetime_pieces)),
+                margin_rate=float(ov.get("margin_rate", ToolingItem.margin_rate)),
+            ))
+
+    def price_with_overrides(self, project, phase, overrides) -> float:
+        """Prix de vente / pièce si l'on remplaçait TC et taux de certaines étapes.
+
+        overrides = {id(ligne): {"cycle_s": s, "rate": €/h}}. Rien n'est modifié :
+        le calcul se fait sur une copie des données série.
+        """
+        import copy as _copy
+        trial = _copy.deepcopy(self)
+        trial.sync_from_project(project, phase=phase, overrides=overrides)
+        return trial.selling_price_per_piece()
+
+    # ================================================================
+    # Valeurs effectives (saisie manuelle + éléments synchronisés)
+    # ================================================================
+
+    def effective_tooling_items(self) -> List[ToolingItem]:
+        if self.sync_tooling:
+            return list(self.tooling_items) + list(self.synced_tooling_items)
+        return list(self.tooling_items)
+
+    def purchase_cost_per_piece(self) -> float:
+        """Achats / pièce : saisie manuelle + lignes Matière/Sous-traitance de la phase."""
+        synced = self.synced_purchase_cost_per_piece if self.sync_purchases else 0.0
+        return self.material_cost_per_piece + synced
+
+    def effective_setup_time_h(self) -> float:
+        return self.synced_setup_time_h if self.setup_from_fixed_times else self.tooling_setup_time_h
 
     # ================================================================
     # Rebut
@@ -190,7 +293,7 @@ class SerieData:
         Remarque : si total_program_volume > lifetime_pieces, l'outil doit être renouvelé
         (le coût réel serait alors supérieur).
         """
-        return sum(item.cost for item in self.tooling_items)
+        return sum(item.cost for item in self.effective_tooling_items())
 
     def total_fixed_investment(self) -> float:
         """Total des investissements one-shot (CAPEX net + Tooling)."""
@@ -286,14 +389,14 @@ class SerieData:
     def tooling_cost_per_piece(self) -> float:
         return sum(
             (item.cost / item.lifetime_pieces) if item.lifetime_pieces > 0 else 0.0
-            for item in self.tooling_items
+            for item in self.effective_tooling_items()
         )
 
     def tooling_price_per_piece(self) -> float:
         return sum(
             (item.cost / item.lifetime_pieces) * (1.0 + item.margin_rate)
             if item.lifetime_pieces > 0 else 0.0
-            for item in self.tooling_items
+            for item in self.effective_tooling_items()
         )
 
     # ================================================================
@@ -301,7 +404,7 @@ class SerieData:
     # ================================================================
 
     def setup_time_total_h(self) -> float:
-        return self.tooling_setup_time_h + self.sop_validation_time_h
+        return self.effective_setup_time_h() + self.sop_validation_time_h
 
     def campaigns_per_year(self) -> float:
         return (self.annual_volume / self.lot_size) if self.lot_size > 0 else 0.0
@@ -348,7 +451,7 @@ class SerieData:
             + self.tooling_cost_per_piece()
             + self.setup_cost_per_piece()
             + self.control_cost_per_piece()
-            + self.material_cost_per_piece * sf                  # matière consommée sur pièces rebutées
+            + self.purchase_cost_per_piece() * sf                # matière consommée sur pièces rebutées
             + self.logistics_cost_per_piece                      # logistique = pièces livrées seulement
         )
 
@@ -361,7 +464,7 @@ class SerieData:
             + self.tooling_price_per_piece()
             + self.setup_price_per_piece()
             + self.control_cost_per_piece()
-            + self.material_cost_per_piece * sf * (1.0 + self.material_margin)             # scrap sur matière
+            + self.purchase_cost_per_piece() * sf * (1.0 + self.material_margin)           # scrap sur matière
             + self.logistics_cost_per_piece * (1.0 + self.logistics_margin)                # livré uniquement
         )
 

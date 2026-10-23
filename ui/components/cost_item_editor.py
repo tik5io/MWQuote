@@ -1,10 +1,12 @@
 # ui/components/cost_item_editor.py
 import wx
+import wx.grid as gridlib
 import copy
 import base64
 import os
 import tempfile
 from domain.cost import CostItem, CostType, PricingType, PricingStructure, ConversionType, PricingTier
+from domain.operation import SUBCONTRACTING_TYPOLOGY
 from ui.components.document_list_panel import DocumentListPanel
 from infrastructure.configuration import ConfigurationService
 from infrastructure.logging_service import get_module_logger
@@ -97,11 +99,10 @@ class CostItemEditor(wx.Panel):
 
     def _build_ui(self):
         # Main layout is HORIZONTAL
-        self.main_h_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.main_h_sizer = wx.BoxSizer(wx.VERTICAL)
         
         # LEFT COLUMN: Inputs (Scrolled for small screens)
-        self.left_column = wx.ScrolledWindow(self, style=wx.VSCROLL)
-        self.left_column.SetScrollRate(0, 20)
+        self.left_column = wx.Panel(self)      # le défilement est assuré par le panneau parent
         self.left_sizer = wx.BoxSizer(wx.VERTICAL)
         
         # 1. Base Properties (Name, Type)
@@ -112,13 +113,28 @@ class CostItemEditor(wx.Panel):
         self.prop_name = wx.TextCtrl(self.left_column)
         self.prop_name.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
         self.base_grid.Add(self.prop_name, 1, wx.EXPAND)
+
+        # Commentaire méthode : en tête, juste sous la désignation (valable pour tous les types)
+        self.lbl_comment = wx.StaticText(self.left_column, label="Commentaire méthode:")
+        self.base_grid.Add(self.lbl_comment, 0, wx.TOP, 3)
+        self.prop_comment = wx.TextCtrl(self.left_column, style=wx.TE_MULTILINE | wx.TE_WORDWRAP, size=(-1, 72))
+        self.prop_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
+        self.base_grid.Add(self.prop_comment, 1, wx.EXPAND)
+
+        # Marge commerciale : rang 2 (masquée pour un outillage, refacturé sans marge)
+        self.lbl_margin = wx.StaticText(self.left_column, label="Marge commerciale (%):")
+        self.base_grid.Add(self.lbl_margin, 0, wx.ALIGN_CENTER_VERTICAL)
+        self.prop_margin_rate = wx.TextCtrl(self.left_column, size=(90, -1))
+        self.prop_margin_rate.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
+        self.base_grid.Add(self.prop_margin_rate, 0)
         
-        self.prop_cost_type = wx.Choice(self.left_column, choices=[ct.value for ct in CostType])
-        self.prop_cost_type.Bind(wx.EVT_CHOICE, self._on_cost_type_changed)
-        self.base_grid.Add(self.prop_cost_type, 1, wx.EXPAND)
-        
+        # Le type de coût n'est plus choisi par l'utilisateur : il découle de
+        # l'opération (Interne → temps, Sous-traitance → achat) et du bouton
+        # « + Outillage ». Le rendu ci-dessous s'adapte à cost.cost_type.
+
         # New: Active Checkbox (for Sous-traitance)
-        self.base_grid.Add(wx.StaticText(self.left_column, label="État:"))
+        self.lbl_active = wx.StaticText(self.left_column, label="État:")
+        self.base_grid.Add(self.lbl_active)
         self.prop_active = wx.CheckBox(self.left_column, label="Utiliser cette offre pour le chiffrage")
         self.prop_active.Bind(wx.EVT_CHECKBOX, lambda e: self.notify_change())
         self.base_grid.Add(self.prop_active, 1, wx.EXPAND)
@@ -130,39 +146,13 @@ class CostItemEditor(wx.Panel):
         self.left_sizer.Add(self.dynamic_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
         
         self.left_column.SetSizer(self.left_sizer)
-        self.main_h_sizer.Add(self.left_column, 1, wx.EXPAND)
+        self.main_h_sizer.Add(self.left_column, 0, wx.EXPAND)
         
-        # SEPARATOR (Thin line)
-        line = wx.StaticLine(self, style=wx.LI_VERTICAL)
-        self.main_h_sizer.Add(line, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 2)
-        
-        # RIGHT COLUMN: Analysis & Info
-        self.right_column = wx.Panel(self)
-        self.right_sizer = wx.BoxSizer(wx.VERTICAL)
-        
-        # Header for Analysis
-        header = wx.StaticText(self.right_column, label="ANALYSE TEMPS RÉEL")
-        header.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        header.SetForegroundColour(wx.Colour(100, 100, 100))
-        self.right_sizer.Add(header, 0, wx.LEFT | wx.TOP, 10)
-
-        # Quantity Analysis Container (Scrolled Cards)
-        self.analysis_scroll = wx.ScrolledWindow(self.right_column, style=wx.VSCROLL)
-        self.analysis_scroll.SetScrollRate(0, 10)
-        self.analysis_sizer = wx.BoxSizer(wx.VERTICAL)
-        self.analysis_scroll.SetSizer(self.analysis_sizer)
-        self.right_sizer.Add(self.analysis_scroll, 1, wx.EXPAND | wx.ALL, 5)
-        
-        # SEPARATOR
-        self.right_sizer.Add(wx.StaticLine(self.right_column), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
-
-        # Integrated Result Summary Panel (Bottom part of right column)
-        from ui.components.result_summary_panel import ResultSummaryPanel
-        self.result_panel = ResultSummaryPanel(self.right_column)
-        self.right_sizer.Add(self.result_panel, 0, wx.EXPAND | wx.ALL, 5)
-        
-        self.right_column.SetSizer(self.right_sizer)
-        self.main_h_sizer.Add(self.right_column, 1, wx.EXPAND)
+        # Prix de l'étape, décliné par quantité (même présentation que le panneau Gamme)
+        from ui.components.line_price_panel import LinePricePanel
+        self.main_h_sizer.Add(wx.StaticLine(self), 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        self.price_panel = LinePricePanel(self)
+        self.main_h_sizer.Add(self.price_panel, 1, wx.EXPAND | wx.TOP, 6)
         
         self.SetSizer(self.main_h_sizer)
 
@@ -174,8 +164,12 @@ class CostItemEditor(wx.Panel):
             self.cost = cost
             self.project = project
             self.prop_name.ChangeValue(cost.name or "")
-            self.prop_cost_type.SetStringSelection(cost.cost_type.value)
             self.prop_active.SetValue(cost.is_active)
+            self.prop_comment.ChangeValue(cost.comment or "")
+            self.prop_margin_rate.ChangeValue(f"{cost.margin_rate:.1f}")
+            is_tooling = cost.cost_type == CostType.TOOLING
+            self.lbl_margin.Show(not is_tooling)
+            self.prop_margin_rate.Show(not is_tooling)
             
             # Show/hide active checkbox based on context (provided by parent via project if needed, 
             # or just always show if SUBCONTRACTING)
@@ -183,31 +177,21 @@ class CostItemEditor(wx.Panel):
             # We assume the parent gives us a hint about the operation typology
             # For now, let's keep it simple: show if cost_type is SUBCONTRACTING
             self.prop_active.Show(cost.cost_type == CostType.SUBCONTRACTING)
+            self.lbl_active.Show(cost.cost_type == CostType.SUBCONTRACTING)
             self.prop_active.GetContainingSizer().Layout()
             
             self._refresh_dynamic_fields()
-            self._update_quantity_reminder()
-            self.result_panel.load_item(cost, project)
-            if cost.cost_type == CostType.TOOLING:
-                self.analysis_scroll.Hide()
-                self.result_panel.Hide()
-            else:
-                self.analysis_scroll.Show()
-                self.result_panel.Show()
+            self._refresh_price_panel(cost)
             self.main_h_sizer.Layout()
         finally:
             self._is_loading = False
 
-    def _on_cost_type_changed(self, event):
-        if hasattr(self, "_is_loading") and self._is_loading: return
-        new_val = self.prop_cost_type.GetStringSelection()
-        for ct in CostType:
-            if ct.value == new_val:
-                self.cost.cost_type = ct
-                break
-        if self.cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING, CostType.TOOLING] and not self.cost.pricing:
-            self.cost.pricing = PricingStructure(PricingType.PER_UNIT)
-        self._refresh_dynamic_fields()
+    def _owner_op(self):
+        """Opération qui contient la ligne éditée (None si introuvable)."""
+        for op in getattr(self.project, "operations", []) or []:
+            if any(c is self.cost for c in op.costs.values()):
+                return op
+        return None
 
     def _refresh_dynamic_fields(self):
         self._update_timer.Stop()
@@ -287,6 +271,9 @@ class CostItemEditor(wx.Panel):
                 
                 self.dynamic_sizer.Add(offer_sizer, 0, wx.EXPAND | wx.BOTTOM, 10)
 
+                # (L'outillage fournisseur et ses pièces incluses se déclarent désormais
+                # dans une ligne « Nouvel outillage » de l'opération.)
+
                 # SECTION 2: CONSOMMATION PRODUCTION
                 production_sizer, production_grid = create_box_grid("CONSOMMATION PRODUCTION")
                 unit = cost.pricing.unit or "unité"
@@ -308,7 +295,9 @@ class CostItemEditor(wx.Panel):
                 self.dynamic_sizer.Add(production_sizer, 0, wx.EXPAND | wx.BOTTOM, 10)
 
             case CostType.INTERNAL_OPERATION:
-                op_sizer, op_grid = create_box_grid("DÉTAILS OPÉRATION")
+                has_serie = self._project_has_serie_phase()
+                op_sizer, op_grid = create_box_grid(
+                    "PROTO / LOT — temps passé" if has_serie else "DÉTAILS OPÉRATION")
                 op_grid.Add(wx.StaticText(self.left_column, label="Taux horaire (€/h):"), 0, wx.ALIGN_CENTER_VERTICAL)
                 self.prop_internal_rate = wx.TextCtrl(self.left_column, value=f"{cost.hourly_rate:.2f}")
                 self.prop_internal_rate.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
@@ -327,8 +316,16 @@ class CostItemEditor(wx.Panel):
                 self.prop_piece_h.Enable(not is_masked)
                 self.prop_piece_m.Enable(not is_masked)
                 self.prop_piece_s.Enable(not is_masked)
-                
+
                 self.dynamic_sizer.Add(op_sizer, 0, wx.EXPAND | wx.BOTTOM, 10)
+
+                # Valorisation SÉRIE de la même étape (héritée du Proto tant qu'elle n'est pas saisie)
+                self._serie_fields = {}
+                if has_serie:
+                    serie_sizer, serie_grid = create_box_grid("SÉRIE — temps de cycle (↺ = hérité du Proto)")
+                    for key, label, unit in self.SERIE_FIELDS:
+                        self._add_serie_field(serie_grid, cost, key, label, unit)
+                    self.dynamic_sizer.Add(serie_sizer, 0, wx.EXPAND | wx.BOTTOM, 10)
 
             case CostType.TOOLING:
                 if saved_doc_list:
@@ -341,13 +338,41 @@ class CostItemEditor(wx.Panel):
                 self.prop_tool_price.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
                 tool_grid.Add(self.prop_tool_price, 1, wx.EXPAND)
 
-                tool_grid.Add(wx.StaticText(self.left_column, label="Commentaire Méthode Interne:"), 0, wx.TOP, 5)
-                self.prop_comment = wx.TextCtrl(self.left_column, value=cost.comment or "", style=wx.TE_MULTILINE | wx.TE_WORDWRAP, size=(-1, 150))
-                self.prop_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
-                tool_grid.Add(self.prop_comment, 1, wx.EXPAND | wx.TOP, 5)
+                # Pièces fournies avec l'outil : gratuites (part achat à 0) jusqu'à ce
+                # nombre, puis prix pièce / échelon de l'offre au-delà.
+                tool_grid.Add(wx.StaticText(self.left_column, label="Pièces fournies avec l'outil:"), 0, wx.ALIGN_CENTER_VERTICAL)
+                self.prop_tool_included = wx.TextCtrl(self.left_column, value=f"{int(cost.tooling_included_pieces or 0)}")
+                self.prop_tool_included.SetToolTip(
+                    "Pièces livrées avec l'outillage (mise au point, proto) : comprises dans son prix.\n"
+                    "Jusqu'à ce nombre la part achat de l'opération est à 0 ; au-delà, prix pièce / échelon normal.")
+                self.prop_tool_included.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
+                tool_grid.Add(self.prop_tool_included, 1, wx.EXPAND)
+
+                # Rattachement à une offre (opération Sous-traitance multi-offres)
+                self._tool_offer_keys = []
+                owner = self._owner_op()
+                if owner is not None and owner.typology == SUBCONTRACTING_TYPOLOGY:
+                    self._tool_offer_keys = [k for k, c in owner.costs.items()
+                                             if c.cost_type == CostType.SUBCONTRACTING]
+                    tool_grid.Add(wx.StaticText(self.left_column, label="Rattaché à:"), 0, wx.ALIGN_CENTER_VERTICAL)
+                    self.prop_tool_offer = wx.Choice(self.left_column,
+                                                     choices=["Toute l'opération"] + self._tool_offer_keys)
+                    sel = (self._tool_offer_keys.index(cost.linked_offer) + 1
+                           if cost.linked_offer in self._tool_offer_keys else 0)
+                    self.prop_tool_offer.SetSelection(sel)
+                    self.prop_tool_offer.SetToolTip(
+                        "Un outillage rattaché à une offre n'est facturé (et ses pièces gratuites\n"
+                        "ne comptent) que tant que cette offre est retenue.")
+                    self.prop_tool_offer.Bind(wx.EVT_CHOICE, lambda e: self.notify_change())
+                    tool_grid.Add(self.prop_tool_offer, 1, wx.EXPAND)
+
+                # Détail ligne à ligne : le montant de l'outillage = somme des lignes
+                tool_grid.Add(wx.StaticText(self.left_column, label="Détail :"), 0, wx.TOP, 5)
+                tool_grid.Add(self._build_tooling_lines_editor(cost), 1, wx.EXPAND | wx.TOP, 5)
+
 
                 tool_grid.Add(wx.StaticText(self.left_column, label="Commentaire Client (devis):"), 0, wx.TOP, 5)
-                self.prop_client_comment = wx.TextCtrl(self.left_column, value=cost.client_comment or "", style=wx.TE_MULTILINE | wx.TE_WORDWRAP, size=(-1, 150))
+                self.prop_client_comment = wx.TextCtrl(self.left_column, value=cost.client_comment or "", style=wx.TE_MULTILINE | wx.TE_WORDWRAP, size=(-1, 90))
                 self.prop_client_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
                 tool_grid.Add(self.prop_client_comment, 1, wx.EXPAND | wx.TOP, 5)
                 self.dynamic_sizer.Add(tool_sizer, 0, wx.EXPAND)
@@ -370,27 +395,225 @@ class CostItemEditor(wx.Panel):
             self.prop_conv_factor.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
             method_grid.Add(self.prop_conv_factor, 1, wx.EXPAND)
 
-            method_grid.Add(wx.StaticText(self.left_column, label="Commentaire Méthode :"), 0, wx.TOP, 5)
-            self.prop_comment = wx.TextCtrl(self.left_column, value=cost.comment or "", style=wx.TE_MULTILINE | wx.TE_WORDWRAP, size=(-1, 150))
-            self.prop_comment.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
-            method_grid.Add(self.prop_comment, 1, wx.EXPAND | wx.TOP, 5)
 
             self.dynamic_sizer.Add(method_sizer, 0, wx.EXPAND | wx.BOTTOM, 10)
 
-            # 3b. Box: PARAMÈTRES COMMERCIAUX
-            comm_sizer, comm_grid = create_box_grid("PARAMÈTRES COMMERCIAUX")
-            
-            comm_grid.Add(wx.StaticText(self.left_column, label="Marge (%):"), 0, wx.ALIGN_CENTER_VERTICAL)
-            self.prop_margin_rate = wx.TextCtrl(self.left_column, value=f"{cost.margin_rate:.1f}")
-            self.prop_margin_rate.Bind(wx.EVT_TEXT, lambda e: self.notify_change())
-            comm_grid.Add(self.prop_margin_rate, 1, wx.EXPAND)
-
-            self.dynamic_sizer.Add(comm_sizer, 0, wx.EXPAND)
+            # (La marge commerciale est en tête du panneau, sous le commentaire méthode.)
         
         self.left_sizer.Layout()
-        self.right_sizer.Layout()
         self.main_h_sizer.Layout()
         self.notify_change()
+
+    # ------------------------------------------------------------------ détail outillage
+
+    TOOL_COLS = [("Désignation", 170), ("Qté", 55), ("Unité", 60), ("PU (€)", 75), ("Total (€)", 85)]
+
+    def _build_tooling_lines_editor(self, cost):
+        panel = wx.Panel(self.left_column)
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        self.tool_lines_grid = gridlib.Grid(panel)
+        g = self.tool_lines_grid
+        g.CreateGrid(0, len(self.TOOL_COLS))
+        g.SetRowLabelSize(0)
+        for col, (label, width) in enumerate(self.TOOL_COLS):
+            g.SetColLabelValue(col, label)
+            g.SetColSize(col, width)
+        for line in cost.tooling_lines:
+            self._append_tool_line_row(line.label, line.quantity, line.unit, line.unit_price)
+        g.SetMinSize((-1, 130))
+        g.Bind(gridlib.EVT_GRID_CELL_CHANGED, self._on_tool_line_changed)
+        sizer.Add(g, 1, wx.EXPAND)
+
+        bar = wx.BoxSizer(wx.HORIZONTAL)
+        add_btn = wx.Button(panel, label="+ Ligne", size=(70, 24))
+        add_btn.Bind(wx.EVT_BUTTON, self._on_add_tool_line)
+        del_btn = wx.Button(panel, label="Supprimer", size=(80, 24))
+        del_btn.Bind(wx.EVT_BUTTON, self._on_del_tool_line)
+        bar.Add(add_btn, 0, wx.RIGHT, 4)
+        bar.Add(del_btn, 0, wx.RIGHT, 12)
+        self.lbl_tool_lines_total = wx.StaticText(panel, label="")
+        self.lbl_tool_lines_total.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        bar.Add(self.lbl_tool_lines_total, 0, wx.ALIGN_CENTER_VERTICAL)
+        sizer.Add(bar, 0, wx.TOP, 4)
+        panel.SetSizer(sizer)
+        self._refresh_tool_lines_total(notify=False)
+        return panel
+
+    def _append_tool_line_row(self, label="", quantity=1.0, unit="", unit_price=0.0):
+        g = self.tool_lines_grid
+        row = g.GetNumberRows()
+        g.AppendRows(1)
+        g.SetCellValue(row, 0, label or "")
+        g.SetCellValue(row, 1, f"{quantity:g}")
+        g.SetCellValue(row, 2, unit or "")
+        g.SetCellValue(row, 3, f"{unit_price:.2f}")
+        g.SetReadOnly(row, 4, True)
+        g.SetCellBackgroundColour(row, 4, wx.Colour(240, 240, 240))
+        for col in (1, 3, 4):
+            g.SetCellAlignment(row, col, wx.ALIGN_RIGHT, wx.ALIGN_CENTER)
+
+    def _read_tool_lines(self):
+        """Lignes saisies (les lignes entièrement vides sont ignorées)."""
+        from domain.cost import ToolingLine
+        g = getattr(self, "tool_lines_grid", None)
+        lines = []
+        if not g:
+            return lines
+        try:
+            n = g.GetNumberRows()
+        except RuntimeError:
+            return lines
+
+        def num(text, default):
+            try:
+                return float(text.replace(",", ".").replace(" ", "") or default)
+            except ValueError:
+                return default
+
+        for row in range(n):
+            label = g.GetCellValue(row, 0).strip()
+            qty = num(g.GetCellValue(row, 1), 1.0)
+            unit = g.GetCellValue(row, 2).strip()
+            pu = num(g.GetCellValue(row, 3), 0.0)
+            if not label and pu == 0.0:
+                continue
+            lines.append(ToolingLine(label=label, quantity=qty, unit=unit, unit_price=pu))
+        return lines
+
+    def _refresh_tool_lines_total(self, notify=True):
+        g = self.tool_lines_grid
+        lines_total = 0.0
+        for row in range(g.GetNumberRows()):
+            try:
+                qty = float(g.GetCellValue(row, 1).replace(",", ".").replace(" ", "") or 0)
+                pu = float(g.GetCellValue(row, 3).replace(",", ".").replace(" ", "") or 0)
+            except ValueError:
+                qty, pu = 0.0, 0.0
+            g.SetCellValue(row, 4, f"{qty * pu:,.2f}".replace(",", " "))
+            lines_total += qty * pu
+        has_lines = bool(self._read_tool_lines())
+        # Avec un détail, le montant est calculé : champ en lecture seule
+        self.prop_tool_price.SetEditable(not has_lines)
+        self.prop_tool_price.SetBackgroundColour(wx.Colour(240, 240, 240) if has_lines else wx.NullColour)
+        if has_lines:
+            self.prop_tool_price.ChangeValue(f"{lines_total:.2f}")
+            self.lbl_tool_lines_total.SetLabel(f"Total : {lines_total:,.2f} €".replace(",", " "))
+        else:
+            self.lbl_tool_lines_total.SetLabel("Sans détail : montant saisi directement")
+        self.prop_tool_price.Refresh()
+        if notify:
+            self.notify_change()
+
+    def _on_tool_line_changed(self, event):
+        self._refresh_tool_lines_total()
+        event.Skip()
+
+    def _on_add_tool_line(self, event):
+        g = self.tool_lines_grid
+        # Premier détail sur un outillage déjà chiffré : conserver le montant saisi
+        if g.GetNumberRows() == 0:
+            try:
+                current = float(self.prop_tool_price.GetValue().replace(",", ".") or 0)
+            except ValueError:
+                current = 0.0
+            if current > 0:
+                self._append_tool_line_row("Montant saisi", 1.0, "forfait", current)
+        self._append_tool_line_row()
+        self._refresh_tool_lines_total()
+        row = g.GetNumberRows() - 1
+        g.SetGridCursor(row, 0)
+        g.MakeCellVisible(row, 0)
+        self.left_sizer.Layout()
+
+    def _on_del_tool_line(self, event):
+        g = self.tool_lines_grid
+        rows = sorted(set(g.GetSelectedRows()) | {g.GetGridCursorRow()}, reverse=True)
+        for row in rows:
+            if 0 <= row < g.GetNumberRows():
+                g.DeleteRows(row, 1)
+        self._refresh_tool_lines_total()
+
+    # ------------------------------------------------------------------ bloc SÉRIE
+
+    # (attribut CostItem, libellé, unité)
+    SERIE_FIELDS = [
+        ("serie_cycle_time_s", "Temps de cycle :", "s"),
+        ("serie_pieces_per_cycle", "Pièces simultanées :", "pcs / cycle"),
+        ("serie_setup_h", "Réglage / campagne :", "h"),
+        ("serie_hourly_rate", "Taux horaire série :", "€/h"),
+    ]
+
+    def _project_has_serie_phase(self):
+        return any(getattr(ph, "is_serie", False) for ph in getattr(getattr(self, "project", None), "phases", []) or [])
+
+    @staticmethod
+    def _inherited_serie_value(cost, key):
+        return {
+            "serie_cycle_time_s": cost.inherited_serie_cycle_time_s,
+            "serie_pieces_per_cycle": cost.inherited_serie_pieces_per_cycle,
+            "serie_setup_h": cost.inherited_serie_setup_h,
+            "serie_hourly_rate": lambda: cost.hourly_rate or 0.0,
+        }[key]()
+
+    def _add_serie_field(self, grid, cost, key, label, unit):
+        grid.Add(wx.StaticText(self.left_column, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
+        row = wx.BoxSizer(wx.HORIZONTAL)
+        ctrl = wx.TextCtrl(self.left_column, size=(90, -1))
+        row.Add(ctrl, 0, wx.RIGHT, 4)
+        row.Add(wx.StaticText(self.left_column, label=unit), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        state = wx.StaticText(self.left_column, label="")
+        row.Add(state, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        reset = wx.Button(self.left_column, label="↺", size=(28, 22))
+        reset.SetToolTip("Revenir à la valeur héritée du Proto")
+        row.Add(reset, 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(row, 1, wx.EXPAND)
+        value = getattr(cost, key)
+        self._serie_fields[key] = {"ctrl": ctrl, "state": state, "reset": reset, "overridden": value is not None}
+        ctrl.Bind(wx.EVT_TEXT, lambda e, k=key: self._on_serie_field_edited(k))
+        reset.Bind(wx.EVT_BUTTON, lambda e, k=key: self._on_serie_field_reset(k))
+        self._show_serie_field(key, value if value is not None else self._inherited_serie_value(cost, key))
+
+    def _show_serie_field(self, key, value):
+        f = self._serie_fields[key]
+        f["ctrl"].ChangeValue(f"{value:g}" if value is not None else "")
+        inherited = not f["overridden"]
+        f["ctrl"].SetForegroundColour(wx.Colour(140, 140, 140) if inherited else wx.BLACK)
+        font = f["ctrl"].GetFont()
+        font.SetStyle(wx.FONTSTYLE_ITALIC if inherited else wx.FONTSTYLE_NORMAL)
+        f["ctrl"].SetFont(font)
+        f["state"].SetLabel("↺ hérité" if inherited else "saisi série")
+        f["state"].SetForegroundColour(wx.Colour(140, 140, 140) if inherited else wx.Colour(30, 110, 30))
+        f["reset"].Enable(not inherited)
+        f["ctrl"].Refresh()
+
+    def _on_serie_field_edited(self, key):
+        if getattr(self, "_is_loading", False):
+            return
+        f = self._serie_fields[key]
+        if not f["overridden"]:
+            f["overridden"] = True
+            self._show_serie_field(key, self._read_serie_field(key))
+        self.notify_change()
+
+    def _on_serie_field_reset(self, key):
+        self._serie_fields[key]["overridden"] = False
+        self._show_serie_field(key, self._inherited_serie_value(self.cost, key))
+        self.notify_change()
+
+    def _read_serie_field(self, key):
+        try:
+            return float(self._serie_fields[key]["ctrl"].GetValue().replace(",", ".").replace(" ", ""))
+        except (ValueError, RuntimeError):
+            return None
+
+    def _refresh_serie_inherited(self, temp_cost):
+        """Les valeurs héritées suivent la saisie Proto en direct."""
+        for key, f in getattr(self, "_serie_fields", {}).items():
+            try:
+                if not f["overridden"]:
+                    self._show_serie_field(key, self._inherited_serie_value(temp_cost, key))
+            except RuntimeError:
+                pass
 
     def _add_detailed_time_row(self, grid, label, initial_hours, prefix):
         grid.Add(wx.StaticText(self.left_column, label=label))
@@ -469,7 +692,6 @@ class CostItemEditor(wx.Panel):
                     self.cost.quantity_per_piece = safe_float(self.prop_qty_per_piece.GetValue(), 1.0)
                 if hasattr(self, 'prop_qty_inverse'):
                     self.cost.quantity_per_piece_is_inverse = self.prop_qty_inverse.GetValue()
-                
                 # Save supplier quote reference for SUBCONTRACTING
                 if self.cost.cost_type == CostType.SUBCONTRACTING and hasattr(self, 'prop_supplier_quote_ref'):
                     self.cost.supplier_quote_ref = self.prop_supplier_quote_ref.GetValue()
@@ -482,6 +704,12 @@ class CostItemEditor(wx.Panel):
                     self.cost.per_piece_time = safe_float(self.prop_piece_h.GetValue())
                 if hasattr(self, 'prop_temps_masque'):
                     self.cost.is_temps_masque = self.prop_temps_masque.GetValue()
+                # Bloc SÉRIE : valeur saisie, ou None = héritée du Proto
+                for key, f in getattr(self, "_serie_fields", {}).items():
+                    value = self._read_serie_field(key) if f["overridden"] else None
+                    if key == "serie_pieces_per_cycle" and value is not None and value <= 0:
+                        value = None
+                    setattr(self.cost, key, value)
                 
                 # Clear pricing structure to avoid conflict in Calculator
                 if self.cost.pricing:
@@ -492,9 +720,17 @@ class CostItemEditor(wx.Panel):
                 if not self.cost.pricing:
                     self.cost.pricing = PricingStructure(PricingType.PER_UNIT)
                 self.cost.pricing.fixed_price = safe_float(self.prop_tool_price.GetValue())
+                if hasattr(self, 'tool_lines_grid'):
+                    self.cost.tooling_lines = self._read_tool_lines()
+                    self.cost.apply_tooling_lines()
                 self.cost.pricing.unit_price = 0.0
                 self.cost.pricing.tiers = []
                 self.cost.pricing.unit = "forfait"
+                if hasattr(self, 'prop_tool_included'):
+                    self.cost.tooling_included_pieces = max(int(safe_float(self.prop_tool_included.GetValue())), 0)
+                if hasattr(self, 'prop_tool_offer'):
+                    sel = self.prop_tool_offer.GetSelection()
+                    self.cost.linked_offer = self._tool_offer_keys[sel - 1] if sel > 0 else None
                 self.cost.comment = self.prop_comment.GetValue()
                 if hasattr(self, 'prop_client_comment'):
                     self.cost.client_comment = self.prop_client_comment.GetValue()
@@ -573,6 +809,9 @@ class CostItemEditor(wx.Panel):
             
             # Include quantity per piece
             temp_cost.quantity_per_piece = safe_float(str(self._ctrl_get_value('prop_qty_per_piece', 1.0)), 1.0)
+            if self.cost.cost_type in [CostType.MATERIAL, CostType.SUBCONTRACTING]:
+                # Pièces gratuites issues de l'outillage de l'opération (pas de saisie sur l'offre)
+                temp_cost._free_pieces = getattr(self.cost, "_free_pieces", None)
             temp_cost.quantity_per_piece_is_inverse = bool(self._ctrl_get_value('prop_qty_inverse', False))
             
             # Include supplier quote reference and documents for SUBCONTRACTING
@@ -587,11 +826,11 @@ class CostItemEditor(wx.Panel):
                 temp_cost.fixed_time = safe_float(str(self._ctrl_get_value('prop_fixed_h', 0.0)))
                 temp_cost.per_piece_time = safe_float(str(self._ctrl_get_value('prop_piece_h', 0.0)))
                 temp_cost.is_temps_masque = bool(self._ctrl_get_value('prop_temps_masque', False))
+                self._refresh_serie_inherited(temp_cost)
 
             if self.cost.cost_type == CostType.TOOLING:
-                self.analysis_scroll.Hide()
-                self.result_panel.Hide()
                 self.on_changed(temp_cost)
+                self._refresh_price_panel(self.cost)       # le parent vient d'appliquer les valeurs à la ligne
                 return
 
             # Update dynamic consumption label context if needed
@@ -603,8 +842,7 @@ class CostItemEditor(wx.Panel):
                 if label_updated:
                     self.left_sizer.Layout()
 
-            self._update_quantity_reminder(temp_cost) # Pass temp_cost for preview
-            self.result_panel.update_results(temp_cost)
+            self._refresh_price_panel(temp_cost)           # aperçu en temps réel, avant application
             self.on_changed(temp_cost)
             logger.debug(f"recalc_preview done | name={getattr(self.cost, 'name', '?')}")
         except Exception: 
@@ -628,76 +866,12 @@ class CostItemEditor(wx.Panel):
         self.notify_change()
     
     
-    def _update_quantity_reminder(self, preview_cost=None):
-        """Update the quantity reminder panel with detailed breakdown of needs and MOQ."""
-        self.analysis_sizer.Clear(True)
-        cost = preview_cost or self.cost
-        if not cost or not self.project:
-            self.analysis_scroll.Hide()
+    def _refresh_price_panel(self, cost):
+        """Prix de l'étape par quantité (temps, taux horaire final, CA, marge…), en temps réel."""
+        op = self._owner_op()
+        if cost is None or op is None or not self.project:
+            self.price_panel.clear()
             return
-        if cost.cost_type == CostType.TOOLING:
-            self.analysis_scroll.Hide()
-            return
-
-        from domain.calculator import Calculator
-        
-        # 1. Section Header: MOQ Context
-        moq = cost.get_moq()
-        unit_label = cost.pricing.unit if cost.pricing else "u"
-        
-        if moq > 0:
-            moq_info = wx.Panel(self.analysis_scroll)
-            moq_info.SetBackgroundColour(wx.Colour(255, 245, 230)) # Light orange
-            info_sizer = wx.BoxSizer(wx.VERTICAL)
-            txt = wx.StaticText(moq_info, label=f"LOT MINIMUM (MOQ) : {moq} {unit_label}")
-            txt.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-            txt.SetForegroundColour(wx.Colour(150, 75, 0))
-            info_sizer.Add(txt, 0, wx.ALL, 8)
-            moq_info.SetSizer(info_sizer)
-            self.analysis_sizer.Add(moq_info, 0, wx.EXPAND | wx.BOTTOM, 10)
-
-        # 2. Results Cards
-        for qty in sorted(self.project.sale_quantities):
-            res = Calculator.calculate_item(cost, qty)
-            
-            card = wx.Panel(self.analysis_scroll)
-            is_amortized = res.moq > 0 and res.quote_qty_needed < res.moq
-            card.SetBackgroundColour(wx.Colour(255, 255, 255) if not is_amortized else wx.Colour(255, 240, 240))
-            
-            # Use a box sizer for the card
-            card_sizer = wx.StaticBoxSizer(wx.VERTICAL, card, label=f"Pour {qty} pièces")
-            
-            grid = wx.FlexGridSizer(cols=2, hgap=15, vgap=2)
-            grid.AddGrowableCol(1, 1)
-            
-            # Need
-            grid.Add(wx.StaticText(card, label="Besoin Total:"), 0, wx.ALIGN_LEFT)
-            need_txt = f"{res.quote_qty_needed:.2f} {unit_label}"
-            if is_amortized:
-                need_txt += f" (Amorti de {res.batch_supplier_cost:.2f}€)"
-            st_need = wx.StaticText(card, label=need_txt)
-            st_need.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-            grid.Add(st_need, 1, wx.EXPAND)
-            
-            metrics = self.get_analysis_preview_metrics(cost, qty)
-
-            grid.Add(wx.StaticText(card, label="Coût de revient:"), 0, wx.ALIGN_LEFT)
-            st_cost = wx.StaticText(card, label=f"{metrics['cost_per_piece']:.2f} €/pc")
-            st_cost.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-            st_cost.SetForegroundColour(wx.Colour(0, 100, 0)) # Green
-            grid.Add(st_cost, 1, wx.EXPAND)
-
-            grid.Add(wx.StaticText(card, label="Prix vente (marge incl.):"), 0, wx.ALIGN_LEFT)
-            st_sale = wx.StaticText(card, label=f"{metrics['sale_price_per_piece']:.2f} €/pc")
-            st_sale.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-            st_sale.SetForegroundColour(wx.Colour(0, 0, 180))
-            grid.Add(st_sale, 1, wx.EXPAND)
-
-            card_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 5)
-            card.SetSizer(card_sizer)
-            self.analysis_sizer.Add(card, 0, wx.EXPAND | wx.BOTTOM, 5)
-
-        self.analysis_scroll.Show()
-        self.right_sizer.Layout()
-        self.right_column.Layout()
-        self.main_h_sizer.Layout()
+        if cost is not self.cost:                          # valeurs saisies pas encore appliquées
+            cost._free_pieces = getattr(self.cost, "_free_pieces", None)
+        self.price_panel.load_cost(cost, op, self.project)

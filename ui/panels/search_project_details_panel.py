@@ -4,7 +4,6 @@ import base64
 import io
 import tempfile
 from infrastructure.persistence import PersistenceService
-from ui.panels.graph_analysis_panel import GraphAnalysisPanel
 from ui.components.offers_comparison_grid import OffersComparisonGrid
 import domain.cost as domain_cost
 from domain.operation import SUBCONTRACTING_TYPOLOGY
@@ -86,14 +85,10 @@ class ProjectDetailsPanel(wx.Panel):
         self.tree = wx.TreeCtrl(self.splitter, style=wx.TR_HAS_BUTTONS | wx.TR_HIDE_ROOT | wx.TR_LINES_AT_ROOT)
         self.tree.Bind(wx.EVT_TREE_SEL_CHANGED, self._on_tree_selection)
         
-        # Bottom area: dynamic switching (Chart or Offer Comparison)
+        # Zone du bas : comparaison des offres, affichée seulement pour une opération en sous-traitance
         self.bottom_container = wx.Panel(self.splitter)
         self.bottom_sizer = wx.BoxSizer(wx.VERTICAL)
         
-        # Bottom: Analysis Chart
-        self.analysis_panel = GraphAnalysisPanel(self.bottom_container)
-        self.analysis_panel.SetMinSize((-1, 300))
-        self.bottom_sizer.Add(self.analysis_panel, 1, wx.EXPAND)
         
         # Bottom: Offer Comparison
         self.comparison_grid = OffersComparisonGrid(self.bottom_container)
@@ -103,8 +98,9 @@ class ProjectDetailsPanel(wx.Panel):
         self.bottom_container.SetSizer(self.bottom_sizer)
         
         # Split!
-        self.splitter.SplitHorizontally(self.tree, self.bottom_container, -400) # Start with 400px for bottom
+        self.splitter.SplitHorizontally(self.tree, self.bottom_container, -300)
         self.splitter.SetSashGravity(1.0) # Bottom keeps its size on resize
+        self._show_bottom(False)
         
         vbox.Add(self.splitter, 1, wx.EXPAND | wx.ALL, 5)
 
@@ -121,7 +117,6 @@ class ProjectDetailsPanel(wx.Panel):
         try:
             self.project = PersistenceService.load_project(project_path)
             self._populate_version_selector()
-            self.analysis_panel.load_project(self.project)
             self.comparison_grid.project = self.project
             self._update_display()
             self._update_history_ui()
@@ -153,7 +148,6 @@ class ProjectDetailsPanel(wx.Panel):
             return
         v_index = self.version_choice.GetClientData(idx)
         self.project.switch_to_version(v_index)
-        self.analysis_panel.load_project(self.project)
         self.comparison_grid.project = self.project
         self._update_display()
 
@@ -167,10 +161,8 @@ class ProjectDetailsPanel(wx.Panel):
         self.history_list.Clear()
         self.tree.DeleteAllItems()
         self.tree.AddRoot("Root")
-        self.analysis_panel.Show()
         self.comparison_grid.Hide()
-        self.bottom_sizer.Layout()
-        self.bottom_container.Layout()
+        self._show_bottom(False)
         self.Layout()
 
     def _update_history_ui(self):
@@ -182,8 +174,9 @@ class ProjectDetailsPanel(wx.Panel):
             has_xlsx = "💾 " if entry.get('xlsx_data_b64') else "   "
             v_idx = entry.get('version_index', 1)
             time_str = f" {entry['time']}" if 'time' in entry else ""
+            rev = f" ind. {entry['revision']}" if entry.get('revision') else ""
             self.history_list.Append(
-                f"{has_xlsx}{entry['devis_ref']} [V{v_idx}] - {entry['date']}{time_str}"
+                f"{has_xlsx}{entry['devis_ref']}{rev} [V{v_idx}] - {entry['date']}{time_str}"
             )
 
     def _on_history_double_click(self, event):
@@ -206,12 +199,8 @@ class ProjectDetailsPanel(wx.Panel):
             )
             return
         try:
-            xlsx_bytes = base64.b64decode(xlsx_b64)
-            filename = entry.get('xlsx_filename', f"{entry.get('devis_ref', 'export')}.xlsx")
-            tmp_path = os.path.join(tempfile.gettempdir(), filename)
-            with open(tmp_path, 'wb') as f:
-                f.write(xlsx_bytes)
-            os.startfile(tmp_path)
+            from infrastructure.offer_files import offer_workbook_path
+            os.startfile(offer_workbook_path(entry))   # nom unique : réf. d'offre (+ indice)
         except Exception as e:
             wx.MessageBox(f"Erreur lors de l'ouverture du XLSX:\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
 
@@ -225,7 +214,7 @@ class ProjectDetailsPanel(wx.Panel):
         # Show/hide mode badges
         tags_lower = [t.lower() for t in (getattr(self.project, 'tags', None) or [])]
         self._badge_proto.Show(any("proto" in t for t in tags_lower))
-        self._badge_serie.Show(getattr(self.project, 'serie_data', None) is not None)
+        self._badge_serie.Show(any(getattr(v, 'is_serie', False) for v in getattr(self.project, 'versions', [])))
         self.Layout()
         
         # Update Tree
@@ -233,7 +222,7 @@ class ProjectDetailsPanel(wx.Panel):
         root = self.tree.AddRoot("Root")
         
         for op in self.project.operations:
-            op_item = self.tree.AppendItem(root, f"🔧 {op.typology or 'Op'} | {op.label}")
+            op_item = self.tree.AppendItem(root, f"🔧 {op.display_family or 'Op'} | {op.label}")
             for cost in op.costs.values():
                 cost_icon = "💰" if cost.cost_type in [domain_cost.CostType.MATERIAL, domain_cost.CostType.SUBCONTRACTING] else "⚙️" if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION else "🛠️" if cost.cost_type == domain_cost.CostType.TOOLING else "📈"
                 label = f"{cost_icon} {cost.name}"
@@ -338,26 +327,27 @@ class ProjectDetailsPanel(wx.Panel):
         except Exception as e:
             wx.MessageBox(f"Échec ouverture preview : {e}", "Erreur", wx.OK | wx.ICON_ERROR)
 
+    def _show_bottom(self, show: bool):
+        """Affiche / masque la zone du bas (comparaison d'offres) en (dé)scindant le séparateur."""
+        if show and not self.splitter.IsSplit():
+            self.bottom_container.Show()
+            self.splitter.SplitHorizontally(self.tree, self.bottom_container, -300)
+        elif not show and self.splitter.IsSplit():
+            self.splitter.Unsplit(self.bottom_container)
+
     def _on_tree_selection(self, event):
         item = event.GetItem()
         if not item.IsOk() or not self.project:
             return
-            
         data = self.tree.GetItemData(item)
-        if not data:
-            # Root or null data
-            self.analysis_panel.Show()
-            self.comparison_grid.Hide()
-        elif data["type"] == "operation" and data["operation"].typology == SUBCONTRACTING_TYPOLOGY:
-            # Show offer comparison!
-            self.analysis_panel.Hide()
+        if data and data["type"] == "operation" and data["operation"].typology == SUBCONTRACTING_TYPOLOGY:
+            # Sous-traitance : comparaison des offres
             self.comparison_grid.Show()
             self.comparison_grid.load_operation(data["operation"], self.project)
+            self._show_bottom(True)
         else:
-            # Project or other operation
-            self.analysis_panel.Show()
             self.comparison_grid.Hide()
-            
+            self._show_bottom(False)
         self.bottom_sizer.Layout()
         self.bottom_container.Layout()
         self.Layout()
