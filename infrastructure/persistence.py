@@ -5,20 +5,22 @@ import hashlib
 import os
 import base64
 import dataclasses
+import shutil
 from enum import Enum
 from typing import Any, Dict, List, Tuple
 from domain.project import Project
-from domain.project_version import ProjectVersion
+from domain.project_version import ProjectVersion, build_lot_phase, build_serie_phase
+from domain.phase import Phase, PhaseKind, ToolingBilling
 from domain.operation import Operation
 from domain.operation import TOOLING_TYPOLOGY
-from domain.cost import CostItem, CostType, PricingType, PricingStructure, PricingTier, ConversionType
+from domain.cost import CostItem, CostType, PricingType, PricingStructure, PricingTier, ConversionType, ToolingLine
 from domain.document import Document
 from domain.serie_data import SerieData, CapexItem, ToolingItem, MachinePost
 
 # Constants
 PROJECT_JSON_FILENAME = "project.json"
 DOCUMENTS_FOLDER = "documents/"
-MWQ_VERSION = "3.0"  # Versioned project format
+MWQ_VERSION = "3.3"  # 3.3 : une version = une gamme + une configuration de vente (phase unique) ; outillage unifié
 
 
 class EnhancedJSONEncoder(json.JSONEncoder):
@@ -33,6 +35,10 @@ class EnhancedJSONEncoder(json.JSONEncoder):
 class PersistenceService:
     """Service for saving and loading .mwq project files.
 
+    Format v3.1: v3.0 + phases (Proto/Série) par version. Les clés v3.0
+                 (sale_quantities, volume_margin_rates, serie_data) restent écrites
+                 au niveau version (miroir des phases de référence) pour que les
+                 postes encore en v3.0 lisent le fichier sans perte de chiffres.
     Format v3.0: ZIP archive with versioned project structure.
     Format v2.0: ZIP archive (single-version, backward compatible).
     Format v1.0: Plain JSON (legacy, backward compatible).
@@ -52,9 +58,73 @@ class PersistenceService:
         identity = f"{project.reference}|{project.client}|{project.name}"
         return hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]
 
+    # Copies des fichiers d'avant conversion de format (une par fichier, jamais écrasée)
+    BACKUP_ROOT = os.path.join(
+        os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local')),
+        "MWQuote", "backups")
+
+    @staticmethod
+    def read_file_format_version(filepath: str) -> str:
+        """Version de format d'un .mwq existant ("1.0" JSON, "2.0", "3.0", "3.1"…)."""
+        if not PersistenceService.is_zip_format(filepath):
+            return "1.0"
+        with zipfile.ZipFile(filepath, 'r') as zf:
+            data = json.loads(zf.read(PROJECT_JSON_FILENAME).decode('utf-8'))
+        if 'versions' not in data:
+            return "2.0"
+        return str(data.get('_mwq_version', "3.0"))
+
+    @staticmethod
+    def backup_before_format_upgrade(filepath: str) -> str:
+        """Copie le fichier existant avant sa première réécriture dans un format plus récent.
+
+        La copie est conservée dans BACKUP_ROOT/format-<ancienne version>/ et n'est
+        jamais écrasée (on garde l'original d'avant conversion). Retourne le chemin
+        de la copie, ou "" si aucune copie n'était nécessaire.
+        Lève une exception si la copie échoue : la sauvegarde est alors annulée et
+        le fichier d'origine reste intact.
+        """
+        if not os.path.exists(filepath):
+            return ""
+        try:
+            old_version = PersistenceService.read_file_format_version(filepath)
+        except Exception:
+            old_version = "illisible"
+        if old_version == MWQ_VERSION:
+            return ""
+        backup_dir = os.path.join(PersistenceService.BACKUP_ROOT, f"format-{old_version}")
+        os.makedirs(backup_dir, exist_ok=True)
+        backup_path = os.path.join(backup_dir, os.path.basename(filepath))
+        if not os.path.exists(backup_path):
+            shutil.copy2(filepath, backup_path)
+        return backup_path
+
     @staticmethod
     def save_project(project: Project, filepath: str):
-        """Save project to ZIP-based .mwq file (v3.0 format)."""
+        """Save project to ZIP-based .mwq file (v3.1 format).
+
+        Écriture sûre : copie de l'original avant conversion de format, écriture
+        dans un fichier temporaire, puis remplacement atomique du fichier cible.
+        """
+        PersistenceService.backup_before_format_upgrade(filepath)
+        tmp_path = f"{filepath}.saving.tmp"
+        try:
+            PersistenceService._write_project_zip(project, tmp_path)
+            # Contrôle de relecture avant de remplacer le fichier d'origine
+            with zipfile.ZipFile(tmp_path, 'r') as zf:
+                if zf.testzip() is not None:
+                    raise IOError("Archive temporaire corrompue")
+                json.loads(zf.read(PROJECT_JSON_FILENAME).decode('utf-8'))
+            os.replace(tmp_path, filepath)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _write_project_zip(project: Project, filepath: str):
         with zipfile.ZipFile(filepath, 'w', zipfile.ZIP_DEFLATED) as zf:
             doc_index = {}   # path -> base64 data
             doc_counter = {}  # base_filename -> counter for uniqueness
@@ -125,9 +195,13 @@ class PersistenceService:
                     'created_from_version': version.created_from_version,
                     'operations': ops_data,
                     'documents': version_doc_paths,
-                    'sale_quantities': version.sale_quantities,
+                    # Miroir v3.0 (lecture par les postes non mis à jour)
+                    'sale_quantities': version.phase.sale_quantities,
                     'volume_margin_rates': {str(k): v for k, v in (version.volume_margin_rates or {}).items()},
                     'serie_data': dataclasses.asdict(version.serie_data) if version.serie_data else None,
+                    # v3.1
+                    'phases': [PersistenceService._phase_to_dict(ph) for ph in version.phases],
+                    'current_phase_id': version.current_phase_id,
                 }
                 versions_data.append(version_dict)
 
@@ -160,9 +234,78 @@ class PersistenceService:
     @staticmethod
     def load_project(filepath: str) -> Project:
         if PersistenceService.is_zip_format(filepath):
-            return PersistenceService._load_project_zip(filepath)
+            project = PersistenceService._load_project_zip(filepath)
         else:
-            return PersistenceService._load_project_legacy(filepath)
+            project = PersistenceService._load_project_legacy(filepath)
+        PersistenceService.convert_project_to_clean_model(project)
+        return project
+
+    @staticmethod
+    def convert_project_to_clean_model(project: Project) -> Project:
+        """Met un projet chargé au modèle propre (réorg catégories/outillage).
+
+        Idempotent et sans impact sur les chiffres (vérifié par l'empreinte de
+        prix de l'outil de conversion) :
+        - typologie d'opération ramenée à {Interne, Sous-traitance}, la famille
+          d'usinage d'origine étant conservée dans Operation.family ;
+        - outillage fournisseur (montant + pièces incluses portés par la ligne
+          d'achat) converti en vraie ligne Outillage de l'opération, rattachée
+          à l'offre : les pièces incluses vivent désormais dans l'outillage.
+
+        Les lignes « Matière » ne sont PAS converties en « Sous-traitance » : le
+        lot minimum (MOQ) ne s'applique qu'aux lignes Sous-traitance, une
+        conversion changerait donc des prix. L'interface présente les deux
+        comme de simples achats.
+
+        Appelé à chaque chargement (rattrape les fichiers encore anciens) et par
+        l'outil de conversion de masse qui réécrit ensuite au format courant.
+        """
+        from domain.operation import normalize_typology, family_from_typology
+
+        versions = getattr(project, "versions", None) or [getattr(project, "current_version", None)]
+        for version in versions:
+            if version is None:
+                continue
+            for op in version.operations:
+                old = getattr(op, "typology", "")
+                if not getattr(op, "family", ""):
+                    op.family = family_from_typology(old)
+                op.typology = normalize_typology(old)
+                PersistenceService._move_supplier_tooling_to_tooling_lines(op)
+                op.refresh_free_pieces()
+        return project
+
+    @staticmethod
+    def _move_supplier_tooling_to_tooling_lines(op: Operation) -> None:
+        """Outillage porté par une ligne d'achat → ligne Outillage rattachée à l'offre."""
+        converted = {}
+        for key, cost in op.costs.items():
+            converted[key] = cost
+            if cost.cost_type not in (CostType.SUBCONTRACTING, CostType.MATERIAL):
+                continue
+            amount = float(cost.tooling_amount or 0.0)
+            included = int(cost.tooling_included_pieces or 0)
+            if amount <= 0 and included <= 0:
+                continue
+            name = f"Outillage {cost.name}"
+            n = 2
+            while name in op.costs or name in converted:
+                name = f"Outillage {cost.name} {n}"
+                n += 1
+            tool = CostItem(
+                name=name,
+                cost_type=CostType.TOOLING,
+                pricing=PricingStructure(PricingType.PER_UNIT, fixed_price=amount, unit="forfait"),
+                tooling_billing=cost.tooling_billing,
+                tooling_included_pieces=included,
+                linked_offer=cost.name,
+            )
+            converted[name] = tool
+            cost.tooling_amount = 0.0
+            cost.tooling_included_pieces = 0
+            cost.tooling_billing = None
+        if len(converted) != len(op.costs):
+            op.costs = converted
 
     @staticmethod
     def _load_project_zip(filepath: str) -> Project:
@@ -198,10 +341,13 @@ class PersistenceService:
             # --- v3.0: versioned format ---
             if 'versions' in data:
                 versions = []
+                extras = []
                 for v_data in data['versions']:
                     v_prefix = f"v{v_data['version_index']}/"
-                    version = PersistenceService._load_version(zf, v_data, v_prefix)
-                    versions.append(version)
+                    built = PersistenceService._load_version(zf, v_data, v_prefix)
+                    versions.append(built[0])
+                    extras.extend(built[1:])
+                PersistenceService._attach_split_versions(versions, extras, export_history)
 
                 return Project(
                     name=data['name'],
@@ -250,8 +396,37 @@ class PersistenceService:
             )
 
     @staticmethod
-    def _load_version(zf: zipfile.ZipFile, v_data: dict, v_prefix: str) -> ProjectVersion:
-        """Load a ProjectVersion from ZIP data."""
+    def _phase_to_dict(phase: Phase) -> dict:
+        return {
+            'phase_id': phase.phase_id,
+            'label': phase.label,
+            'kind': phase.kind.value,
+            'sale_quantities': list(phase.sale_quantities or []),
+            'volume_margin_rates': {str(k): v for k, v in (phase.volume_margin_rates or {}).items()},
+            'tooling_billing': phase.tooling_billing.value if phase.tooling_billing else None,
+            'serie_data': dataclasses.asdict(phase.serie_data) if phase.serie_data else None,
+        }
+
+    @staticmethod
+    def _phase_from_dict(d: dict) -> Phase:
+        tb = d.get('tooling_billing')
+        return Phase(
+            phase_id=d['phase_id'],
+            label=d.get('label', ""),
+            kind=PhaseKind(d.get('kind', PhaseKind.LOT.value)),
+            sale_quantities=list(d.get('sale_quantities') or []),
+            volume_margin_rates={int(k): float(v) for k, v in (d.get('volume_margin_rates') or {}).items()},
+            tooling_billing=ToolingBilling(tb) if tb else None,
+            serie_data=PersistenceService._load_serie_data(d.get('serie_data')),
+        )
+
+    @staticmethod
+    def _load_version(zf: zipfile.ZipFile, v_data: dict, v_prefix: str) -> List[ProjectVersion]:
+        """Charge une version ; une ancienne version multi-phases donne PLUSIEURS versions.
+
+        Retourne [version principale, *versions issues des autres phases]. Les
+        dernières n'ont pas encore d'indice (voir _attach_split_versions).
+        """
         # Version documents (plans)
         version_docs = []
         for doc_ref in v_data.get('documents', []):
@@ -269,17 +444,110 @@ class PersistenceService:
         # Migrate legacy TOOLING operations into tooling cost children
         operations = PersistenceService._migrate_tooling_operations_in_ops(operations)
 
-        return ProjectVersion(
+        if v_data.get('phases'):
+            phases = [PersistenceService._phase_from_dict(d) for d in v_data['phases']]
+        else:
+            # ≤ 3.0 : phase « Tarif » (quantités, coefficients) + phase « Série » si données série
+            phases = [build_lot_phase(
+                sale_quantities=v_data.get('sale_quantities', [1, 10, 50, 100]),
+                volume_margin_rates=PersistenceService._migrate_volume_margins(v_data))]
+            serie = PersistenceService._load_serie_data(v_data.get('serie_data'))
+            if serie is not None:
+                phase = build_serie_phase(serie)
+                phase.phase_id = "ph2"
+                phases.append(phase)
+
+        return PersistenceService.split_into_versions(
             version_index=v_data['version_index'],
             label=v_data.get('label', ""),
             created_at=v_data.get('created_at', ""),
             created_from_version=v_data.get('created_from_version'),
             operations=operations,
             documents=version_docs,
-            sale_quantities=v_data.get('sale_quantities', [1, 10, 50, 100]),
-            volume_margin_rates=PersistenceService._migrate_volume_margins(v_data),
-            serie_data=PersistenceService._load_serie_data(v_data.get('serie_data')),
+            phases=phases,
         )
+
+    @staticmethod
+    def _legacy_applies(tags, phase_id: str) -> bool:
+        """Tag de phase d'un ancien fichier : vide = toutes les phases."""
+        return not tags or phase_id in tags
+
+    @staticmethod
+    def _filter_operations_for_phase(operations: List[Operation], phase_id: str) -> List[Operation]:
+        """Ne garde que ce qui s'appliquait à la phase ; les tags disparaissent du modèle."""
+        applies = PersistenceService._legacy_applies
+        kept = []
+        for op in operations:
+            if not applies(getattr(op, "_legacy_phases", None), phase_id):
+                continue
+            op.costs = {k: c for k, c in op.costs.items()
+                        if applies(getattr(c, "_legacy_phases", None), phase_id)}
+            op._legacy_phases = None
+            for c in op.costs.values():
+                c._legacy_phases = None
+            kept.append(op)
+        return kept
+
+    @staticmethod
+    def split_into_versions(version_index, label, created_at, created_from_version,
+                            operations, documents, phases) -> List[ProjectVersion]:
+        """Une version par phase : la 1re phase Taux horaire garde l'indice d'origine.
+
+        Les autres phases deviennent des versions distinctes, copies de la gamme
+        restreinte à ce qui s'y appliquait (indice 0 en attente d'attribution).
+        Une version à phase unique et sans tags reste strictement identique.
+        """
+        import copy as _copy
+        order = sorted(range(len(phases)), key=lambda i: (phases[i].kind != PhaseKind.LOT, i))
+        primary_i = order[0]
+
+        extras = []
+        for i in order[1:]:
+            phase = phases[i]
+            ops = PersistenceService._filter_operations_for_phase(_copy.deepcopy(operations), phase.phase_id)
+            extra = ProjectVersion(
+                version_index=0,
+                label=phase.display_label,
+                created_at=created_at,
+                created_from_version=version_index,
+                operations=ops,
+                documents=_copy.deepcopy(documents),
+                phase=phase,
+            )
+            extra._split_phase_id = phase.phase_id
+            extras.append(extra)
+
+        primary_phase = phases[primary_i]
+        primary = ProjectVersion(
+            version_index=version_index,
+            label=label,
+            created_at=created_at,
+            created_from_version=created_from_version,
+            operations=PersistenceService._filter_operations_for_phase(operations, primary_phase.phase_id),
+            documents=documents,
+            phase=primary_phase,
+        )
+        return [primary] + extras
+
+    @staticmethod
+    def _attach_split_versions(versions: List[ProjectVersion], extras: List[ProjectVersion],
+                               export_history: list) -> None:
+        """Donne un indice aux versions issues d'un éclatement et rattache leurs offres."""
+        if not extras:
+            return
+        next_index = max(v.version_index for v in versions) + 1
+        for extra in extras:
+            origin = extra.created_from_version
+            extra.version_index = next_index
+            next_index += 1
+            for entry in export_history:
+                if entry.get('version_index') != origin:
+                    continue
+                phase_id = entry.get('phase_id')
+                if phase_id == getattr(extra, '_split_phase_id', None) or (
+                        extra.is_serie and entry.get('is_serie') and phase_id in (None, extra.phase.phase_id)):
+                    entry['version_index'] = extra.version_index
+        versions.extend(extras)
 
     @staticmethod
     def _load_operations(zf: zipfile.ZipFile, ops_data: list, v_prefix: str) -> List[Operation]:
@@ -308,16 +576,29 @@ class PersistenceService:
                 code=op_data['code'],
                 label=op_data['label'],
                 typology=op_data.get('typology', ""),
+                family=op_data.get('family', "") or "",
                 comment=op_data.get('comment', ""),
                 template_id=op_data.get('template_id'),
                 template_name=op_data.get('template_name', ""),
                 template_snapshot=op_data.get('template_snapshot', {}) or {},
                 template_drift_score=op_data.get('template_drift_score', 0.0),
                 costs=costs,
-                total_pieces=op_data.get('total_pieces', 1)
+                total_pieces=op_data.get('total_pieces', 1),
             )
+            op._legacy_phases = PersistenceService._load_phase_ids(op_data.get('phases'))
             operations.append(op)
         return operations
+
+    @staticmethod
+    def _opt_float(value):
+        """None reste None (valeur héritée) ; sinon float."""
+        return None if value is None else float(value)
+
+    @staticmethod
+    def _load_phase_ids(value):
+        if not value:
+            return None
+        return [str(v) for v in value]
 
     @staticmethod
     def _migrate_tooling_operations_in_ops(operations: List[Operation]) -> List[Operation]:
@@ -412,7 +693,7 @@ class PersistenceService:
             tiers=tiers
         )
 
-        return CostItem(
+        cost = CostItem(
             name=cost_data['name'],
             cost_type=CostType(ctype_val),
             pricing=pricing,
@@ -429,8 +710,28 @@ class PersistenceService:
             quantity_per_piece=cost_data.get('quantity_per_piece', 1.0),
             quantity_per_piece_is_inverse=cost_data.get('quantity_per_piece_is_inverse', False),
             is_active=cost_data.get('is_active', True),
-            is_temps_masque=cost_data.get('is_temps_masque', False)
+            is_temps_masque=cost_data.get('is_temps_masque', False),
+            tooling_billing=ToolingBilling(cost_data['tooling_billing']) if cost_data.get('tooling_billing') else None,
+            tooling_amount=cost_data.get('tooling_amount', 0.0) or 0.0,
+            tooling_included_pieces=int(cost_data.get('tooling_included_pieces', 0) or 0),
+            linked_offer=cost_data.get('linked_offer') or None,
+            serie_cycle_time_s=PersistenceService._opt_float(cost_data.get('serie_cycle_time_s')),
+            serie_pieces_per_cycle=PersistenceService._opt_float(cost_data.get('serie_pieces_per_cycle')),
+            serie_setup_h=PersistenceService._opt_float(cost_data.get('serie_setup_h')),
+            serie_hourly_rate=PersistenceService._opt_float(cost_data.get('serie_hourly_rate')),
+            tooling_lines=[
+                ToolingLine(
+                    label=x.get('label', ""),
+                    quantity=float(x.get('quantity', 1.0) or 0.0),
+                    unit=x.get('unit', ""),
+                    unit_price=float(x.get('unit_price', 0.0) or 0.0),
+                )
+                for x in (cost_data.get('tooling_lines') or [])
+            ],
         )
+        # Tags de phase d'avant la fusion : lus pour scinder les anciennes versions, jamais conservés
+        cost._legacy_phases = PersistenceService._load_phase_ids(cost_data.get('phases'))
+        return cost
 
     @staticmethod
     def project_from_dict(data: Dict[str, Any]) -> Project:
@@ -455,6 +756,7 @@ class PersistenceService:
                 code=op_data['code'],
                 label=op_data['label'],
                 typology=op_data.get('typology', ""),
+                family=op_data.get('family', "") or "",
                 comment=op_data.get('comment', ""),
                 template_id=op_data.get('template_id'),
                 template_name=op_data.get('template_name', ""),
@@ -565,6 +867,13 @@ class PersistenceService:
             logistics_cost_per_piece=d.get('logistics_cost_per_piece', 0.0),
             logistics_margin=d.get('logistics_margin', 0.05),
             global_commercial_margin=d.get('global_commercial_margin', 0.25),
+            sync_purchases=d.get('sync_purchases', False),
+            sync_tooling=d.get('sync_tooling', False),
+            setup_from_fixed_times=d.get('setup_from_fixed_times', False),
+            synced_purchase_cost_per_piece=d.get('synced_purchase_cost_per_piece', 0.0),
+            synced_setup_time_h=d.get('synced_setup_time_h', 0.0),
+            synced_tooling_overrides=d.get('synced_tooling_overrides', {}) or {},
+            synced_tooling_items=[ToolingItem(**x) for x in d.get('synced_tooling_items', [])],
         )
 
     @staticmethod

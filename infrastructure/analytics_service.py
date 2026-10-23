@@ -68,7 +68,7 @@ class AnalyticsService:
             for cost in op._get_active_costs():
                 m = float(getattr(cost, "margin_rate", 0.0) or 0.0)
                 margins.append(m)
-                typ = (op.typology or "N/A").strip() or "N/A"
+                typ = (op.display_family or "N/A").strip() or "N/A"
                 typology_map.setdefault(typ, []).append(m)
 
         typology_avg = {}

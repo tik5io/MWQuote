@@ -51,7 +51,7 @@ class TemplateManager:
             cur.execute(
                 "INSERT INTO operation_templates (name, typology, config_json, tags, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (template_name, operation.typology or "", json.dumps(payload, ensure_ascii=False), tags_csv, now, now),
+                (template_name, operation.display_family or "", json.dumps(payload, ensure_ascii=False), tags_csv, now, now),
             )
             conn.commit()
             return cur.lastrowid
@@ -227,7 +227,7 @@ class TemplateManager:
                 "comment": cost.comment or "",
             })
         return {
-            "typology": operation.typology,
+            "typology": operation.display_family,
             "operation_comment": operation.comment or "",
             "costs": costs,
         }

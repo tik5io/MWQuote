@@ -1148,7 +1148,7 @@ class SearchFrame(wx.Frame):
                 "index": op_idx,
                 "code": op.code,
                 "label": op.label,
-                "typology": op.typology,
+                "typology": op.display_family,
                 "comment": op.comment or "",
                 "costs_count": len(op.costs),
                 "costs": costs_payload,

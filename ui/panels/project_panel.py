@@ -8,7 +8,6 @@ import time
 import tempfile
 from domain.document import Document
 
-from ui.dialogs.quantity_manager_dialog import QuantityManagerDialog
 from ui.components.document_list_panel import DocumentListPanel
 from infrastructure.project_folder_service import ProjectFolderService
 
@@ -175,7 +174,6 @@ class ProjectPanel(wx.Panel):
     def __init__(self, parent):
         super().__init__(parent)
         self.project = None
-        self.on_quantities_changed = None
         self.on_export_fabrication = None
         self.folder_service = ProjectFolderService()
         self._build_ui()
@@ -293,25 +291,10 @@ class ProjectPanel(wx.Panel):
         main_sizer.Add(self.preview_pane, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
         self.preview_pane.Collapse(False)
 
-        # Quantities Section
-        qty_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        qty_sizer.Add(wx.StaticText(self, label="Quantités de vente:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
-        
-        self.qty_list_ctrl = wx.StaticText(self, label="")
-        qty_sizer.Add(self.qty_list_ctrl, 1, wx.ALIGN_CENTER_VERTICAL)
-        
-        self.edit_qty_btn = wx.Button(self, label="Gérer les quantités...")
-        self.edit_qty_btn.Bind(wx.EVT_BUTTON, self._on_manage_quantities)
-        qty_sizer.Add(self.edit_qty_btn, 0, wx.LEFT, 5)
-        
-        main_sizer.Add(qty_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        # (Les quantités de vente se gèrent désormais dans chaque phase.)
 
         # Export History Section
-        history_sizer = wx.StaticBoxSizer(wx.VERTICAL, self, "Historique des Exports XLSX (double-clic pour ouvrir)")
-        self.history_list = wx.ListBox(self, size=(-1, 80))
-        self.history_list.Bind(wx.EVT_LISTBOX_DCLICK, self._on_history_double_click)
-        history_sizer.Add(self.history_list, 1, wx.EXPAND | wx.ALL, 5)
-        main_sizer.Add(history_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        # (L'historique des offres vit désormais dans l'arbre d'offres de l'onglet Tarif de Vente.)
 
         self.SetSizer(main_sizer)
 
@@ -338,8 +321,6 @@ class ProjectPanel(wx.Panel):
             self.prototype_chk.SetValue(bool(getattr(project, 'is_prototype', False)))
             self.doc_list.load_documents(project.documents)
             self._set_preview_bitmap(getattr(project, 'preview_image', None))
-            self._update_qty_ui()
-            self._update_history_ui()
         finally:
             self._is_loading = False
 
@@ -604,76 +585,10 @@ class ProjectPanel(wx.Panel):
         self.save_project()
 
 
-    def _update_qty_ui(self):
-        if not self.project: return
-        qtys = sorted(self.project.sale_quantities)
-        self.qty_list_ctrl.SetLabel(", ".join(map(str, qtys)) if qtys else "Aucune")
-
-    def _on_manage_quantities(self, event):
-        if not self.project: return
-        dlg = QuantityManagerDialog(self, self.project.sale_quantities)
-        if dlg.ShowModal() == wx.ID_OK:
-            self.project.sale_quantities = dlg.get_quantities()
-            self._update_qty_ui()
-            if self.on_quantities_changed:
-                self.on_quantities_changed(self.project.sale_quantities)
-        dlg.Destroy()
-
     def _get_project_name(self):
         if self.project:
             return self.project.reference or ""
         return ""
-
-    def _update_history_ui(self):
-        self.history_list.Clear()
-        if not self.project:
-            return
-        history = getattr(self.project, 'export_history', [])
-        for entry in reversed(history):
-            has_xlsx = "💾 " if entry.get('xlsx_data_b64') else "   "
-            v_idx = entry.get('version_index', 1)
-            v_label = self._resolve_version_label(v_idx)
-            serie_tag = "[SERIE]" if entry.get('is_serie') else ""
-            time_str = f" {entry['time']}" if 'time' in entry else ""
-            self.history_list.Append(
-                f"{has_xlsx}{entry['devis_ref']} [{v_label}]{serie_tag} - {entry['date']}{time_str}"
-            )
-
-    def _resolve_version_label(self, version_index):
-        """Retourne le libellé de la version (ou V{n} si non nommée)."""
-        for v in getattr(self.project, 'versions', []):
-            if v.version_index == version_index:
-                return v.label.strip() if v.label and v.label.strip() else f"V{version_index}"
-        return f"V{version_index}"
-
-    def _on_history_double_click(self, event):
-        if not self.project:
-            return
-        sel = self.history_list.GetSelection()
-        if sel == wx.NOT_FOUND:
-            return
-        history = list(reversed(getattr(self.project, 'export_history', [])))
-        if sel >= len(history):
-            return
-        entry = history[sel]
-        xlsx_b64 = entry.get('xlsx_data_b64')
-        if not xlsx_b64:
-            wx.MessageBox(
-                "Aucun fichier XLSX stocké pour cet export.\n"
-                "Les exports futurs seront automatiquement sauvegardés.",
-                "Fichier non disponible",
-                wx.OK | wx.ICON_INFORMATION
-            )
-            return
-        try:
-            xlsx_bytes = base64.b64decode(xlsx_b64)
-            filename = entry.get('xlsx_filename', f"{entry.get('devis_ref', 'export')}.xlsx")
-            tmp_path = os.path.join(tempfile.gettempdir(), filename)
-            with open(tmp_path, 'wb') as f:
-                f.write(xlsx_bytes)
-            os.startfile(tmp_path)
-        except Exception as e:
-            wx.MessageBox(f"Erreur lors de l'ouverture du XLSX:\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
 
     def get_quantities(self):
         return sorted(self.quantities)

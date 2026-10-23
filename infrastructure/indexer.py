@@ -81,7 +81,7 @@ class Indexer:
             'min_qty': qtys[0] if qtys else 0,
             'max_qty': qtys[-1] if qtys else 0,
             'content_hash': content_hash,
-            'has_serie': getattr(project, 'serie_data', None) is not None,
+            'has_serie': any(getattr(v, 'is_serie', False) for v in getattr(project, 'versions', [])),
             'is_prototype': bool(getattr(project, 'is_prototype', False)),
         }
 

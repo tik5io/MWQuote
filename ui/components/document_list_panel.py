@@ -3,6 +3,7 @@ import os
 import base64
 import tempfile
 from domain.document import Document
+from ui.components.ribbon_button import RibbonButton, ACCENT
 
 class DocumentListPanel(wx.Panel):
     """Reusable panel to manage a list of Documents (PDFs)."""
@@ -24,7 +25,8 @@ class DocumentListPanel(wx.Panel):
         lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
         header_sizer.Add(lbl, 1, wx.ALIGN_CENTER_VERTICAL)
         
-        add_btn = wx.Button(self, label="+ Ajouter PDF", size=(100, -1))
+        add_btn = RibbonButton(self, "📎", "Ajouter un PDF", accent=ACCENT, size=(170, 40))
+        add_btn.SetToolTip("Joindre un ou plusieurs fichiers PDF")
         add_btn.Bind(wx.EVT_BUTTON, self._on_add)
         header_sizer.Add(add_btn, 0)
         
