@@ -235,7 +235,13 @@ class OperationCostEditorPanel(wx.Panel):
             self.lock_text.SetLabel(f"🔒  Version émise{who} : la gamme est figée. "
                                     "Pour la modifier, créez une nouvelle version.")
         self.lock_banner.Show(self._locked)
-        self.properties_panel.Enable(not self._locked)
+        # On ne désactive pas tout le properties_panel en bloc : cela désactiverait aussi
+        # les boutons « Voir »/« Exporter » des PDF (liste des offres fournisseur), qui
+        # doivent rester utilisables sur un devis figé. On verrouille chaque section
+        # d'édition séparément et on délègue le cas des PDF à l'éditeur de ligne.
+        for section in (self.children_bar, self.phase_row, self.op_props_panel):
+            section.Enable(not self._locked)
+        self.cost_editor.set_locked(self._locked)
         self.btn_add_op.Enable(not self._locked)
         self.btn_del_op.Enable(not self._locked)
         self.Layout()
