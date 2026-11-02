@@ -15,12 +15,22 @@ Emplacements standards à l'intérieur d'un dossier projet :
 - Devis XLSX (commercial)  : COMMERCIAL
 """
 
+from __future__ import annotations
+
 import os
 import base64
 import shutil
+from dataclasses import dataclass, field
 from typing import Callable, Optional, Dict, List
 
 from infrastructure.configuration import ConfigurationService
+from infrastructure.logging_service import get_module_logger
+
+logger = get_module_logger("ProjectFolderService", "export_project.log")
+
+# Taille des blocs pour la copie en flux des gros fichiers (évite de charger
+# ~100 Mo en mémoire et de bloquer l'UI sur un fichier corrompu/lent).
+_COPY_CHUNK = 1024 * 1024  # 1 Mio
 
 # Sous-chemins standards (relatifs au dossier projet), calqués sur le dossier modèle.
 PLANS_SUBPATH = os.path.join("TECHNIQUE", "PLAN CLIENT", "CHIFFRAGE")
@@ -163,9 +173,10 @@ class ProjectFolderService:
                             if overwrite_decider is None or not overwrite_decider(rel_file):
                                 stats["skipped_files"] += 1
                                 continue
-                        shutil.copy2(src, dst)
+                        copy_file_streaming(src, dst)
                         stats["copied_files"] += 1
                     except Exception as e:
+                        logger.warning(f"Copie échouée {rel_file} : {e}")
                         stats["errors"].append(f"{rel_file}: {e}")
         else:
             # Pas de modèle : au minimum l'arborescence standard.
@@ -389,6 +400,314 @@ class ProjectFolderService:
 
         # Dédoublonnage en conservant un ordre déterministe.
         return sorted(set(candidates))
+
+    # ------------------------------------------------------------------ #
+    # Disponibilité du réseau                                             #
+    # ------------------------------------------------------------------ #
+
+    def root_available(self) -> bool:
+        """Le dossier racine réseau est-il accessible ?
+
+        Un accès réseau indisponible/lent fait lever/traîner `os.path.isdir` ;
+        on isole l'appel pour renvoyer un simple booléen sans planter l'UI.
+        """
+        root = self.get_root()
+        try:
+            return bool(root) and os.path.isdir(root)
+        except OSError as e:
+            logger.warning(f"Racine réseau inaccessible ({root}) : {e}")
+            return False
+
+    # ------------------------------------------------------------------ #
+    # Plan d'export par version                                           #
+    # ------------------------------------------------------------------ #
+
+    def build_export_items(self, project) -> List[ExportItem]:
+        """Liste des éléments exportables du projet, un sous-dossier par version.
+
+        - Plans de la pièce (par version)       → TECHNIQUE\\PLAN CLIENT\\CHIFFRAGE\\V{n}
+        - Offres client XLSX (par version)      → COMMERCIAL\\V{n}
+        - Devis fournisseur (par version)       → COMMERCIAL\\DEVIS\\V{n}
+        - Fabrication / Qualité (par version)   → PROCESS\\V{n} (généré à la volée)
+
+        Les noms de fichiers sont nettoyés (préfixe UUID retiré) et dédoublonnés
+        par dossier cible.
+        """
+        items: List[ExportItem] = []
+
+        for version in getattr(project, "versions", None) or []:
+            vidx = getattr(version, "version_index", 1)
+            tag = version_tag(vidx)
+
+            # 1) Plans de la pièce (documents de la version).
+            plans_dir = os.path.join(CATEGORY_BASE_SUBPATH[CATEGORY_PLAN], tag)
+            used = set()
+            for doc in (getattr(version, "documents", None) or []):
+                filename = getattr(doc, "filename", None)
+                data = getattr(doc, "data", None)
+                if not filename or not data:
+                    continue
+                name = _dedupe_name(_strip_uuid_prefix(os.path.basename(filename)), used)
+                items.append(ExportItem(CATEGORY_PLAN, vidx, plans_dir, name, data_b64=data))
+
+            # 2) Devis fournisseur (documents attachés aux coûts de la version).
+            sup_dir = os.path.join(CATEGORY_BASE_SUBPATH[CATEGORY_SUPPLIER], tag)
+            used = set()
+            for op in (getattr(version, "operations", None) or []):
+                for cost in getattr(op, "costs", {}).values():
+                    for doc in (getattr(cost, "documents", None) or []):
+                        filename = getattr(doc, "filename", None)
+                        data = getattr(doc, "data", None)
+                        if not filename or not data:
+                            continue
+                        name = _dedupe_name(_strip_uuid_prefix(os.path.basename(filename)), used)
+                        items.append(ExportItem(CATEGORY_SUPPLIER, vidx, sup_dir, name, data_b64=data))
+
+            # 4) Fabrication / Qualité : un document généré par version.
+            fab_dir = os.path.join(CATEGORY_BASE_SUBPATH[CATEGORY_FABRICATION], tag)
+            items.append(ExportItem(
+                CATEGORY_FABRICATION, vidx, fab_dir,
+                self.fabrication_filename(project), generate_fabrication=True,
+            ))
+
+        # 3) Offres client XLSX : depuis l'historique (chaque indice embarque son XLSX).
+        history = getattr(project, "export_history", None) or []
+        used_by_dir: Dict[str, set] = {}
+        for entry in history:
+            if not entry.get("xlsx_data_b64"):
+                continue
+            vidx = entry.get("version_index", 1)
+            tag = version_tag(vidx)
+            off_dir = os.path.join(CATEGORY_BASE_SUBPATH[CATEGORY_OFFER], tag)
+            raw = entry.get("xlsx_filename") or f"{entry.get('devis_ref', 'offre')}.xlsx"
+            used = used_by_dir.setdefault(off_dir, set())
+            name = _dedupe_name(os.path.basename(raw), used)
+            items.append(ExportItem(
+                CATEGORY_OFFER, vidx, off_dir, name, data_b64=entry["xlsx_data_b64"],
+            ))
+
+        return items
+
+    def run_export(
+        self,
+        project,
+        dest_folder: str,
+        items: List[ExportItem],
+        create_dirs: Optional[List[str]] = None,
+        model_files: Optional[List[str]] = None,
+        overwrite_decider: Optional[Callable[[str], bool]] = None,
+    ) -> Dict:
+        """Exécute l'export des `items` sélectionnés dans `dest_folder`.
+
+        - `create_dirs` : dossiers relatifs à créer (vides), p. ex. ceux cochés
+          dans l'arborescence modèle.
+        - `model_files` : chemins (relatifs au dossier modèle) de fichiers du
+          modèle à copier à l'identique sous `dest_folder` (copie en flux,
+          robuste aux gros fichiers).
+        - `overwrite_decider` : appelé avec le chemin relatif d'un fichier déjà
+          présent ; renvoie True pour écraser. Absent → on n'écrase pas.
+
+        Robuste : chaque élément est traité dans son propre try/except ; un échec
+        n'interrompt pas les suivants. Retourne un rapport détaillé.
+        """
+        report = {
+            "created_dirs": 0,
+            "copied_files": 0,
+            "skipped_files": 0,
+            "errors": [],              # [(rel_path, message)]
+            "copied": [],              # [rel_path]
+        }
+
+        try:
+            os.makedirs(dest_folder, exist_ok=True)
+        except Exception as e:
+            report["errors"].append((dest_folder, str(e)))
+            return report
+
+        for rel in (create_dirs or []):
+            try:
+                os.makedirs(os.path.join(dest_folder, rel), exist_ok=True)
+                report["created_dirs"] += 1
+            except Exception as e:
+                logger.warning(f"Création dossier échouée {rel} : {e}")
+                report["errors"].append((rel, str(e)))
+
+        # Fichiers du dossier modèle (p. ex. gabarits lourds ~100 Mo) en flux.
+        template = self.get_template_folder()
+        for rel in (model_files or []):
+            dst = os.path.join(dest_folder, rel)
+            try:
+                if os.path.exists(dst) and (
+                    overwrite_decider is None or not overwrite_decider(rel)
+                ):
+                    report["skipped_files"] += 1
+                    continue
+                copy_file_streaming(os.path.join(template, rel), dst)
+                report["copied_files"] += 1
+                report["copied"].append(rel)
+            except Exception as e:
+                logger.warning(f"Copie modèle échouée {rel} : {e}")
+                report["errors"].append((rel, str(e)))
+
+        # Pré-générer les Fabrication/Qualité par version (une seule bascule de version).
+        fab_cache: Dict[int, Optional[bytes]] = {}
+        if any(it.generate_fabrication for it in items):
+            fab_cache = self._generate_fabrication_by_version(
+                project, sorted({it.version_index for it in items if it.generate_fabrication})
+            )
+
+        for item in items:
+            rel = item.rel_path
+            dst = os.path.join(dest_folder, rel)
+            try:
+                if os.path.exists(dst) and (
+                    overwrite_decider is None or not overwrite_decider(rel)
+                ):
+                    report["skipped_files"] += 1
+                    continue
+
+                if item.generate_fabrication:
+                    data = fab_cache.get(item.version_index)
+                    if data is None:
+                        raise RuntimeError("génération Fabrication/Qualité indisponible")
+                    write_bytes_streaming(data, dst)
+                else:
+                    write_bytes_streaming(base64.b64decode(item.data_b64 or ""), dst)
+
+                report["copied_files"] += 1
+                report["copied"].append(rel)
+            except Exception as e:
+                logger.warning(f"Export échoué {rel} : {e}")
+                report["errors"].append((rel, str(e)))
+
+        return report
+
+    def _generate_fabrication_by_version(self, project, version_indices) -> Dict[int, Optional[bytes]]:
+        """Génère le XLSX Fabrication/Qualité pour chaque version (en mémoire).
+
+        Bascule temporairement la version courante du projet, génère, puis
+        restaure. Un échec sur une version renvoie None pour cette version.
+        """
+        import io
+        from infrastructure.export_service import ExportService
+
+        result: Dict[int, Optional[bytes]] = {}
+        exporter = ExportService()
+        original = getattr(project, "current_version_index", None)
+        try:
+            for vidx in version_indices:
+                try:
+                    if hasattr(project, "switch_to_version"):
+                        project.switch_to_version(vidx)
+                    buffer = io.BytesIO()
+                    exporter.export_fabrication_quality(project, buffer)
+                    result[vidx] = buffer.getvalue()
+                except Exception as e:
+                    logger.warning(f"Fabrication/Qualité V{vidx} échouée : {e}")
+                    result[vidx] = None
+        finally:
+            if original is not None and hasattr(project, "switch_to_version"):
+                try:
+                    project.switch_to_version(original)
+                except Exception:
+                    pass
+        return result
+
+
+def copy_file_streaming(src: str, dst: str, chunk: int = _COPY_CHUNK) -> None:
+    """Copie `src` vers `dst` en flux (par blocs), puis recopie les métadonnées.
+
+    Robuste pour les gros fichiers (~100 Mo) : rien n'est chargé entièrement en
+    mémoire. Le fichier destination est écrit sous un nom temporaire puis
+    renommé, afin de ne pas laisser de fichier tronqué si la copie échoue en
+    cours de route (réseau lent/coupé).
+    """
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    tmp = dst + ".part"
+    try:
+        with open(src, "rb") as fsrc, open(tmp, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst, length=chunk)
+        os.replace(tmp, dst)
+        try:
+            shutil.copystat(src, dst)
+        except Exception:
+            # Les dates/permissions ne sont pas critiques : on ne fait pas échouer.
+            pass
+    except Exception:
+        # Nettoyer le fichier partiel pour ne pas laisser de copie tronquée.
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        raise
+
+
+def write_bytes_streaming(data: bytes, dst: str, chunk: int = _COPY_CHUNK) -> None:
+    """Écrit `data` vers `dst` par blocs, via un fichier temporaire (atomique)."""
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    tmp = dst + ".part"
+    try:
+        with open(tmp, "wb") as fdst:
+            for off in range(0, len(data), chunk):
+                fdst.write(data[off:off + chunk])
+        os.replace(tmp, dst)
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        raise
+
+
+def version_tag(version_index: int) -> str:
+    """Nom du sous-dossier par version (V1, V2…)."""
+    return f"V{int(version_index)}"
+
+
+# Catégories d'éléments exportables.
+CATEGORY_PLAN = "plan"
+CATEGORY_OFFER = "offre"
+CATEGORY_SUPPLIER = "devis_fournisseur"
+CATEGORY_FABRICATION = "fabrication"
+
+CATEGORY_LABELS = {
+    CATEGORY_PLAN: "Plans de la pièce",
+    CATEGORY_OFFER: "Offre client (XLSX)",
+    CATEGORY_SUPPLIER: "Devis fournisseur",
+    CATEGORY_FABRICATION: "Fabrication / Qualité",
+}
+
+# Sous-dossier cible (sans le tag de version) par catégorie.
+CATEGORY_BASE_SUBPATH = {
+    CATEGORY_PLAN: PLANS_SUBPATH,
+    CATEGORY_OFFER: COMMERCIAL_SUBPATH,
+    CATEGORY_SUPPLIER: SUPPLIER_QUOTES_SUBPATH,
+    CATEGORY_FABRICATION: PROCESS_SUBPATH,
+}
+
+
+@dataclass
+class ExportItem:
+    """Un élément exportable du projet, rattaché à une version et à un dossier cible.
+
+    - `rel_dir` : dossier cible relatif au dossier projet (inclut le tag de version),
+      p. ex. ``COMMERCIAL\\V1``.
+    - `data_b64` : contenu stocké (plan, devis, offre XLSX) à matérialiser.
+    - `generate_fabrication` : l'élément est généré à la volée depuis la version.
+    """
+
+    category: str
+    version_index: int
+    rel_dir: str
+    filename: str
+    data_b64: Optional[str] = None
+    generate_fabrication: bool = False
+
+    @property
+    def rel_path(self) -> str:
+        return os.path.join(self.rel_dir, self.filename)
 
 
 def _dedupe_name(name: str, used: set) -> str:

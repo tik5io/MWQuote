@@ -209,50 +209,21 @@ class ProjectPanel(wx.Panel):
         main_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
 
         # Project folder section (dossier réseau du projet série)
-        folder_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Dossier projet (réseau)")
+        # Un seul bouton : il ouvre la fenêtre d'export sélectif (destination,
+        # éléments par version, arborescence du dossier modèle).
+        folder_box = wx.StaticBoxSizer(wx.HORIZONTAL, self, "Dossier projet (réseau)")
 
-        folder_row = wx.BoxSizer(wx.HORIZONTAL)
-        self.folder_ctrl = wx.TextCtrl(self)
-        self.folder_ctrl.SetHint("Facultatif — ex. Z:\\0 - PROJET SERIE\\CLIENT\\PROJET")
-        self.folder_ctrl.Bind(wx.EVT_TEXT, self._on_folder_text)
-        folder_row.Add(self.folder_ctrl, 1, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        self.export_btn = wx.Button(self, label="Exporter…")
+        self.export_btn.SetToolTip(
+            "Ouvrir la fenêtre d'export : choisir la destination et les éléments "
+            "(plans, offres, devis fournisseur, fabrication/qualité) à copier, "
+            "rangés par version."
+        )
+        self.export_btn.Bind(wx.EVT_BUTTON, self._on_open_export_dialog)
+        folder_box.Add(self.export_btn, 0, wx.ALL, 6)
 
         self.folder_status = wx.StaticText(self, label="")
-        folder_row.Add(self.folder_status, 0, wx.ALIGN_CENTER_VERTICAL)
-        folder_box.Add(folder_row, 0, wx.EXPAND | wx.ALL, 4)
-
-        btn_row = wx.BoxSizer(wx.HORIZONTAL)
-        self.folder_suggest_btn = wx.Button(self, label="Proposer", size=(-1, -1))
-        self.folder_suggest_btn.SetToolTip("Proposer <racine>\\Client\\Référence")
-        self.folder_suggest_btn.Bind(wx.EVT_BUTTON, self._on_folder_suggest)
-        btn_row.Add(self.folder_suggest_btn, 0, wx.RIGHT, 4)
-
-        self.folder_browse_btn = wx.Button(self, label="Parcourir…")
-        self.folder_browse_btn.Bind(wx.EVT_BUTTON, self._on_folder_browse)
-        btn_row.Add(self.folder_browse_btn, 0, wx.RIGHT, 4)
-
-        self.folder_open_btn = wx.Button(self, label="Ouvrir")
-        self.folder_open_btn.SetToolTip("Ouvrir le dossier dans l'explorateur")
-        self.folder_open_btn.Bind(wx.EVT_BUTTON, self._on_folder_open)
-        btn_row.Add(self.folder_open_btn, 0, wx.RIGHT, 4)
-
-        self.folder_create_btn = wx.Button(self, label="Créer l'arborescence")
-        self.folder_create_btn.SetToolTip("Créer le dossier en copiant l'arborescence du dossier modèle")
-        self.folder_create_btn.Bind(wx.EVT_BUTTON, self._on_folder_create)
-        btn_row.Add(self.folder_create_btn, 0)
-
-        folder_box.Add(btn_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 4)
-
-        # Export Fabrication/Qualité → <dossier projet>\PROCESS
-        export_row = wx.BoxSizer(wx.HORIZONTAL)
-        self.export_fab_btn = wx.Button(self, label="Exporter Fabrication/Qualité (→ PROCESS)")
-        self.export_fab_btn.SetToolTip(
-            "Générer le XLSX Fabrication/Qualité (gamme, temps, commentaires) "
-            "dans le sous-dossier PROCESS du dossier projet"
-        )
-        self.export_fab_btn.Bind(wx.EVT_BUTTON, self._on_export_fab)
-        export_row.Add(self.export_fab_btn, 0)
-        folder_box.Add(export_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 4)
+        folder_box.Add(self.folder_status, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 10)
 
         main_sizer.Add(folder_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
@@ -304,7 +275,6 @@ class ProjectPanel(wx.Panel):
             self.project = project
             self.ref_ctrl.ChangeValue(project.reference or "")
             self.client_ctrl.ChangeValue(project.client or "")
-            self.folder_ctrl.ChangeValue(getattr(project, 'project_folder', "") or "")
             self._update_folder_status()
 
             # Load project date
@@ -332,7 +302,6 @@ class ProjectPanel(wx.Panel):
         if self.project:
             self.project.reference = self.ref_ctrl.GetValue()
             self.project.client = self.client_ctrl.GetValue()
-            self.project.project_folder = self.folder_ctrl.GetValue().strip()
             self.project.is_prototype = self.prototype_chk.GetValue()
 
             # Save project date in ISO format
@@ -351,93 +320,31 @@ class ProjectPanel(wx.Panel):
     # Dossier projet (réseau)                                              #
     # ------------------------------------------------------------------ #
 
-    def _on_folder_text(self, event):
-        self._update_folder_status()
-        self.save_project()
-
     def _update_folder_status(self):
-        folder = self.folder_ctrl.GetValue().strip()
+        folder = (getattr(self.project, 'project_folder', "") or "").strip() if self.project else ""
         if not folder:
-            self.folder_status.SetLabel("(facultatif)")
+            self.folder_status.SetLabel("Aucun dossier associé")
             self.folder_status.SetForegroundColour(wx.Colour(120, 120, 120))
         elif os.path.isdir(folder):
-            self.folder_status.SetLabel("✓ dossier existant")
+            self.folder_status.SetLabel(f"✓ {folder}")
             self.folder_status.SetForegroundColour(wx.Colour(0, 128, 0))
         else:
-            self.folder_status.SetLabel("✗ dossier introuvable")
+            self.folder_status.SetLabel(f"✗ introuvable : {folder}")
             self.folder_status.SetForegroundColour(wx.Colour(180, 0, 0))
         self.folder_status.GetParent().Layout()
 
-    def _on_folder_suggest(self, event):
+    def _on_open_export_dialog(self, event):
         if not self.project:
             return
-        suggestion = self.folder_service.suggest_folder(
-            self.client_ctrl.GetValue(), self.ref_ctrl.GetValue()
-        )
-        if not suggestion:
-            wx.MessageBox(
-                "Renseignez d'abord le client et/ou la référence pour proposer un chemin.",
-                "Dossier projet", wx.OK | wx.ICON_INFORMATION
-            )
-            return
-        self.folder_ctrl.ChangeValue(suggestion)
+        from ui.dialogs.export_dialog import ExportDialog
+        dlg = ExportDialog(self, self.project, self.folder_service)
+        try:
+            dlg.ShowModal()
+        finally:
+            dlg.Destroy()
+        # Le dialog a pu définir project.project_folder ; refléter + marquer modifié.
         self._update_folder_status()
         self.save_project()
-
-    def _on_folder_browse(self, event):
-        current = self.folder_ctrl.GetValue().strip()
-        default_dir = current if os.path.isdir(current) else self.folder_service.get_root()
-        with wx.DirDialog(
-            self, "Choisir le dossier projet", defaultPath=default_dir if os.path.isdir(default_dir) else "",
-            style=wx.DD_DEFAULT_STYLE
-        ) as dlg:
-            if dlg.ShowModal() == wx.ID_OK:
-                self.folder_ctrl.ChangeValue(dlg.GetPath())
-                self._update_folder_status()
-                self.save_project()
-
-    def _on_folder_open(self, event):
-        folder = self.folder_ctrl.GetValue().strip()
-        if not folder:
-            return
-        if not os.path.isdir(folder):
-            wx.MessageBox(
-                f"Le dossier n'existe pas encore :\n{folder}\n\n"
-                "Utilisez « Créer l'arborescence » pour le générer.",
-                "Dossier introuvable", wx.OK | wx.ICON_INFORMATION
-            )
-            return
-        try:
-            os.startfile(folder)
-        except Exception as e:
-            wx.MessageBox(f"Impossible d'ouvrir le dossier :\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
-
-    def _on_folder_create(self, event):
-        if not self.project:
-            return
-        folder = self.folder_ctrl.GetValue().strip()
-        if not folder:
-            # Proposer un chemin si le champ est vide
-            folder = self.folder_service.suggest_folder(
-                self.client_ctrl.GetValue(), self.ref_ctrl.GetValue()
-            )
-            if not folder:
-                wx.MessageBox(
-                    "Aucun chemin défini. Renseignez le dossier ou le client/référence.",
-                    "Dossier projet", wx.OK | wx.ICON_INFORMATION
-                )
-                return
-            self.folder_ctrl.ChangeValue(folder)
-            self.save_project()
-
-        if create_project_folder_interactive(self, self.project, folder, self.folder_service):
-            self._update_folder_status()
-
-    def _on_export_fab(self, event):
-        if not self.project:
-            return
-        if self.on_export_fabrication:
-            self.on_export_fabrication()
 
     def _on_preview_pane_toggled(self, event):
         self.Layout()

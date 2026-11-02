@@ -59,9 +59,9 @@ class MainFrame(wx.Frame):
         if new_quote:
             wx.CallAfter(self._on_new_quote_opened)
 
-        # Article ancien ouvert sans dossier projet → proposer de le créer.
-        if filepath and self.project and not getattr(self.project, 'project_folder', ""):
-            wx.CallAfter(self._maybe_prompt_legacy_project_folder)
+        # NB : plus de proposition automatique de création/export du dossier
+        # projet à l'ouverture d'une fiche. L'export se fait uniquement sur
+        # demande explicite via le bouton « Exporter… » du panneau projet.
 
     def _set_app_icon(self):
         try:
@@ -873,45 +873,6 @@ class MainFrame(wx.Frame):
             os.startfile(output_path)
         except Exception:
             pass
-
-    def _maybe_prompt_legacy_project_folder(self):
-        """Pour un article ancien sans dossier projet : proposer de le créer.
-
-        Si accepté, on propose un chemin <racine>\\Client\\Référence (éditable),
-        puis on copie l'arborescence du dossier modèle et on pré-copie les plans
-        (en demandant avant d'écraser un fichier existant).
-        """
-        if not self.project or getattr(self.project, 'project_folder', ""):
-            return
-
-        service = ProjectFolderService()
-        suggestion = service.suggest_folder(self.project.client, self.project.reference)
-
-        msg = "Ce projet n'a pas de dossier projet associé.\nVoulez-vous le créer maintenant ?"
-        if suggestion:
-            msg += f"\n\nChemin proposé :\n{suggestion}"
-        if wx.MessageBox(msg, "Dossier projet", wx.YES_NO | wx.ICON_QUESTION) != wx.YES:
-            return
-
-        # Laisser l'utilisateur ajuster le chemin (facultatif mais proposé).
-        dlg = wx.TextEntryDialog(
-            self, "Chemin du dossier projet :", "Dossier projet",
-            value=suggestion or service.get_root()
-        )
-        try:
-            if dlg.ShowModal() != wx.ID_OK:
-                return
-            folder = dlg.GetValue().strip()
-        finally:
-            dlg.Destroy()
-
-        if not folder:
-            return
-
-        if create_project_folder_interactive(self, self.project, folder, service):
-            # Refléter le nouveau chemin dans le panneau + marquer le projet modifié.
-            self.project_panel.load_project(self.project)
-            self._mark_dirty()
 
     def _update_title(self):
         """Met à jour le titre de la fenêtre avec la référence ou le nom du projet."""

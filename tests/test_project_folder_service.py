@@ -361,5 +361,90 @@ class TestConfigurationSeriesRoot(unittest.TestCase):
         self.assertEqual(cfg2.get_series_root_folder(), r"D:\autre")
 
 
+class TestExportPlanAndRun(unittest.TestCase):
+    """Plan d'export par version + exécution robuste."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = os.path.join(self.tmp, "0 - PROJET SERIE")
+        self.template = os.path.join(self.root, "0 - EMPTY PROJECT")
+        os.makedirs(os.path.join(self.template, COMMERCIAL_SUBPATH), exist_ok=True)
+        os.makedirs(os.path.join(self.template, PROCESS_SUBPATH), exist_ok=True)
+        # Un fichier modèle « lourd » (simulé) à copier en flux.
+        self.big = os.path.join(self.template, COMMERCIAL_SUBPATH, "gabarit.bin")
+        with open(self.big, "wb") as f:
+            f.write(b"X" * (3 * 1024 * 1024))
+        self.service = ProjectFolderService(config=_FakeConfig(self.root))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _project_two_versions(self):
+        p = Project(name="T", reference="R1", client="ACME")
+        p.add_version("V2")
+        p.switch_to_version(1)
+        p.documents = [Document(filename="plan1.pdf", data=base64.b64encode(b"PDF").decode())]
+        p.export_history = [
+            {"devis_ref": "OD1", "version_index": 1, "revision": "A",
+             "xlsx_filename": "OD1.xlsx", "xlsx_data_b64": base64.b64encode(b"X1").decode()},
+            {"devis_ref": "OD2", "version_index": 2, "revision": "A",
+             "xlsx_filename": "OD2.xlsx", "xlsx_data_b64": base64.b64encode(b"X2").decode()},
+        ]
+        return p
+
+    def test_items_grouped_per_version(self):
+        from infrastructure.project_folder_service import version_tag
+        p = self._project_two_versions()
+        items = self.service.build_export_items(p)
+        offers = {it.rel_dir for it in items if it.category == "offre"}
+        self.assertIn(os.path.join(COMMERCIAL_SUBPATH, version_tag(1)), offers)
+        self.assertIn(os.path.join(COMMERCIAL_SUBPATH, version_tag(2)), offers)
+        # Plans rattachés à leur version ; Fabrication/Qualité une par version.
+        fab = [it for it in items if it.category == "fabrication"]
+        self.assertEqual({it.version_index for it in fab}, {1, 2})
+        self.assertTrue(all(it.generate_fabrication for it in fab))
+
+    def test_run_export_copies_and_generates(self):
+        p = self._project_two_versions()
+        items = self.service.build_export_items(p)
+        dest = os.path.join(self.tmp, "proj")
+        rep = self.service.run_export(
+            p, dest, items,
+            create_dirs=[COMMERCIAL_SUBPATH],
+            model_files=[os.path.join(COMMERCIAL_SUBPATH, "gabarit.bin")],
+        )
+        self.assertEqual(rep["errors"], [])
+        # Offres par version matérialisées.
+        self.assertTrue(os.path.isfile(os.path.join(dest, COMMERCIAL_SUBPATH, "V1", "OD1.xlsx")))
+        self.assertTrue(os.path.isfile(os.path.join(dest, COMMERCIAL_SUBPATH, "V2", "OD2.xlsx")))
+        # Gros fichier modèle copié à l'identique.
+        copied_big = os.path.join(dest, COMMERCIAL_SUBPATH, "gabarit.bin")
+        self.assertEqual(os.path.getsize(copied_big), os.path.getsize(self.big))
+        # Fabrication/Qualité générée par version.
+        self.assertTrue(os.path.isfile(os.path.join(dest, PROCESS_SUBPATH, "V1", "R1_Fabrication_Qualite.xlsx")))
+        self.assertTrue(os.path.isfile(os.path.join(dest, PROCESS_SUBPATH, "V2", "R1_Fabrication_Qualite.xlsx")))
+
+    def test_run_export_is_robust_to_failures(self):
+        from infrastructure.project_folder_service import ExportItem
+        p = self._project_two_versions()
+        items = self.service.build_export_items(p)
+        items.append(ExportItem("plan", 1, "BAD", "x.bin", data_b64="!!bad!!"))
+        dest = os.path.join(self.tmp, "proj2")
+        rep = self.service.run_export(p, dest, items)
+        self.assertEqual(len(rep["errors"]), 1)
+        # Les autres éléments ont tout de même été copiés.
+        self.assertGreater(rep["copied_files"], 0)
+
+    def test_run_export_skips_without_overwrite(self):
+        p = self._project_two_versions()
+        items = [it for it in self.service.build_export_items(p) if it.category == "offre"]
+        dest = os.path.join(self.tmp, "proj3")
+        self.service.run_export(p, dest, items)
+        # Deuxième passe sans autoriser l'écrasement → tout ignoré.
+        rep = self.service.run_export(p, dest, items, overwrite_decider=lambda rel: False)
+        self.assertEqual(rep["copied_files"], 0)
+        self.assertEqual(rep["skipped_files"], len(items))
+
+
 if __name__ == "__main__":
     unittest.main()
