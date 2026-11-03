@@ -10,6 +10,113 @@ from domain.document import Document
 
 from ui.components.document_list_panel import DocumentListPanel
 from infrastructure.project_folder_service import ProjectFolderService
+from infrastructure.configuration import ConfigurationService
+from domain.client import SECTORS, SECTOR_OTHER, PROTOTYPE_LABEL, normalize_sector
+
+
+class ClientManagerDialog(wx.Dialog):
+    """Édition de la base clients : renommer, changer le secteur, supprimer."""
+
+    def __init__(self, parent):
+        super().__init__(parent, title="Gérer les clients", size=(460, 380),
+                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        self.cfg = ConfigurationService.get_instance()
+        self.changes = {}   # ancien nom -> (nouveau nom, secteur) pour les clients modifiés
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        self.list_ctrl = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.list_ctrl.InsertColumn(0, "Nom", width=250)
+        self.list_ctrl.InsertColumn(1, "Secteur", width=150)
+        self.list_ctrl.Bind(wx.EVT_LIST_ITEM_ACTIVATED, lambda e: self._on_edit(e))
+        sizer.Add(self.list_ctrl, 1, wx.EXPAND | wx.ALL, 10)
+        btns = wx.BoxSizer(wx.HORIZONTAL)
+        edit_btn = wx.Button(self, label="Modifier…")
+        edit_btn.Bind(wx.EVT_BUTTON, self._on_edit)
+        del_btn = wx.Button(self, label="Supprimer")
+        del_btn.Bind(wx.EVT_BUTTON, self._on_delete)
+        btns.Add(edit_btn, 0, wx.RIGHT, 6)
+        btns.Add(del_btn, 0)
+        sizer.Add(btns, 0, wx.LEFT | wx.RIGHT, 10)
+        sizer.Add(self.CreateStdDialogButtonSizer(wx.CLOSE), 0, wx.EXPAND | wx.ALL, 8)
+        self.SetSizer(sizer)
+        self.SetAffirmativeId(wx.ID_CLOSE)
+        self._fill()
+
+    def _fill(self):
+        self.list_ctrl.DeleteAllItems()
+        for c in self.cfg.get_clients():
+            idx = self.list_ctrl.InsertItem(self.list_ctrl.GetItemCount(), c["name"])
+            self.list_ctrl.SetItem(idx, 1, normalize_sector(c.get("sector")))
+
+    def _selected(self):
+        idx = self.list_ctrl.GetFirstSelected()
+        if idx < 0:
+            return None
+        return self.list_ctrl.GetItemText(idx, 0), self.list_ctrl.GetItemText(idx, 1)
+
+    def _on_edit(self, event):
+        sel = self._selected()
+        if not sel:
+            return
+        old_name, sector = sel
+        dlg = NewClientDialog(self, name=old_name, sector=sector, title="Modifier le client")
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            new_name, new_sector = dlg.get_client()
+        finally:
+            dlg.Destroy()
+        if not new_name:
+            return
+        self.cfg.update_client(old_name, new_name, new_sector)
+        # Chaîne les modifications successives d'un même client
+        origin = next((o for o, (n, _) in self.changes.items() if n == old_name), old_name)
+        self.changes[origin] = (new_name, new_sector)
+        self._fill()
+
+    def _on_delete(self, event):
+        sel = self._selected()
+        if not sel:
+            return
+        if wx.MessageBox(f"Supprimer le client « {sel[0]} » de la liste ?\n"
+                         "Les projets existants conservent leur client.",
+                         "Supprimer", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
+            self.cfg.remove_client(sel[0])
+            self._fill()
+
+
+class NewClientDialog(wx.Dialog):
+    """Saisie d'un client : nom (à saisir, ou à choisir parmi les clients existants) + secteur."""
+
+    def __init__(self, parent, name="", sector=SECTOR_OTHER, title="Nouveau client", intro=""):
+        super().__init__(parent, title=title)
+        self._clients = ConfigurationService.get_instance().get_clients()
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        if intro:
+            sizer.Add(wx.StaticText(self, label=intro), 0, wx.ALL, 12)
+        grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=10)
+        grid.AddGrowableCol(1, 1)
+        grid.Add(wx.StaticText(self, label="Nom :"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.name_ctrl = wx.ComboBox(self, value=name, choices=[c["name"] for c in self._clients],
+                                     size=(260, -1))
+        self.name_ctrl.Bind(wx.EVT_COMBOBOX, self._on_pick_existing)
+        grid.Add(self.name_ctrl, 1, wx.EXPAND)
+        grid.Add(wx.StaticText(self, label="Secteur d'activité :"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.sector_ctrl = wx.Choice(self, choices=SECTORS)
+        self.sector_ctrl.SetSelection(SECTORS.index(normalize_sector(sector)))
+        grid.Add(self.sector_ctrl, 1, wx.EXPAND)
+        sizer.Add(grid, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
+        sizer.Add(self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL), 0, wx.EXPAND | wx.ALL, 8)
+        self.SetSizerAndFit(sizer)
+
+    def _on_pick_existing(self, event):
+        picked = self.name_ctrl.GetStringSelection()
+        for c in self._clients:
+            if c["name"] == picked:
+                self.sector_ctrl.SetSelection(SECTORS.index(normalize_sector(c.get("sector"))))
+                break
+
+    def get_client(self):
+        return self.name_ctrl.GetValue().strip(), SECTORS[self.sector_ctrl.GetSelection()]
 
 
 class OverwriteSelectionDialog(wx.Dialog):
@@ -166,13 +273,14 @@ def create_project_folder_interactive(parent, project, folder, service=None):
     return True
 
 
-class ProjectPanel(wx.Panel):
+class ProjectPanel(wx.ScrolledWindow):
     """Panel for managing project-level information and drawings."""
     PREVIEW_WIDTH = 320
     PREVIEW_HEIGHT = 180
 
     def __init__(self, parent):
         super().__init__(parent)
+        self.SetScrollRate(10, 10)   # barres de défilement seulement si le contenu dépasse
         self.project = None
         self.on_export_fabrication = None
         self.folder_service = ProjectFolderService()
@@ -181,78 +289,67 @@ class ProjectPanel(wx.Panel):
     def _build_ui(self):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         
-        # Grid for Info
-        grid = wx.FlexGridSizer(cols=4, hgap=10, vgap=10)
+        # Infos projet : libellé + champ, une ligne par info (le panneau gauche est étroit)
+        grid = wx.FlexGridSizer(cols=2, hgap=8, vgap=8)
         grid.AddGrowableCol(1, 1)
-        grid.AddGrowableCol(3, 1)
-        
+
         grid.Add(wx.StaticText(self, label="Référence:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.ref_ctrl = wx.TextCtrl(self)
         self.ref_ctrl.Bind(wx.EVT_TEXT, lambda e: self.save_project())
         grid.Add(self.ref_ctrl, 1, wx.EXPAND)
-        
+
         grid.Add(wx.StaticText(self, label="Client:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.client_ctrl = wx.TextCtrl(self)
-        self.client_ctrl.Bind(wx.EVT_TEXT, lambda e: self.save_project())
+        self.client_ctrl = wx.ComboBox(self, style=wx.CB_READONLY)
+        self.client_ctrl.Bind(wx.EVT_COMBOBOX, self._on_client_selected)
         grid.Add(self.client_ctrl, 1, wx.EXPAND)
-        
-        grid.Add(wx.StaticText(self, label="Date du projet:"), 0, wx.ALIGN_CENTER_VERTICAL)
+
+        grid.Add(wx.StaticText(self, label=""), 0)
+        client_btns = wx.BoxSizer(wx.HORIZONTAL)
+        self.new_client_btn = wx.Button(self, label="Nouveau…")
+        self.new_client_btn.SetToolTip("Créer un nouveau client (nom + secteur d'activité)")
+        self.new_client_btn.Bind(wx.EVT_BUTTON, self._on_new_client)
+        client_btns.Add(self.new_client_btn, 0)
+        self.manage_client_btn = wx.Button(self, label="Gérer…")
+        self.manage_client_btn.SetToolTip("Modifier ou supprimer les clients de la base")
+        self.manage_client_btn.Bind(wx.EVT_BUTTON, self._on_manage_clients)
+        client_btns.Add(self.manage_client_btn, 0, wx.LEFT, 6)
+        grid.Add(client_btns, 0)
+
+        grid.Add(wx.StaticText(self, label="Secteur:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.sector_label = wx.StaticText(self, label="—")
+        grid.Add(self.sector_label, 1, wx.EXPAND)
+
+        grid.Add(wx.StaticText(self, label="Date:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.date_ctrl = wx.adv.DatePickerCtrl(self, style=wx.adv.DP_DROPDOWN | wx.adv.DP_SHOWCENTURY | wx.adv.DP_ALLOWNONE)
         self.date_ctrl.Bind(wx.adv.EVT_DATE_CHANGED, lambda e: self.save_project())
-        grid.Add(self.date_ctrl, 1, wx.EXPAND)
+        grid.Add(self.date_ctrl, 0)
 
+        grid.Add(wx.StaticText(self, label=""), 0)
         self.prototype_chk = wx.CheckBox(self, label="Prototype")
+        self.prototype_chk.SetToolTip(PROTOTYPE_LABEL)
         self.prototype_chk.Bind(wx.EVT_CHECKBOX, lambda e: self.save_project())
         grid.Add(self.prototype_chk, 0, wx.ALIGN_CENTER_VERTICAL)
-        grid.Add(wx.StaticText(self, label=""), 0)  # spacer
 
         main_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
 
         # Project folder section (dossier réseau du projet série)
+        # Un seul bouton : il ouvre la fenêtre d'export sélectif (destination,
+        # éléments par version, arborescence du dossier modèle).
         folder_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Dossier projet (réseau)")
 
-        folder_row = wx.BoxSizer(wx.HORIZONTAL)
-        self.folder_ctrl = wx.TextCtrl(self)
-        self.folder_ctrl.SetHint("Facultatif — ex. Z:\\0 - PROJET SERIE\\CLIENT\\PROJET")
-        self.folder_ctrl.Bind(wx.EVT_TEXT, self._on_folder_text)
-        folder_row.Add(self.folder_ctrl, 1, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
-
-        self.folder_status = wx.StaticText(self, label="")
-        folder_row.Add(self.folder_status, 0, wx.ALIGN_CENTER_VERTICAL)
-        folder_box.Add(folder_row, 0, wx.EXPAND | wx.ALL, 4)
-
-        btn_row = wx.BoxSizer(wx.HORIZONTAL)
-        self.folder_suggest_btn = wx.Button(self, label="Proposer", size=(-1, -1))
-        self.folder_suggest_btn.SetToolTip("Proposer <racine>\\Client\\Référence")
-        self.folder_suggest_btn.Bind(wx.EVT_BUTTON, self._on_folder_suggest)
-        btn_row.Add(self.folder_suggest_btn, 0, wx.RIGHT, 4)
-
-        self.folder_browse_btn = wx.Button(self, label="Parcourir…")
-        self.folder_browse_btn.Bind(wx.EVT_BUTTON, self._on_folder_browse)
-        btn_row.Add(self.folder_browse_btn, 0, wx.RIGHT, 4)
-
-        self.folder_open_btn = wx.Button(self, label="Ouvrir")
-        self.folder_open_btn.SetToolTip("Ouvrir le dossier dans l'explorateur")
-        self.folder_open_btn.Bind(wx.EVT_BUTTON, self._on_folder_open)
-        btn_row.Add(self.folder_open_btn, 0, wx.RIGHT, 4)
-
-        self.folder_create_btn = wx.Button(self, label="Créer l'arborescence")
-        self.folder_create_btn.SetToolTip("Créer le dossier en copiant l'arborescence du dossier modèle")
-        self.folder_create_btn.Bind(wx.EVT_BUTTON, self._on_folder_create)
-        btn_row.Add(self.folder_create_btn, 0)
-
-        folder_box.Add(btn_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 4)
-
-        # Export Fabrication/Qualité → <dossier projet>\PROCESS
-        export_row = wx.BoxSizer(wx.HORIZONTAL)
-        self.export_fab_btn = wx.Button(self, label="Exporter Fabrication/Qualité (→ PROCESS)")
-        self.export_fab_btn.SetToolTip(
-            "Générer le XLSX Fabrication/Qualité (gamme, temps, commentaires) "
-            "dans le sous-dossier PROCESS du dossier projet"
+        self.export_btn = wx.Button(self, label="Exporter…")
+        self.export_btn.SetToolTip(
+            "Ouvrir la fenêtre d'export : choisir la destination et les éléments "
+            "(plans, offres, devis fournisseur, fabrication/qualité) à copier, "
+            "rangés par version."
         )
-        self.export_fab_btn.Bind(wx.EVT_BUTTON, self._on_export_fab)
-        export_row.Add(self.export_fab_btn, 0)
-        folder_box.Add(export_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 4)
+        self.export_btn.Bind(wx.EVT_BUTTON, self._on_open_export_dialog)
+        folder_box.Add(self.export_btn, 0, wx.ALL, 6)
+
+        # Chemin réseau potentiellement long : abrégé au milieu plutôt que de déborder
+        self.folder_status = wx.StaticText(self, label="", style=wx.ST_ELLIPSIZE_MIDDLE)
+        self.folder_status.SetMinSize((10, -1))
+        folder_box.Add(self.folder_status, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
 
         main_sizer.Add(folder_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
@@ -303,8 +400,7 @@ class ProjectPanel(wx.Panel):
         try:
             self.project = project
             self.ref_ctrl.ChangeValue(project.reference or "")
-            self.client_ctrl.ChangeValue(project.client or "")
-            self.folder_ctrl.ChangeValue(getattr(project, 'project_folder', "") or "")
+            self._load_client(project)
             self._update_folder_status()
 
             # Load project date
@@ -318,7 +414,9 @@ class ProjectPanel(wx.Panel):
                 except (ValueError, AttributeError):
                     pass  # Invalid date format, leave empty
             
-            self.prototype_chk.SetValue(bool(getattr(project, 'is_prototype', False)))
+            # Le statut prototype est propre à la version affichée
+            self.prototype_chk.SetLabel(f"Prototype (V{project.current_version_index})")
+            self.prototype_chk.SetValue(bool(project.is_prototype))
             self.doc_list.load_documents(project.documents)
             self._set_preview_bitmap(getattr(project, 'preview_image', None))
         finally:
@@ -331,8 +429,6 @@ class ProjectPanel(wx.Panel):
             
         if self.project:
             self.project.reference = self.ref_ctrl.GetValue()
-            self.project.client = self.client_ctrl.GetValue()
-            self.project.project_folder = self.folder_ctrl.GetValue().strip()
             self.project.is_prototype = self.prototype_chk.GetValue()
 
             # Save project date in ISO format
@@ -348,96 +444,130 @@ class ProjectPanel(wx.Panel):
                 self.on_project_changed()
 
     # ------------------------------------------------------------------ #
+    # Clients                                                              #
+    # ------------------------------------------------------------------ #
+
+    def _refresh_client_choices(self, selected=""):
+        names = [c["name"] for c in ConfigurationService.get_instance().get_clients()]
+        self.client_ctrl.Set(names)
+        if selected in names:
+            self.client_ctrl.SetSelection(names.index(selected))
+
+    def _load_client(self, project):
+        """Affiche le client du projet. Un client absent de la liste (ancien fichier) ouvre
+        la fenêtre de création, pré-remplie avec le nom existant."""
+        cfg = ConfigurationService.get_instance()
+        name = (project.client or "").strip()
+        known = cfg.get_client_sector(name) if name else None
+        if known is not None:
+            project.client_sector = known   # la base clients fait foi
+        self._refresh_client_choices(name)
+        self._update_sector_label(project.client_sector if name else "")
+        if name and known is None:
+            wx.CallAfter(self._prompt_unknown_client, project, name)
+
+    def _prompt_unknown_client(self, project, name):
+        if project is not self.project:
+            return  # un autre projet a été ouvert entre-temps
+        dlg = NewClientDialog(
+            self, name=name, sector=project.client_sector or SECTOR_OTHER,
+            title="Client non référencé",
+            intro=f"Le client « {name} » n'est pas dans la liste.\n"
+                  "Validez pour le créer, ou choisissez un client existant.",
+        )
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            new_name, sector = dlg.get_client()
+        finally:
+            dlg.Destroy()
+        if new_name:
+            ConfigurationService.get_instance().add_client(new_name, sector)
+            self._refresh_client_choices(new_name)
+            self._apply_client(new_name, sector)
+
+    def _update_sector_label(self, sector):
+        self.sector_label.SetLabel(normalize_sector(sector) if sector else "—")
+        self.sector_label.GetParent().Layout()
+
+    def _apply_client(self, name, sector):
+        self.project.client = name
+        self.project.client_sector = sector
+        self._update_sector_label(sector)
+        if getattr(self, "on_project_changed", None):
+            self.on_project_changed()
+
+    def _on_client_selected(self, event):
+        if getattr(self, "_is_loading", False) or not self.project:
+            return
+        name = self.client_ctrl.GetStringSelection()
+        sector = ConfigurationService.get_instance().get_client_sector(name) or SECTOR_OTHER
+        self._apply_client(name, sector)
+
+    def _on_manage_clients(self, event):
+        dlg = ClientManagerDialog(self)
+        try:
+            dlg.ShowModal()
+            changes = dlg.changes
+        finally:
+            dlg.Destroy()
+        current = (self.project.client or "").strip() if self.project else ""
+        if current in changes:
+            name, sector = changes[current]
+            self._refresh_client_choices(name)
+            self._apply_client(name, sector)
+        else:
+            self._refresh_client_choices(current)
+            if current:
+                sector = ConfigurationService.get_instance().get_client_sector(current)
+                if sector is not None and sector != self.project.client_sector:
+                    self._apply_client(current, sector)
+
+    def _on_new_client(self, event):
+        if not self.project:
+            return
+        dlg = NewClientDialog(self)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            name, sector = dlg.get_client()
+        finally:
+            dlg.Destroy()
+        if not name:
+            return
+        ConfigurationService.get_instance().add_client(name, sector)
+        self._refresh_client_choices(name)
+        self._apply_client(name, sector)
+
+    # ------------------------------------------------------------------ #
     # Dossier projet (réseau)                                              #
     # ------------------------------------------------------------------ #
 
-    def _on_folder_text(self, event):
-        self._update_folder_status()
-        self.save_project()
-
     def _update_folder_status(self):
-        folder = self.folder_ctrl.GetValue().strip()
+        folder = (getattr(self.project, 'project_folder', "") or "").strip() if self.project else ""
         if not folder:
-            self.folder_status.SetLabel("(facultatif)")
+            self.folder_status.SetLabel("Aucun dossier associé")
             self.folder_status.SetForegroundColour(wx.Colour(120, 120, 120))
         elif os.path.isdir(folder):
-            self.folder_status.SetLabel("✓ dossier existant")
+            self.folder_status.SetLabel(f"✓ {folder}")
             self.folder_status.SetForegroundColour(wx.Colour(0, 128, 0))
         else:
-            self.folder_status.SetLabel("✗ dossier introuvable")
+            self.folder_status.SetLabel(f"✗ introuvable : {folder}")
             self.folder_status.SetForegroundColour(wx.Colour(180, 0, 0))
         self.folder_status.GetParent().Layout()
 
-    def _on_folder_suggest(self, event):
+    def _on_open_export_dialog(self, event):
         if not self.project:
             return
-        suggestion = self.folder_service.suggest_folder(
-            self.client_ctrl.GetValue(), self.ref_ctrl.GetValue()
-        )
-        if not suggestion:
-            wx.MessageBox(
-                "Renseignez d'abord le client et/ou la référence pour proposer un chemin.",
-                "Dossier projet", wx.OK | wx.ICON_INFORMATION
-            )
-            return
-        self.folder_ctrl.ChangeValue(suggestion)
+        from ui.dialogs.export_dialog import ExportDialog
+        dlg = ExportDialog(self, self.project, self.folder_service)
+        try:
+            dlg.ShowModal()
+        finally:
+            dlg.Destroy()
+        # Le dialog a pu définir project.project_folder ; refléter + marquer modifié.
         self._update_folder_status()
         self.save_project()
-
-    def _on_folder_browse(self, event):
-        current = self.folder_ctrl.GetValue().strip()
-        default_dir = current if os.path.isdir(current) else self.folder_service.get_root()
-        with wx.DirDialog(
-            self, "Choisir le dossier projet", defaultPath=default_dir if os.path.isdir(default_dir) else "",
-            style=wx.DD_DEFAULT_STYLE
-        ) as dlg:
-            if dlg.ShowModal() == wx.ID_OK:
-                self.folder_ctrl.ChangeValue(dlg.GetPath())
-                self._update_folder_status()
-                self.save_project()
-
-    def _on_folder_open(self, event):
-        folder = self.folder_ctrl.GetValue().strip()
-        if not folder:
-            return
-        if not os.path.isdir(folder):
-            wx.MessageBox(
-                f"Le dossier n'existe pas encore :\n{folder}\n\n"
-                "Utilisez « Créer l'arborescence » pour le générer.",
-                "Dossier introuvable", wx.OK | wx.ICON_INFORMATION
-            )
-            return
-        try:
-            os.startfile(folder)
-        except Exception as e:
-            wx.MessageBox(f"Impossible d'ouvrir le dossier :\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
-
-    def _on_folder_create(self, event):
-        if not self.project:
-            return
-        folder = self.folder_ctrl.GetValue().strip()
-        if not folder:
-            # Proposer un chemin si le champ est vide
-            folder = self.folder_service.suggest_folder(
-                self.client_ctrl.GetValue(), self.ref_ctrl.GetValue()
-            )
-            if not folder:
-                wx.MessageBox(
-                    "Aucun chemin défini. Renseignez le dossier ou le client/référence.",
-                    "Dossier projet", wx.OK | wx.ICON_INFORMATION
-                )
-                return
-            self.folder_ctrl.ChangeValue(folder)
-            self.save_project()
-
-        if create_project_folder_interactive(self, self.project, folder, self.folder_service):
-            self._update_folder_status()
-
-    def _on_export_fab(self, event):
-        if not self.project:
-            return
-        if self.on_export_fabrication:
-            self.on_export_fabrication()
 
     def _on_preview_pane_toggled(self, event):
         self.Layout()

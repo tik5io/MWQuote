@@ -25,6 +25,8 @@ class SalesPricingPanel(wx.Panel):
         self.on_select_revision = None  # callback(entry) → recharge les coefficients d'un indice
         self.on_select_version = None   # callback(version_index)
         self.on_open_revision = None    # callback(entry) → ouvre le XLSX
+        self.on_export_quality = None   # callback → MainFrame : export XLSX méthode / qualité
+        self.on_comment_changed = None  # callback → MainFrame : commentaire d'offre modifié (projet à enregistrer)
         self._building_tree = False
         self._offer_mode = "new"
         self._build_ui()
@@ -59,7 +61,12 @@ class SalesPricingPanel(wx.Panel):
         self.btn_preview.Bind(wx.EVT_BUTTON, self._on_preview_offer)
         self.btn_new_offer = RibbonButton(ribbon, "💾", "Convertir en offre", accent=ACCENT, big=True, size=(120, 78))
         self.btn_new_offer.Bind(wx.EVT_BUTTON, self._on_generate_offer)
-        for b in (self.btn_preview, self.btn_new_offer):
+        self.btn_quality = RibbonButton(ribbon, "📎", "Export méthode", accent=ACCENT, big=True, size=(120, 78))
+        self.btn_quality.SetToolTip(
+            "Exporte le XLSX méthode / qualité de cette version (gamme, temps, commentaires), "
+            "avec les commentaires projet de l'offre.")
+        self.btn_quality.Bind(wx.EVT_BUTTON, lambda e: self.on_export_quality() if callable(self.on_export_quality) else None)
+        for b in (self.btn_preview, self.btn_new_offer, self.btn_quality):
             btns.Add(b, 0, wx.RIGHT, 8)
         ribbon_sizer.Add(btns, 0, wx.ALL, 10)
         ribbon.SetSizer(ribbon_sizer)
@@ -73,6 +80,18 @@ class SalesPricingPanel(wx.Panel):
         self.offer_hint = wx.StaticText(self.offers_panel, label="")
         self.offer_hint.SetForegroundColour(wx.Colour(100, 116, 139))
         offers_sizer.Add(self.offer_hint, 0, wx.ALL | wx.EXPAND, 10)
+
+        # Commentaires projet de l'offre sélectionnée (retour client, conditions spécifiques…) :
+        # repris dans l'export méthode / qualité.
+        self.comment_label = wx.StaticText(self.offers_panel, label="Commentaires projet")
+        self.comment_label.SetFont(wx.Font(wx.FontInfo(9).FaceName("Segoe UI").Bold()))
+        offers_sizer.Add(self.comment_label, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        self.comment_ctrl = wx.TextCtrl(self.offers_panel, style=wx.TE_MULTILINE, size=(-1, 110))
+        self.comment_ctrl.SetHint("Retour client, conditions spécifiques… (disponible une fois l'offre émise)")
+        self.comment_ctrl.Bind(wx.EVT_TEXT, self._on_comment_text)
+        offers_sizer.Add(self.comment_ctrl, 0, wx.ALL | wx.EXPAND, 10)
+        self._comment_key = None        # (version_index, devis_ref) de l'offre affichée
+        self._loading_comment = False
         self.offers_panel.SetSizer(offers_sizer)
         self.offer_tree.Bind(wx.EVT_TREE_SEL_CHANGED, self._on_offer_tree_selected)
         self.offer_tree.Bind(wx.EVT_TREE_ITEM_ACTIVATED, self._on_offer_tree_activated)
@@ -292,8 +311,43 @@ class SalesPricingPanel(wx.Panel):
                     "Convertit cette version en offre (indice A) : nouveau numéro de devis, fichier XLSX choisi.\n"
                     "La gamme est alors figée : toute modification de gamme créera une nouvelle version, "
                     "toute modification de coefficients un nouvel indice.")
+        self.btn_quality.Show(bool(ref))
+        self._refresh_comment()
         self.offers_panel.Layout()
         self.btn_preview.GetParent().Layout()
+
+    def _current_offer_key(self):
+        """(version_index, devis_ref) de l'offre visée : nœud sélectionné, sinon dernière offre de la version."""
+        if not self.project:
+            return None
+        data = self._selected_data()
+        if data and data.get("type") in ("offer", "revision") and data.get("devis_ref"):
+            return data["version_index"], data["devis_ref"]
+        idx = self.project.current_version_index
+        ref = offers.latest_offer_ref(self.project.export_history, idx)
+        return (idx, ref) if ref else None
+
+    def _refresh_comment(self):
+        """Champ de commentaires : actif seulement quand une offre est émise ; affiche celui de l'offre visée."""
+        key = self._current_offer_key()
+        self._comment_key = key
+        self._loading_comment = True
+        try:
+            self.comment_ctrl.Enable(key is not None)
+            self.comment_label.SetLabel(f"Commentaires projet · offre {key[1]}" if key else "Commentaires projet")
+            text = offers.offer_comment(self.project.export_history, *key) if key else ""
+            if self.comment_ctrl.GetValue() != text:
+                self.comment_ctrl.ChangeValue(text)
+        finally:
+            self._loading_comment = False
+
+    def _on_comment_text(self, event):
+        if self._loading_comment or not self._comment_key or not self.project:
+            return
+        version_index, devis_ref = self._comment_key
+        if offers.set_offer_comment(self.project.export_history, version_index, devis_ref, self.comment_ctrl.GetValue()):
+            if callable(self.on_comment_changed):
+                self.on_comment_changed()
 
     def _on_offer_tree_selected(self, event):
         if getattr(self, "_building_tree", False):
@@ -552,7 +606,7 @@ class SalesPricingPanel(wx.Panel):
             ("Tooling / Outillages", sd.tooling_cost_per_piece(), sd.tooling_price_per_piece()),
             ("Setup / Démarrage", sd.setup_cost_per_piece(), sd.setup_price_per_piece()),
             ("Contrôle qualité", sd.control_cost_per_piece(), sd.control_cost_per_piece()),
-            ("Matières premières / achats", sd.purchase_cost_per_piece(), sd.purchase_cost_per_piece() * (1 + sd.material_margin)),
+            ("Matières premières / achats", sd.purchase_cost_per_piece(), sd.purchase_price_per_piece()),
             ("Logistique / Emballage", sd.logistics_cost_per_piece, sd.logistics_cost_per_piece * (1 + sd.logistics_margin)),
         ]
         rows.append(("SOUS-TOTAL (avant marge commerciale)", sd.total_cost_per_piece(), sd.subtotal_with_item_margins()))

@@ -7,6 +7,8 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from infrastructure.logging_service import get_module_logger
 from domain.cost import CostType
+from infrastructure.configuration import ConfigurationService
+from domain.client import traceability_mentions, PROTOTYPE_LINES
 
 logger = get_module_logger("ExportService", "export_project.log")
 
@@ -554,15 +556,13 @@ class ExportService:
 
         lines = op_lines + tooling_comments
 
+        # Le secteur est hérité du client (base clients) ; la copie portée par le projet
+        # ne sert que de repli si le client n'y figure plus.
+        sector = ConfigurationService.get_instance().get_client_sector(getattr(project, "client", ""))
+        lines.extend(traceability_mentions(sector or getattr(project, "client_sector", "")))
+
         if getattr(project, "is_prototype", False):
-            lines.append(
-                "Offre réalisée dans le cadre d'une production prototype - "
-                "aucune validation ISO 13485 formelle n'est assurée."
-            )
-            lines.append(
-                "Offer produced in a prototype context - "
-                "no formal ISO 13485 validation is provided."
-            )
+            lines.extend(PROTOTYPE_LINES)
 
         text = "\n".join(lines) if lines else "-"
         logger.info(f"Global comment lines: {len(lines)}")
@@ -659,7 +659,7 @@ class ExportService:
         # ---- CAPEX ----
         r += 1
         ws.merge_cells(f"A{r}:E{r}")
-        hdr(ws[f"A{r}"], f"CAPEX – INVESTISSEMENTS  |  Amort. = durée programme ({sd.program_lifetime_years} ans)  |  Marge globale {sd.capex_global_margin*100:.0f}%")
+        hdr(ws[f"A{r}"], f"CAPEX – INVESTISSEMENTS  |  Amort. = durée programme ({sd.program_lifetime_years} ans)  |  Marge par ligne")
         ws.row_dimensions[r].height = 18
         r += 1
         for col, text in zip(["A","B","C","D","E"],
@@ -720,13 +720,10 @@ class ExportService:
         ws.row_dimensions[r].height = 18
         r += 1
         for label, val, fmt in [
-            ("Temps montage outillage", sd.effective_setup_time_h(), "0.00"),
-            ("Validation SOP / 1er art.", sd.sop_validation_time_h, "0.00"),
-            ("Taille de lot / campagne", sd.lot_size, "#,##0"),
-            ("Campagnes / an", sd.campaigns_per_year(), "0.0"),
-            ("Coût setup / campagne €", sd.setup_cost_per_campaign(), "#,##0.00"),
-            ("Coût setup total / an €", sd.setup_cost_per_year(), "#,##0.00"),
-            ("Setup amorti / pièce (prix)", sd.setup_price_per_piece(), "#,##0.0000"),
+            ("Temps de lancement total / équipe (h)", sd.setup_launch_time_total_h(), "0.00"),
+            ("Pièces produites / équipe (goulot)", sd.pieces_per_shift(), "#,##0"),
+            ("Coût lancement / équipe €", sd.setup_launch_cost_per_shift(), "#,##0.00"),
+            ("Setup / pièce (prix)", sd.setup_price_per_piece(), "#,##0.00"),
         ]:
             lbl(ws[f"A{r}"], label)
             inp(ws[f"B{r}"], val, fmt)
@@ -922,6 +919,25 @@ class ExportService:
                 ws.cell(row=row, column=1, value=f"Phase : {phase.display_label}").font = subheader_font
                 row += 1
 
+            # Commentaires projet des offres émises sur la version (retour client, conditions spécifiques…)
+            from domain import offers as offers_mod
+            offer_comments = offers_mod.version_offer_comments(
+                getattr(project, "export_history", None) or [], getattr(project, "current_version_index", 1))
+            comment_rows = set()
+            if offer_comments:
+                ws.cell(row=row, column=1, value="Commentaires projet (offres)").font = subheader_font
+                row += 1
+                for devis_ref, text in offer_comments:
+                    ws.cell(row=row, column=1, value=f"Offre {devis_ref}").font = normal_font
+                    ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=6)
+                    c = ws.cell(row=row, column=2, value=text)
+                    c.font = normal_font
+                    c.alignment = Alignment(wrap_text=True, vertical="top")
+                    ws.row_dimensions[row].height = max(15, 15 * (text.count("\n") + 1 + len(text) // 110))
+                    comment_rows.add(row)
+                    row += 1
+                row += 1
+
             # Parcourir les opérations
             for op in getattr(project, "operations", []):
                 # Ligne d'opération
@@ -964,7 +980,8 @@ class ExportService:
 
             # Ajuster la hauteur des lignes pour le texte wrappé
             for r in range(1, row):
-                ws.row_dimensions[r].height = None  # Auto-height
+                if r not in comment_rows:           # cellules fusionnées : pas d'auto-hauteur
+                    ws.row_dimensions[r].height = None  # Auto-height
 
             # Sauvegarder
             wb.save(output_path)

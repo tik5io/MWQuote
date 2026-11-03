@@ -15,7 +15,7 @@ from domain.operation import Operation
 from domain.operation import TOOLING_TYPOLOGY
 from domain.cost import CostItem, CostType, PricingType, PricingStructure, PricingTier, ConversionType, ToolingLine
 from domain.document import Document
-from domain.serie_data import SerieData, CapexItem, ToolingItem, MachinePost
+from domain.serie_data import SerieData, CapexItem, ToolingItem, MachinePost, SeriePurchaseItem
 
 # Constants
 PROJECT_JSON_FILENAME = "project.json"
@@ -193,6 +193,7 @@ class PersistenceService:
                     'label': version.label,
                     'created_at': version.created_at,
                     'created_from_version': version.created_from_version,
+                    'is_prototype': version.is_prototype,
                     'operations': ops_data,
                     'documents': version_doc_paths,
                     # Miroir v3.0 (lecture par les postes non mis à jour)
@@ -209,10 +210,12 @@ class PersistenceService:
                 'name': project.name,
                 'reference': project.reference,
                 'client': project.client,
+                'client_sector': getattr(project, 'client_sector', ""),
                 'mwq_uuid': project.mwq_uuid,
                 'project_date': project.project_date,
                 'project_folder': getattr(project, 'project_folder', ""),
-                'is_prototype': project.is_prototype,
+                # Miroir (anciens lecteurs) : le statut réel est porté par chaque version
+                'is_prototype': any(v.is_prototype for v in project.versions),
                 'preview_image': project_preview,
                 'export_history': export_history_for_json,
                 'versions': versions_data,
@@ -345,6 +348,10 @@ class PersistenceService:
                 for v_data in data['versions']:
                     v_prefix = f"v{v_data['version_index']}/"
                     built = PersistenceService._load_version(zf, v_data, v_prefix)
+                    # Ancien fichier : le statut prototype était porté par le projet
+                    proto = bool(v_data.get('is_prototype', data.get('is_prototype', False)))
+                    for b in built:
+                        b.is_prototype = proto
                     versions.append(built[0])
                     extras.extend(built[1:])
                 PersistenceService._attach_split_versions(versions, extras, export_history)
@@ -353,10 +360,10 @@ class PersistenceService:
                     name=data['name'],
                     reference=data.get('reference', ""),
                     client=data.get('client', ""),
+                    client_sector=data.get('client_sector', ""),
                     mwq_uuid=data.get('mwq_uuid', ""),
                     project_date=data.get('project_date'),
                     project_folder=data.get('project_folder', ""),
-                    is_prototype=data.get('is_prototype', False),
                     preview_image=preview_image,
                     export_history=export_history,
                     versions=versions,
@@ -828,6 +835,7 @@ class PersistenceService:
                 cycle_time_s=x.get('cycle_time_s', 0.0),
                 mo_rate_euro_per_h=x.get('mo_rate_euro_per_h', 0.0),
                 machines_available=x.get('machines_available', 1),
+                setup_launch_h=x.get('setup_launch_h', 0.0),
             ))
 
         return SerieData(
@@ -848,12 +856,16 @@ class PersistenceService:
                     cost=x.get('cost', 0.0),
                     residual_value=x.get('residual_value', 0.0),
                     margin_rate=x.get('margin_rate', 0.15),
+                    operation_code=x.get('operation_code', ''),
+                    machines_count=x.get('machines_count', 1),
                 )
                 for x in d.get('capex_items', [])
             ],
             capex_global_margin=d.get('capex_global_margin', 0.15),
             tooling_items=[ToolingItem(**x) for x in d.get('tooling_items', [])],
             machine_posts=posts,
+            disabled_operation_codes=list(d.get('disabled_operation_codes', []) or []),
+            setup_launch_time_h=d.get('setup_launch_time_h', 0.5),
             tooling_setup_time_h=d.get('tooling_setup_time_h', 1.0),
             sop_validation_time_h=d.get('sop_validation_time_h', 0.5),
             lot_size=d.get('lot_size', 5000),
@@ -866,6 +878,22 @@ class PersistenceService:
             material_margin=d.get('material_margin', 0.10),
             logistics_cost_per_piece=d.get('logistics_cost_per_piece', 0.0),
             logistics_margin=d.get('logistics_margin', 0.05),
+            purchase_items=[
+                SeriePurchaseItem(
+                    name=x.get('name', 'Achat'),
+                    mode=x.get('mode', 'unit'),
+                    # Compat : anciennes lignes n'avaient qu'un prix/pièce.
+                    unit_price=x.get('unit_price', x.get('cost_per_piece', 0.0)),
+                    price_per_meter=x.get('price_per_meter', 0.0),
+                    length_per_piece_m=x.get('length_per_piece_m', 0.0),
+                    lot_amount=x.get('lot_amount', 0.0),
+                    lot_size=x.get('lot_size', 1),
+                    margin_rate=x.get('margin_rate', 0.10),
+                    operation_code=x.get('operation_code', ''),
+                    needs_edit=x.get('needs_edit', False),
+                )
+                for x in d.get('purchase_items', [])
+            ],
             global_commercial_margin=d.get('global_commercial_margin', 0.25),
             sync_purchases=d.get('sync_purchases', False),
             sync_tooling=d.get('sync_tooling', False),

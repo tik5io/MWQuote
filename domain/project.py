@@ -38,6 +38,7 @@ class Project:
         volume_margin_rates: dict = None,
         serie_data: Optional[SerieData] = None,
         is_prototype: bool = False,
+        client_sector: str = "",
         # Champs obsolètes — acceptés en lecture pour compatibilité fichiers anciens
         export_history: List[dict] = None,
         status: str = None,
@@ -48,11 +49,11 @@ class Project:
         self.name = name
         self.reference = reference
         self.client = client
+        self.client_sector: str = client_sector or ""   # "" = non renseigné (traité comme « Autre »)
         self.mwq_uuid = mwq_uuid
         self.project_date = project_date
         self.project_folder = project_folder or ""
         self.preview_image = preview_image
-        self.is_prototype: bool = bool(is_prototype)
         self._current_version_index: int = current_version_index
         self.export_history: List[dict] = export_history if export_history is not None else []
 
@@ -77,6 +78,10 @@ class Project:
                 v2.created_from_version = 1
                 v2.phase = build_serie_phase(serie_data)
                 self._versions.append(v2)
+            # Argument de compatibilité (anciens fichiers / appelants) : le statut
+            # prototype appartient à la version, pas au projet.
+            for v in self._versions:
+                v.is_prototype = bool(is_prototype)
 
     # ------------------------------------------------------------------ #
     # Version management                                                    #
@@ -134,6 +139,7 @@ class Project:
             name=self.name,
             reference=self.reference,
             client=self.client,
+            client_sector=self.client_sector,
             mwq_uuid=str(uuid.uuid4()),
             project_date=self.project_date,
             project_folder=self.project_folder,
@@ -202,7 +208,11 @@ class Project:
         version = self.add_version(label, base_version_index=base_version_index)
         version.configure(kind, sale_quantities=sale_quantities, annual_volume=annual_volume)
         if kind == PhaseKind.SERIE and version.phase.serie_data is not None:
-            version.phase.serie_data.sync_from_project(self, phase=version.phase, operations=version.operations)
+            sd = version.phase.serie_data
+            sd.sync_from_project(self, phase=version.phase, operations=version.operations)
+            # Reprise des achats / sous-traitance de la gamme comme lignes série
+            # éditables (prix indéterminé → 0 « À éditer »).
+            sd.seed_purchases_from_operations(version.operations, version.phase)
         return version
 
     @contextmanager
@@ -244,6 +254,15 @@ class Project:
             raise ValueError("Une version Taux horaire n'a pas de données Décomposé : "
                              "créer une version Décomposé (add_version_variant).")
         version.phase.serie_data = value
+
+    @property
+    def is_prototype(self) -> bool:
+        """Statut prototype de la version courante."""
+        return bool(self.current_version.is_prototype)
+
+    @is_prototype.setter
+    def is_prototype(self, value: bool):
+        self.current_version.is_prototype = bool(value)
 
     # Champs obsolètes — propriétés fantômes pour compatibilité code existant
     @property

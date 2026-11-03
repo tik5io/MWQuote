@@ -132,6 +132,45 @@ class ConfigurationService:
         """Nom du dossier modèle (arborescence copiée pour un nouveau projet)."""
         return self.config.get("series_empty_project_name") or self.DEFAULT_EMPTY_PROJECT_NAME
 
+    def get_clients(self) -> List[dict]:
+        """Liste des clients [{'name', 'sector'}], triée par nom."""
+        clients = [c for c in self.config.get("clients", []) if isinstance(c, dict) and c.get("name")]
+        return sorted(clients, key=lambda c: c["name"].lower())
+
+    def get_client_sector(self, name: str) -> Optional[str]:
+        for c in self.get_clients():
+            if c["name"].strip().lower() == (name or "").strip().lower():
+                return c.get("sector")
+        return None
+
+    def add_client(self, name: str, sector: str):
+        """Ajoute ou met à jour (même nom, casse ignorée) un client."""
+        name = (name or "").strip()
+        if not name:
+            return
+        clients = [c for c in self.config.get("clients", [])
+                   if isinstance(c, dict) and c.get("name", "").strip().lower() != name.lower()]
+        clients.append({"name": name, "sector": sector})
+        self.config["clients"] = clients
+        self.save()
+
+    def update_client(self, old_name: str, new_name: str, sector: str):
+        """Renomme et/ou change le secteur d'un client."""
+        new_name = (new_name or "").strip()
+        if not new_name:
+            return
+        clients = [c for c in self.config.get("clients", [])
+                   if isinstance(c, dict) and c.get("name", "").strip().lower() not in
+                   (old_name.strip().lower(), new_name.lower())]
+        clients.append({"name": new_name, "sector": sector})
+        self.config["clients"] = clients
+        self.save()
+
+    def remove_client(self, name: str):
+        self.config["clients"] = [c for c in self.config.get("clients", [])
+                                  if isinstance(c, dict) and c.get("name", "").strip().lower() != name.strip().lower()]
+        self.save()
+
     def use_uuid_for_filenames(self) -> bool:
         """Check if UUID-based filenames should be used."""
         return self.config.get("use_uuid_for_filenames", True)

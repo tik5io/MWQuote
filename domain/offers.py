@@ -125,6 +125,43 @@ def frozen_by(history: List[dict], version_index: int) -> Optional[str]:
     return None
 
 
+def offer_comment(history: List[dict], version_index: int, devis_ref: str) -> str:
+    """Commentaire projet d'une offre (retour client, conditions spécifiques…).
+
+    Il est porté par l'offre entière (tous ses indices) : on lit le dernier indice qui en a un.
+    """
+    text = ""
+    for e in history or []:
+        if e.get("version_index", 1) == version_index and e.get("devis_ref") == devis_ref and e.get("comment"):
+            text = e["comment"]
+    return text
+
+
+def set_offer_comment(history: List[dict], version_index: int, devis_ref: str, text: str) -> bool:
+    """Enregistre le commentaire sur tous les indices de l'offre. False si l'offre n'existe pas."""
+    found = False
+    for e in history or []:
+        if e.get("version_index", 1) == version_index and e.get("devis_ref") == devis_ref:
+            found = True
+            if text:
+                e["comment"] = text
+            else:
+                e.pop("comment", None)
+    return found
+
+
+def version_offer_comments(history: List[dict], version_index: int) -> List[tuple]:
+    """[(devis_ref, commentaire)] des offres commentées de la version, dans l'ordre d'émission."""
+    result = []
+    for g in group_offers(history or []):
+        if g["version_index"] != version_index:
+            continue
+        text = offer_comment(history, version_index, g["devis_ref"])
+        if text.strip():
+            result.append((g["devis_ref"], text.strip()))
+    return result
+
+
 def latest_offer_ref(history: List[dict], version_index: int):
     """Numéro de devis de la dernière offre émise sur la version (None si la version n'a pas d'offre)."""
     refs = [e.get("devis_ref") for e in history or [] if e.get("version_index", 1) == version_index and e.get("devis_ref")]

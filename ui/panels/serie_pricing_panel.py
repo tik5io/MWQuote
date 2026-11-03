@@ -3,8 +3,11 @@ import dataclasses
 import wx
 import wx.grid as gridlib
 from domain.project import Project
-from domain.serie_data import SerieData, CapexItem, ToolingItem, MachinePost
-from ui.components.serie_sensitivity_panel import SerieSensitivityPanel
+from domain.serie_data import SerieData, CapexItem, ToolingItem, MachinePost, SeriePurchaseItem
+from domain.cost import CostType
+from domain.operation import SUBCONTRACTING_TYPOLOGY, TOOLING_TYPOLOGY
+from ui.components.serie_sensitivity_panel import _eur
+from ui.components.serie_analysis_charts import PriceDecompositionBar, CapacityBottleneckChart, COST_COLOURS
 from ui.components.ribbon_button import RibbonButton, TOOLING
 
 
@@ -41,17 +44,30 @@ TOTAL_BG   = wx.Colour(200, 220, 255)
 
 class CapexDialog(wx.Dialog):
     def __init__(self, parent, item: CapexItem = None):
-        super().__init__(parent, title="CAPEX – Équipement", size=(420, 240))
+        super().__init__(parent, title="CAPEX – Équipement", size=(440, 300))
         item = item or CapexItem()
+        self._src = item
         sizer = wx.BoxSizer(wx.VERTICAL)
-        fg = wx.FlexGridSizer(4, 2, 8, 12)
+
+        if item.operation_code:
+            hint = wx.StaticText(self, label="Ligne machine liée à une opération : désignation et nombre de\n"
+                                             "machines sont pilotés par la liste des opérations (ici en lecture seule).")
+            hint.SetForegroundColour(wx.Colour(120, 90, 0))
+            sizer.Add(hint, 0, wx.ALL, 10)
+
+        fg = wx.FlexGridSizer(5, 2, 8, 12)
         fg.AddGrowableCol(1, 1)
 
-        self.name   = self._row(fg, "Désignation",           wx.TextCtrl(self, value=item.name))
-        self.cost   = self._row(fg, "Coût d'achat (€)",      wx.TextCtrl(self, value=str(item.cost)))
-        self.resid  = self._row(fg, "Valeur résiduelle (€)",  wx.TextCtrl(self, value=str(item.residual_value)))
-        self.margin = self._row(fg, "Marge MW (%)",           wx.SpinCtrlDouble(self, min=0, max=100,
+        self.name   = self._row(fg, "Désignation",                  wx.TextCtrl(self, value=item.name))
+        self.nmach  = self._row(fg, "Nb machines",                  wx.SpinCtrl(self, min=1, max=50,
+                                                                                initial=max(item.machines_count, 1)))
+        self.cost   = self._row(fg, "Coût d'achat unitaire (€)",    wx.TextCtrl(self, value=str(item.cost)))
+        self.resid  = self._row(fg, "Valeur résiduelle unit. (€)",  wx.TextCtrl(self, value=str(item.residual_value)))
+        self.margin = self._row(fg, "Marge MW (%)",                 wx.SpinCtrlDouble(self, min=0, max=100,
                                                                                 initial=item.margin_rate * 100, inc=1))
+        if item.operation_code:
+            self.name.Enable(False)
+            self.nmach.Enable(False)
 
         sizer.Add(fg, 1, wx.EXPAND | wx.ALL, 14)
         btns = self.CreateButtonSizer(wx.OK | wx.CANCEL)
@@ -69,6 +85,8 @@ class CapexDialog(wx.Dialog):
             cost=float(self.cost.GetValue().replace(",", ".") or 0),
             residual_value=float(self.resid.GetValue().replace(",", ".") or 0),
             margin_rate=self.margin.GetValue() / 100.0,
+            operation_code=self._src.operation_code,
+            machines_count=self.nmach.GetValue(),
         )
 
 
@@ -103,6 +121,103 @@ class ToolingDialog(wx.Dialog):
             lifetime_pieces=max(1, int(self.life.GetValue().replace(" ", "") or 1)),
             margin_rate=self.margin.GetValue() / 100.0,
         )
+
+
+class SeriePurchaseDialog(wx.Dialog):
+    """Édition d'une ligne d'achat série (« achat opération »).
+
+    Trois modes de calcul du prix / pièce : unitaire, au mètre (€/m × longueur),
+    ou forfait au lot (€/lot ÷ taille de lot).
+    """
+
+    MODES = [("Unitaire (€/pièce)", "unit"),
+             ("Au mètre (€/m × longueur/pièce)", "length"),
+             ("Forfait au lot (€/lot ÷ taille de lot)", "lot")]
+
+    def __init__(self, parent, item: SeriePurchaseItem = None):
+        super().__init__(parent, title="Achat série", size=(470, 420))
+        item = item or SeriePurchaseItem()
+        self._src = item
+        sizer = wx.BoxSizer(wx.VERTICAL)
+
+        if item.needs_edit:
+            hint = wx.StaticText(self, label="Prix repris de la gamme indéterminé pour le volume série.\n"
+                                             "Choisir le mode et saisir le prix d'achat série.")
+            hint.SetForegroundColour(wx.Colour(190, 60, 30))
+            sizer.Add(hint, 0, wx.ALL, 10)
+
+        fg = wx.FlexGridSizer(8, 2, 8, 12)
+        fg.AddGrowableCol(1, 1)
+        self.name = self._row(fg, "Désignation", wx.TextCtrl(self, value=item.name))
+
+        self.mode = wx.Choice(self, choices=[lbl for lbl, _ in self.MODES])
+        self.mode.SetSelection(max(0, [c for _, c in self.MODES].index(item.mode)
+                                   if item.mode in [c for _, c in self.MODES] else 0))
+        self._row(fg, "Mode de calcul", self.mode)
+
+        self.unit     = self._row(fg, "Prix unitaire (€/pièce)",  wx.TextCtrl(self, value=str(item.unit_price)))
+        self.permeter = self._row(fg, "Prix au mètre (€/m)",      wx.TextCtrl(self, value=str(item.price_per_meter)))
+        self.length   = self._row(fg, "Longueur / pièce (m)",     wx.TextCtrl(self, value=str(item.length_per_piece_m)))
+        self.lotamt   = self._row(fg, "Forfait au lot (€/lot)",   wx.TextCtrl(self, value=str(item.lot_amount)))
+        self.lotsize  = self._row(fg, "Taille de lot (pièces)",   wx.TextCtrl(self, value=str(item.lot_size)))
+        self.margin   = self._row(fg, "Marge (%)", wx.SpinCtrlDouble(self, min=0, max=100,
+                                                                     initial=item.margin_rate * 100, inc=1))
+        sizer.Add(fg, 0, wx.EXPAND | wx.ALL, 14)
+
+        self._lbl_pp = wx.StaticText(self, label="")
+        f = self._lbl_pp.GetFont(); f.SetWeight(wx.FONTWEIGHT_BOLD); self._lbl_pp.SetFont(f)
+        sizer.Add(self._lbl_pp, 0, wx.LEFT | wx.BOTTOM, 16)
+
+        btns = self.CreateButtonSizer(wx.OK | wx.CANCEL)
+        sizer.Add(btns, 0, wx.EXPAND | wx.ALL, 8)
+        self.SetSizer(sizer)
+
+        self.mode.Bind(wx.EVT_CHOICE, lambda e: self._sync())
+        for c in (self.unit, self.permeter, self.length, self.lotamt, self.lotsize):
+            c.Bind(wx.EVT_TEXT, lambda e: self._sync())
+        self._sync()
+
+    def _row(self, fg, label, ctrl):
+        fg.Add(wx.StaticText(self, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
+        fg.Add(ctrl, 1, wx.EXPAND)
+        return ctrl
+
+    def _mode_code(self) -> str:
+        return self.MODES[self.mode.GetSelection()][1]
+
+    def _sync(self):
+        """Active les champs du mode choisi et met à jour l'aperçu €/pièce."""
+        mode = self._mode_code()
+        self.unit.Enable(mode == "unit")
+        self.permeter.Enable(mode == "length")
+        self.length.Enable(mode == "length")
+        self.lotamt.Enable(mode == "lot")
+        self.lotsize.Enable(mode == "lot")
+        self._lbl_pp.SetLabel(f"→ Prix d'achat : {self._build().per_piece_cost():.2f} €/pièce")
+
+    def _f(self, ctrl, default=0.0):
+        try:
+            return float(ctrl.GetValue().replace(",", ".").replace(" ", ""))
+        except Exception:
+            return default
+
+    def _build(self) -> SeriePurchaseItem:
+        return SeriePurchaseItem(
+            name=self.name.GetValue().strip() or "Achat",
+            mode=self._mode_code(),
+            unit_price=self._f(self.unit),
+            price_per_meter=self._f(self.permeter),
+            length_per_piece_m=self._f(self.length),
+            lot_amount=self._f(self.lotamt),
+            lot_size=max(1, int(self._f(self.lotsize, 1))),
+            margin_rate=self.margin.GetValue() / 100.0,
+            operation_code=self._src.operation_code,
+        )
+
+    def get_item(self) -> SeriePurchaseItem:
+        it = self._build()
+        it.needs_edit = self._src.needs_edit and it.per_piece_cost() <= 0   # résolu dès qu'un prix est saisi
+        return it
 
 
 class MachinePostDialog(wx.Dialog):
@@ -184,6 +299,18 @@ class ItemTable(wx.Panel):
     def set_items(self, items):
         self._items = list(items)
         self._refresh_lc()
+        self._autosize_height()
+
+    def _autosize_height(self):
+        """Hauteur de la liste adaptée au nombre de lignes (pour tout lire sans scroll interne)."""
+        row_h = 21
+        n = max(len(self._items), 1)
+        h = min(28 + n * row_h + 6, 520)
+        self.lc.SetMinSize((-1, h))
+        self.Layout()
+        parent = self.GetParent()
+        if parent is not None:
+            parent.Layout()
 
     def get_items(self):
         return list(self._items)
@@ -228,8 +355,8 @@ class ItemTable(wx.Panel):
 
 
 class CapexTable(ItemTable):
-    COLS = [("Désignation", 180), ("Coût €", 90), ("Résiduel €", 80),
-            ("Marge", 60), ("Amort/an €", 90), ("Prix/pc €", 110)]
+    COLS = [("Désignation", 190), ("Mach.", 55), ("Coût €/u", 90), ("Résiduel €", 80),
+            ("Marge", 55), ("Amort/an €", 90), ("Prix/pc €", 100)]
 
     def __init__(self, parent, on_change=None, serie_ref=None):
         super().__init__(parent, self.COLS, on_change)
@@ -240,15 +367,18 @@ class CapexTable(ItemTable):
         sd = self._serie_ref() if self._serie_ref else None
         years = sd.program_lifetime_years if sd and sd.program_lifetime_years > 0 else 1
         vol   = sd.annual_volume if sd and sd.annual_volume > 0 else 1
-        amort_an = (item.cost - item.residual_value) / years
+        amort_an = item.net_investment / years
         cost_pc  = amort_an / vol
         price_pc = cost_pc * (1 + item.margin_rate)
         idx = self.lc.InsertItem(self.lc.GetItemCount(), item.name)
-        self.lc.SetItem(idx, 1, f"{item.cost:,.0f}")
-        self.lc.SetItem(idx, 2, f"{item.residual_value:,.0f}")
-        self.lc.SetItem(idx, 3, f"{item.margin_rate*100:.0f}%")
-        self.lc.SetItem(idx, 4, f"{amort_an:,.0f}")
-        self.lc.SetItem(idx, 5, f"{price_pc:.4f}")
+        self.lc.SetItem(idx, 1, str(item.machines_count))
+        self.lc.SetItem(idx, 2, f"{item.cost:,.0f}")
+        self.lc.SetItem(idx, 3, f"{item.residual_value:,.0f}")
+        self.lc.SetItem(idx, 4, f"{item.margin_rate*100:.0f}%")
+        self.lc.SetItem(idx, 5, f"{amort_an:,.0f}")
+        self.lc.SetItem(idx, 6, f"{price_pc:.2f}")
+        if item.operation_code:   # ligne machine liée à une opération
+            self.lc.SetItemBackgroundColour(idx, wx.Colour(235, 242, 252))
 
 
 class ToolingTable(ItemTable):
@@ -266,37 +396,35 @@ class ToolingTable(ItemTable):
         self.lc.SetItem(idx, 1, f"{item.cost:,.0f}")
         self.lc.SetItem(idx, 2, f"{item.lifetime_pieces:,}")
         self.lc.SetItem(idx, 3, f"{item.margin_rate*100:.0f}%")
-        self.lc.SetItem(idx, 4, f"{cost_pc:.4f}")
-        self.lc.SetItem(idx, 5, f"{price_pc:.4f}")
+        self.lc.SetItem(idx, 4, f"{cost_pc:.2f}")
+        self.lc.SetItem(idx, 5, f"{price_pc:.2f}")
 
 
-class SyncedToolingTable(ToolingTable):
-    """Outillages repris de la gamme de la phase (lignes Outillage amorties).
+class PurchaseTable(ItemTable):
+    """Achats série repris de la gamme (sous-traitance / matières), éditables.
 
-    Désignation et montant viennent de la gamme ; seules la durée de vie et la
-    marge sont modifiables (mémorisées par outillage).
+    Les lignes « À éditer » (prix repris indéterminé, mis à 0) sont surlignées.
     """
 
-    def __init__(self, parent, on_override=None):
-        super().__init__(parent, on_change=None)
-        self.on_override = on_override
-        self.btn_add.Hide()
-        self.btn_del.Hide()
-        self.btn_edit.SetLabel("Durée de vie / marge")
-        self.btn_edit.SetSize((150, 26))
+    COLS = [("Achat (origine gamme)", 220), ("Mode", 80), ("Prix achat €/pc", 100),
+            ("Marge", 55), ("Prix/pc €", 90), ("État", 80)]
+    MODE_LABEL = {"unit": "Unitaire", "length": "Au mètre", "lot": "Forfait lot"}
 
-    def _on_edit(self, _):
-        idx = self.lc.GetFirstSelected()
-        if idx < 0:
-            return
-        item = self._items[idx]
-        dlg = ToolingDialog(self, item)
-        dlg.name.Enable(False)
-        dlg.cost.Enable(False)
-        if dlg.ShowModal() == wx.ID_OK and self.on_override:
-            edited = dlg.get_item()
-            self.on_override(item.name, edited.lifetime_pieces, edited.margin_rate)
-        dlg.Destroy()
+    def __init__(self, parent, on_change=None):
+        super().__init__(parent, self.COLS, on_change)
+        self.set_dialog_class(SeriePurchaseDialog)
+
+    def _append_row(self, item: SeriePurchaseItem):
+        cpp = item.per_piece_cost()
+        price = cpp * (1 + item.margin_rate)
+        idx = self.lc.InsertItem(self.lc.GetItemCount(), item.name)
+        self.lc.SetItem(idx, 1, self.MODE_LABEL.get(item.mode, "Unitaire"))
+        self.lc.SetItem(idx, 2, f"{cpp:.2f}")
+        self.lc.SetItem(idx, 3, f"{item.margin_rate*100:.0f}%")
+        self.lc.SetItem(idx, 4, f"{price:.2f}")
+        self.lc.SetItem(idx, 5, "À éditer" if item.needs_edit else "OK")
+        if item.needs_edit:
+            self.lc.SetItemBackgroundColour(idx, WARN_BG)
 
 
 class MachineTable(wx.Panel):
@@ -386,6 +514,213 @@ class MachineTable(wx.Panel):
 
 
 # ---------------------------------------------------------------------------
+# Opérations : liste fusionnée capacité + sensibilité temps/taux
+# ---------------------------------------------------------------------------
+
+class _OpSensRow:
+    """Opération interne de la version Série, vue capacité + sensibilité.
+
+    Les valeurs de base (temps par pièce agrégé, taux moyen) sont héritées de la
+    gamme via les valeurs Série des lignes internes : elles servent de référence 0
+    pour les deux curseurs. Les curseurs agissent sur TOUTES les lignes internes de
+    l'opération (mise à l'échelle proportionnelle).
+    """
+
+    def __init__(self, op):
+        self.bind(op)
+        self.time_pct = 0
+        self.rate_pct = 0
+        self.machines = 1
+        self.enabled = True
+        self.setup_launch_h = 0.0
+
+    def bind(self, op):
+        """(Re)lie la ligne aux coûts internes de `op` et recalcule les valeurs de base."""
+        self.op = op
+        self.costs = [c for c in op.costs.values()
+                      if c.cost_type == CostType.INTERNAL_OPERATION and getattr(c, "is_active", True)]
+        self.time0_h = sum(c.serie_time_per_piece_h() for c in self.costs)     # h / pièce
+        rate_x_time = sum(c.serie_time_per_piece_h() * c.serie_rate() for c in self.costs)
+        self.rate0 = (rate_x_time / self.time0_h) if self.time0_h > 0 else 0.0  # €/h moyen pondéré
+
+    @property
+    def label(self):
+        return self.op.label
+
+    @property
+    def tc0_s(self):
+        """Temps par pièce agrégé de base (s) — référence 0 des curseurs."""
+        return self.time0_h * 3600.0
+
+    @property
+    def tc_sim_s(self):
+        return self.tc0_s * (1 + self.time_pct / 100.0)
+
+    @property
+    def rate_sim(self):
+        return self.rate0 * (1 + self.rate_pct / 100.0)
+
+    @property
+    def moved(self):
+        return self.time_pct != 0 or self.rate_pct != 0
+
+    def overrides(self):
+        """{id(ligne): {cycle_s, rate}} pour les lignes dont le curseur a bougé."""
+        ft = 1 + self.time_pct / 100.0
+        fr = 1 + self.rate_pct / 100.0
+        out = {}
+        for c in self.costs:
+            ov = {}
+            if self.time_pct:
+                ov["cycle_s"] = c.serie_cycle_s() * ft
+            if self.rate_pct:
+                ov["rate"] = c.serie_rate() * fr
+            if ov:
+                out[id(c)] = ov
+        return out
+
+    def apply(self):
+        """Enregistre les valeurs simulées comme valeurs Série des lignes internes."""
+        ft = 1 + self.time_pct / 100.0
+        fr = 1 + self.rate_pct / 100.0
+        for c in self.costs:
+            if self.time_pct:
+                c.serie_cycle_time_s = round(c.serie_cycle_s() * ft, 3)
+            if self.rate_pct:
+                c.serie_hourly_rate = round(c.serie_rate() * fr, 2)
+
+
+class OperationSensGrid(wx.ScrolledWindow):
+    """Grille scrollable : une ligne par opération, curseurs temps/taux intégrés."""
+
+    COLS = ["Actif", "Opération", "TC base", "Temps", "TC simulé", "TH base", "Taux", "TH simulé",
+            "Machines", "Lancement (h)", "Amort./pc", "Cap./an", "Charge", "Statut"]
+
+    def __init__(self, parent, on_slider=None, on_select=None, on_machines=None,
+                 on_enable=None, on_launch=None):
+        super().__init__(parent, style=wx.VSCROLL | wx.HSCROLL | wx.BORDER_THEME)
+        self.SetScrollRate(20, 20)
+        self.on_slider = on_slider
+        self.on_select = on_select
+        self.on_machines = on_machines
+        self.on_enable = on_enable
+        self.on_launch = on_launch
+        self.rows = []
+        self.selected = 0
+        self._widgets = []
+        self.sizer = wx.FlexGridSizer(cols=len(self.COLS), hgap=8, vgap=4)
+        self.sizer.AddGrowableCol(3, 1)   # curseur temps
+        self.sizer.AddGrowableCol(6, 1)   # curseur taux
+        self.SetSizer(self.sizer)
+
+    def set_rows(self, rows):
+        self.rows = rows
+        self.selected = min(self.selected, max(len(rows) - 1, 0))
+        self._build()
+
+    def _build(self):
+        self.Freeze()
+        self.sizer.Clear(delete_windows=True)
+        self._widgets = []
+        if not self.rows:
+            self.sizer.Add(wx.StaticText(self, label="Aucune opération interne dans cette version."))
+            self.FitInside()
+            self.Thaw()
+            return
+        for text in self.COLS:
+            t = wx.StaticText(self, label=text)
+            t.SetFont(t.GetFont().Bold())
+            self.sizer.Add(t, 0, wx.ALIGN_CENTER_VERTICAL)
+        for idx, row in enumerate(self.rows):
+            chk = wx.CheckBox(self)
+            chk.SetValue(getattr(row, "enabled", True))
+            chk.SetToolTip("Décocher pour exclure cette opération du chiffrage série "
+                           "(MO, capacité, goulot, CAPEX).")
+            chk.Bind(wx.EVT_CHECKBOX, lambda e, i=idx: self._on_enable(i))
+            name = wx.StaticText(self, label="  " + row.label, size=(220, -1),
+                                 style=wx.ST_NO_AUTORESIZE | wx.ST_ELLIPSIZE_END)
+            name.SetToolTip(row.label)
+            name.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+            name.Bind(wx.EVT_LEFT_DOWN, lambda e, i=idx: self._select(i))
+            tc0 = wx.StaticText(self, label=f"{row.tc0_s:.2f} s" if row.tc0_s > 0 else "—")
+            s_tc = wx.Slider(self, value=row.time_pct, minValue=-100, maxValue=100, size=(110, -1))
+            tc_sim = wx.StaticText(self, label="", size=(150, -1), style=wx.ST_NO_AUTORESIZE)
+            r0 = wx.StaticText(self, label=f"{row.rate0:.0f} €/h" if row.rate0 > 0 else "—")
+            s_rate = wx.Slider(self, value=row.rate_pct, minValue=-100, maxValue=100, size=(110, -1))
+            r_sim = wx.StaticText(self, label="", size=(120, -1), style=wx.ST_NO_AUTORESIZE)
+            mach = wx.SpinCtrl(self, min=1, max=20, initial=row.machines, size=(60, -1))
+            launch = wx.SpinCtrlDouble(self, min=0, max=24, inc=0.25,
+                                       initial=getattr(row, "setup_launch_h", 0.0), size=(80, -1))
+            launch.SetToolTip("Temps de lancement / équipe de cette opération (h), chiffré à son taux horaire.")
+            amort = wx.StaticText(self, label="—", size=(80, -1), style=wx.ST_NO_AUTORESIZE)
+            amort.SetToolTip("Amortissement machine par pièce (coût saisi dans l'onglet CAPEX & Tooling).")
+            cap = wx.StaticText(self, label="—", size=(90, -1), style=wx.ST_NO_AUTORESIZE)
+            charge = wx.StaticText(self, label="—", size=(70, -1), style=wx.ST_NO_AUTORESIZE)
+            statut = wx.StaticText(self, label="", size=(90, -1), style=wx.ST_NO_AUTORESIZE)
+            enabled = getattr(row, "enabled", True)
+            if row.tc0_s <= 0 or not enabled:
+                s_tc.Enable(False)
+            if row.rate0 <= 0 or not enabled:
+                s_rate.Enable(False)
+            if not enabled:
+                mach.Enable(False)
+                launch.Enable(False)
+                name.SetForegroundColour(wx.Colour(150, 150, 150))
+            for wdg in (s_tc, s_rate):
+                wdg.Bind(wx.EVT_SLIDER, lambda e, i=idx: self._on_slider(i))
+                wdg.Bind(wx.EVT_SET_FOCUS, lambda e, i=idx: (self._select(i), e.Skip()))
+            mach.Bind(wx.EVT_SPINCTRL, lambda e, i=idx: self._on_mach(i))
+            launch.Bind(wx.EVT_SPINCTRLDOUBLE, lambda e, i=idx: self._on_launch(i))
+            for wdg in (chk, name, tc0, s_tc, tc_sim, r0, s_rate, r_sim, mach, launch, amort, cap, charge, statut):
+                self.sizer.Add(wdg, 0, wx.ALIGN_CENTER_VERTICAL
+                               | (wx.EXPAND if isinstance(wdg, wx.Slider) else 0))
+            self._widgets.append(dict(chk=chk, name=name, s_tc=s_tc, tc_sim=tc_sim, s_rate=s_rate,
+                                      r_sim=r_sim, mach=mach, launch=launch, amort=amort, cap=cap,
+                                      charge=charge, statut=statut))
+        self.FitInside()
+        self.Thaw()
+        self.Layout()
+
+    def _select(self, i):
+        if callable(self.on_select):
+            self.on_select(i)
+
+    def _on_slider(self, i):
+        row, w = self.rows[i], self._widgets[i]
+        row.time_pct = w["s_tc"].GetValue()
+        row.rate_pct = w["s_rate"].GetValue()
+        if callable(self.on_slider):
+            self.on_slider(i)
+
+    def _on_mach(self, i):
+        self.rows[i].machines = self._widgets[i]["mach"].GetValue()
+        if callable(self.on_machines):
+            self.on_machines(i)
+
+    def _on_enable(self, i):
+        self.rows[i].enabled = self._widgets[i]["chk"].GetValue()
+        if callable(self.on_enable):
+            self.on_enable(i)
+
+    def _on_launch(self, i):
+        self.rows[i].setup_launch_h = self._widgets[i]["launch"].GetValue()
+        if callable(self.on_launch):
+            self.on_launch(i)
+
+    def reset(self):
+        for row, w in zip(self.rows, self._widgets):
+            row.time_pct = row.rate_pct = 0
+            w["s_tc"].SetValue(0)
+            w["s_rate"].SetValue(0)
+
+    def get_machine_posts(self):
+        """Postes machine reflétant nb de machines et temps de lancement saisis (TC/TH re-dérivés par sync)."""
+        return [MachinePost(operation_code=r.op.code, name=r.op.label,
+                            machines_available=r.machines,
+                            setup_launch_h=getattr(r, "setup_launch_h", 0.0)) for r in self.rows]
+
+
+# ---------------------------------------------------------------------------
 # Helper to build a section header band
 # ---------------------------------------------------------------------------
 
@@ -462,121 +797,109 @@ class SeriePricingPanel(wx.Panel):
 
         outer.Add(wx.StaticLine(self), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
 
-        # Sub-notebook (only visible when active)
-        self.nb = wx.Notebook(self)
-        self._tab_hyp   = self._build_tab_hypotheses(self.nb)
-        self._tab_inv   = self._build_tab_investissements(self.nb)
-        self._tab_cap   = self._build_tab_capacite(self.nb)
-        self._tab_syn   = self._build_tab_synthese(self.nb)
-        self.nb.AddPage(self._tab_hyp, "Hypothèses")
-        self.nb.AddPage(self._tab_inv, "CAPEX && Tooling")
-        self.nb.AddPage(self._tab_cap, "Capacité && Coûts")
-        # La synthèse de prix et le LOP sont dans l'onglet « Tarif de Vente » (page jamais affichée).
+        # Dock prix permanent : prix /pièce + décomposition, visible sur tous les onglets.
+        self.price_dock = PriceDecompositionBar(self)
+        self.price_dock.SetMinSize((-1, 92))
+        outer.Add(self.price_dock, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 6)
+
+        # Espace de travail unique (sans onglets) :
+        #   gauche  = opérations (curseurs + capacité) + goulot  → le cœur permanent
+        #   droite  = inspecteur : cadence/programme, coûts partagés, investissements
+        self.workspace = wx.SplitterWindow(self, style=wx.SP_LIVE_UPDATE | wx.SP_3DSASH)
+        self.workspace.SetMinimumPaneSize(300)
+        self.workspace.SetSashGravity(0.58)
+
+        self._ops_pane = self._build_operations_pane(self.workspace)
+
+        self.inspector = wx.ScrolledWindow(self.workspace, style=wx.VSCROLL)
+        self.inspector.SetScrollRate(0, 20)
+        # Chaque section de l'inspecteur est un panneau dépliant (wx.CollapsiblePane)
+        # pour organiser l'écran : on replie ce dont on n'a pas besoin.
+        self._inspector_sizer = wx.BoxSizer(wx.VERTICAL)
+        self._panes = []
+        self._build_hypotheses_section()
+        self._build_cost_sections()
+        self._build_investissements_section()
+        self.inspector.SetSizer(self._inspector_sizer)
+        self.inspector.FitInside()
+
+        # Inspecteur garanti ~420 px au départ (sash négatif = largeur du volet droit).
+        self.workspace.SplitVertically(self._ops_pane, self.inspector, -420)
+        outer.Add(self.workspace, 1, wx.EXPAND | wx.ALL, 4)
+
+        # Synthèse de prix / LOP : widgets tenus à jour (dock + onglet « Tarif de Vente »),
+        # jamais affichés directement dans ce panneau.
+        self._tab_syn = self._build_tab_synthese(self)
         self._tab_syn.Hide()
-        self.sensitivity = SerieSensitivityPanel(self.nb)
-        self.sensitivity.on_applied = self._on_sensitivity_applied
-        self.nb.AddPage(self.sensitivity, "Temps && taux")
-        outer.Add(self.nb, 1, wx.EXPAND | wx.ALL, 4)
 
         self.SetSizer(outer)
         self._set_active(False)
 
+    # ------------------------------------------------------------------ panneaux dépliants
+
+    def _section(self, title, expanded=True):
+        """Crée un panneau dépliant dans l'inspecteur ; renvoie (pane, sizer) pour son contenu."""
+        cp = wx.CollapsiblePane(self.inspector, label=title,
+                                style=wx.CP_DEFAULT_STYLE | wx.CP_NO_TLW_RESIZE)
+        cp.Bind(wx.EVT_COLLAPSIBLEPANE_CHANGED, self._on_pane_changed)
+        self._inspector_sizer.Add(cp, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 4)
+        self._panes.append(cp)
+        if expanded:
+            cp.Expand()
+        pane = cp.GetPane()
+        sz = wx.BoxSizer(wx.VERTICAL)
+        pane.SetSizer(sz)
+        return pane, sz
+
+    def _on_pane_changed(self, event):
+        self.inspector.FitInside()
+        self.inspector.Layout()
+        event.Skip()
+
+    def _hint(self, parent, text, wrap=330):
+        """StaticText d'aide gris, enroulé pour ne pas déborder du panneau info."""
+        st = wx.StaticText(parent, label=text)
+        st.SetForegroundColour(wx.Colour(100, 100, 100))
+        st.Wrap(wrap)
+        return st
+
     # ------------------------------------------------------------------ tab 1 : hypothèses
 
-    def _build_tab_hypotheses(self, parent):
-        panel = wx.ScrolledWindow(parent, style=wx.VSCROLL)
-        panel.SetScrollRate(0, 20)
-        sizer = wx.BoxSizer(wx.VERTICAL)
-
-        # -- Reprise depuis la gamme de la phase --
-        sizer.Add(_section_label(panel, "Reprise depuis la gamme de la phase"), 0, wx.EXPAND | wx.TOP, 6)
-        sync_grid = wx.FlexGridSizer(3, 2, 6, 10)
-        sync_grid.AddGrowableCol(1, 1)
-        self.cb_sync_purchases = wx.CheckBox(panel, label="Achats / pièce ← lignes Matière et Sous-traitance")
-        self.cb_sync_tooling = wx.CheckBox(panel, label="Outillages amortis ← lignes Outillage de la gamme")
-        self.cb_setup_fixed = wx.CheckBox(panel, label="Réglage / campagne ← temps fixes des opérations")
-        self.cb_sync_purchases.SetToolTip(
-            "Ajoute au poste Matières le coût par pièce des achats de la phase, calculé au volume annuel.\n"
-            "La saisie manuelle « Matières / pièce » reste ajoutée (autres achats).")
-        self.cb_sync_tooling.SetToolTip(
-            "Les outillages amortis de la phase (lignes Outillage et outillages fournisseur) sont repris "
-            "dans l'onglet CAPEX & Tooling.\nLes outillages refacturés restent dans le bloc OUTILLAGE de l'offre.")
-        self.cb_setup_fixed.SetToolTip(
-            "Le temps de montage par campagne devient la somme des temps fixes des opérations internes de la phase.")
-        self._lbl_sync_purchases = wx.StaticText(panel, label="")
-        self._lbl_sync_tooling = wx.StaticText(panel, label="")
-        self._lbl_sync_setup = wx.StaticText(panel, label="")
-        for cb, lbl in ((self.cb_sync_purchases, self._lbl_sync_purchases),
-                        (self.cb_sync_tooling, self._lbl_sync_tooling),
-                        (self.cb_setup_fixed, self._lbl_sync_setup)):
-            cb.Bind(wx.EVT_CHECKBOX, self._on_param_changed)
-            sync_grid.Add(cb, 0, wx.ALIGN_CENTER_VERTICAL)
-            lbl.SetForegroundColour(wx.Colour(80, 80, 80))
-            sync_grid.Add(lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
-        sizer.Add(sync_grid, 0, wx.EXPAND | wx.ALL, 8)
-
+    def _build_hypotheses_section(self):
         # -- Section production --
-        sizer.Add(_section_label(panel, "Production"), 0, wx.EXPAND | wx.TOP, 6)
+        pane, sz = self._section("Production")
         prod_grid = wx.FlexGridSizer(7, 3, 6, 10)
         prod_grid.AddGrowableCol(1, 1)
-
-        self.e_volume        = self._hyp_row(panel, prod_grid, "Volume annuel cible (livraisons)", "100000", "pcs/an")
-        self.e_days          = self._hyp_row(panel, prod_grid, "Jours ouvrés / an",                "220",    "j/an")
-        self.e_shifts        = self._hyp_row(panel, prod_grid, "Nb équipes / jour",                "2",      "équipes")
-        self.e_hshift        = self._hyp_row(panel, prod_grid, "H productives / équipe",           "7.0",    "h")
-        self.e_trs           = self._hyp_row(panel, prod_grid, "TRS",                              "0.85",   "(0→1)")
-        self.e_scrap_rate    = self._hyp_row(panel, prod_grid, "Taux de rebut interne",            "0.0",    "% (ex: 2.0)")
-        self.e_program_years = self._hyp_row(panel, prod_grid, "Durée du programme",               "5",      "ans")
-        sizer.Add(prod_grid, 0, wx.EXPAND | wx.ALL, 8)
+        self.e_volume        = self._hyp_row(pane, prod_grid, "Volume annuel cible (livraisons)", "100000", "pcs/an")
+        self.e_days          = self._hyp_row(pane, prod_grid, "Jours ouvrés / an",                "220",    "j/an")
+        self.e_shifts        = self._hyp_row(pane, prod_grid, "Nb équipes / jour",                "2",      "équipes")
+        self.e_hshift        = self._hyp_row(pane, prod_grid, "H productives / équipe",           "7.0",    "h")
+        self.e_trs           = self._hyp_row(pane, prod_grid, "TRS",                              "0.85",   "(0→1)")
+        self.e_scrap_rate    = self._hyp_row(pane, prod_grid, "Taux de rebut interne",            "0.0",    "% (ex: 2.0)")
+        self.e_program_years = self._hyp_row(pane, prod_grid, "Durée du programme",               "5",      "ans")
+        sz.Add(prod_grid, 0, wx.EXPAND | wx.ALL, 6)
 
         # -- Rebut calculé (lecture seule) --
-        sizer.Add(_section_label(panel, "Impact rebut"), 0, wx.EXPAND | wx.TOP, 4)
+        pane, sz = self._section("Impact rebut")
         scrap_grid = wx.FlexGridSizer(2, 2, 4, 10)
         scrap_grid.AddGrowableCol(1, 1)
-        self._lbl_prod_vol  = self._result_row(panel, scrap_grid, "Volume production réel / an")
-        self._lbl_scrap_vol = self._result_row(panel, scrap_grid, "Rebuts / an")
-        sizer.Add(scrap_grid, 0, wx.EXPAND | wx.ALL, 8)
+        self._lbl_prod_vol  = self._result_row(pane, scrap_grid, "Volume production réel / an")
+        self._lbl_scrap_vol = self._result_row(pane, scrap_grid, "Rebuts / an")
+        sz.Add(scrap_grid, 0, wx.EXPAND | wx.ALL, 6)
 
-        # -- TC goulot calculé (lecture seule) --
-        sizer.Add(_section_label(panel, "Temps de cycle goulot (calculé depuis les Opérations)"), 0, wx.EXPAND | wx.TOP, 8)
-        tc_grid = wx.FlexGridSizer(2, 3, 6, 10)
-        tc_grid.AddGrowableCol(1, 1)
-
-        # Fallback TC : utilisé uniquement si aucune opération interne n'existe dans le projet
-        self.e_fallback_tc = self._hyp_row(panel, tc_grid, "TC de secours (sans op. interne)", "0.0", "s/pcs")
-
-        tc_grid.Add(wx.StaticText(panel, label="TC goulot effectif"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self._lbl_goulot = wx.StaticText(panel, label="—")
-        self._lbl_goulot.SetBackgroundColour(RESULT_BG)
-        font = self._lbl_goulot.GetFont()
-        font.SetWeight(wx.FONTWEIGHT_BOLD)
-        self._lbl_goulot.SetFont(font)
-        tc_grid.Add(self._lbl_goulot, 1, wx.EXPAND | wx.LEFT, 4)
-        tc_grid.Add(wx.StaticText(panel, label="s/pcs  (= max TC_poste / nb_machines)"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
-
-        sizer.Add(tc_grid, 0, wx.EXPAND | wx.ALL, 8)
-
-        # -- Section coûts horaires --
-        sizer.Add(_section_label(panel, "Taux horaires"), 0, wx.EXPAND | wx.TOP, 8)
-        rate_grid = wx.FlexGridSizer(3, 3, 6, 10)
-        rate_grid.AddGrowableCol(1, 1)
-        self.e_mo_prod  = self._hyp_row(panel, rate_grid, "MO Production (setup, fallback)", "28.0", "€/h")
-        self.e_mo_qual  = self._hyp_row(panel, rate_grid, "MO Qualité",                      "28.0", "€/h")
-        self.e_overhead = self._hyp_row(panel, rate_grid, "Coef. structure overhead",        "0.0",  "(0 si TH déjà chargé)")
-        sizer.Add(rate_grid, 0, wx.EXPAND | wx.ALL, 8)
+        # Les taux horaires ne sont plus saisis ici : ils proviennent des opérations
+        # de la gamme (aucun taux de repli). L'overhead éventuel reste porté par les
+        # valeurs enregistrées (0 par défaut : TH déjà chargés).
 
         # -- Computed block --
-        sizer.Add(_section_label(panel, "Capacité calculée"), 0, wx.EXPAND | wx.TOP, 8)
+        pane, sz = self._section("Capacité calculée")
         cap_grid = wx.FlexGridSizer(4, 2, 6, 10)
         cap_grid.AddGrowableCol(1, 1)
-        self._lbl_cap_eq  = self._result_row(panel, cap_grid, "Capacité réelle / équipe")
-        self._lbl_cap_day = self._result_row(panel, cap_grid, "Capacité réelle / jour")
-        self._lbl_cap_yr  = self._result_row(panel, cap_grid, "Capacité réelle / an")
-        self._lbl_charge  = self._result_row(panel, cap_grid, "Taux de charge global")
-        sizer.Add(cap_grid, 0, wx.EXPAND | wx.ALL, 8)
-
-        panel.SetSizer(sizer)
-        return panel
+        self._lbl_cap_eq  = self._result_row(pane, cap_grid, "Capacité réelle / équipe")
+        self._lbl_cap_day = self._result_row(pane, cap_grid, "Capacité réelle / jour")
+        self._lbl_cap_yr  = self._result_row(pane, cap_grid, "Capacité réelle / an")
+        self._lbl_charge  = self._result_row(pane, cap_grid, "Taux de charge global")
+        sz.Add(cap_grid, 0, wx.EXPAND | wx.ALL, 6)
 
     def _hyp_row(self, parent, fg, label, default, unit):
         fg.Add(wx.StaticText(parent, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -598,97 +921,358 @@ class SeriePricingPanel(wx.Panel):
 
     # ------------------------------------------------------------------ tab 2 : investissements
 
-    def _build_tab_investissements(self, parent):
-        panel = wx.Panel(parent)
-        sizer = wx.BoxSizer(wx.VERTICAL)
-
+    def _build_investissements_section(self):
         # CAPEX
-        sizer.Add(_section_label(panel, "CAPEX – Investissements machines / équipements"), 0, wx.EXPAND | wx.TOP, 6)
+        pane, sz = self._section("CAPEX – Investissements machines / équipements")
 
         mg_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        mg_sizer.Add(wx.StaticText(panel, label=" Durée amort. = durée programme :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
-        self._lbl_capex_years = wx.StaticText(panel, label="—")
+        mg_sizer.Add(wx.StaticText(pane, label=" Durée d'amortissement = durée du programme :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
+        self._lbl_capex_years = wx.StaticText(pane, label="—")
         self._lbl_capex_years.SetBackgroundColour(RESULT_BG)
         font_cy = self._lbl_capex_years.GetFont()
         font_cy.SetWeight(wx.FONTWEIGHT_BOLD)
         self._lbl_capex_years.SetFont(font_cy)
         mg_sizer.Add(self._lbl_capex_years, 0, wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 6)
-        mg_sizer.Add(wx.StaticText(panel, label=" ans  (réglable dans Hypothèses)"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
+        mg_sizer.Add(wx.StaticText(pane, label=" ans  (réglable dans « Production »)"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
+        sz.Add(mg_sizer, 0, wx.TOP | wx.BOTTOM, 4)
 
-        mg_sizer.Add(wx.StaticText(panel, label="   Marge globale CAPEX (%) :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 16)
-        self.e_capex_margin = wx.SpinCtrlDouble(panel, min=0, max=100, initial=15, inc=1, size=(80, -1))
-        self.e_capex_margin.Bind(wx.EVT_SPINCTRLDOUBLE, self._on_param_changed)
-        mg_sizer.Add(self.e_capex_margin, 0, wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 6)
-        sizer.Add(mg_sizer, 0, wx.TOP | wx.BOTTOM, 4)
+        sz.Add(self._hint(pane,
+            "Marge propre à chaque ligne (colonne Marge). Les lignes « Machine » sont liées "
+            "aux opérations (désignation et nb de machines pilotés par la liste, non éditables ici)."),
+            0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
 
-        self.capex_table = CapexTable(panel, on_change=self._on_table_changed,
+        self.capex_table = CapexTable(pane, on_change=self._on_table_changed,
                                       serie_ref=self._get_serie_data)
-        sizer.Add(self.capex_table, 2, wx.EXPAND | wx.ALL, 6)
+        self.capex_table.SetMinSize((-1, 230))
+        sz.Add(self.capex_table, 0, wx.EXPAND | wx.ALL, 6)
 
-        # Tooling
-        sizer.Add(_section_label(panel, "Tooling – Outillages & électrodes"), 0, wx.EXPAND | wx.TOP, 8)
-        self.tooling_table = ToolingTable(panel, on_change=self._on_table_changed)
-        sizer.Add(self.tooling_table, 2, wx.EXPAND | wx.ALL, 6)
+        # Tooling (outillages propres à la série ; ceux de la gamme ne sont pas repris)
+        pane, sz = self._section("Tooling – Outillages")
+        self.tooling_table = ToolingTable(pane, on_change=self._on_table_changed)
+        self.tooling_table.SetMinSize((-1, 130))
+        sz.Add(self.tooling_table, 0, wx.EXPAND | wx.ALL, 6)
 
-        self._synced_tooling_label = _section_label(panel, "Outillages repris de la gamme (amortis)")
-        sizer.Add(self._synced_tooling_label, 0, wx.EXPAND | wx.TOP, 8)
-        self.synced_tooling_table = SyncedToolingTable(panel, on_override=self._on_synced_tooling_override)
-        sizer.Add(self.synced_tooling_table, 1, wx.EXPAND | wx.ALL, 6)
+    # ------------------------------------------------------------------ tab 3 : capacité, temps & taux
 
-        panel.SetSizer(sizer)
+    def _build_operations_pane(self, parent):
+        """Volet gauche (cœur) : barre prix simulé, liste des opérations avec curseurs
+        temps/taux + machines + capacité/charge, et graphe goulot en dessous."""
+        panel = wx.Panel(parent)
+        root = wx.BoxSizer(wx.VERTICAL)
+
+        # -- Barre prix simulé + actions --
+        top = wx.BoxSizer(wx.HORIZONTAL)
+        self.sens_base = wx.StaticText(panel, label="Prix série actuel : —")
+        self.sens_sim = wx.StaticText(panel, label="")
+        f = self.sens_sim.GetFont()
+        f.SetWeight(wx.FONTWEIGHT_BOLD)
+        f.SetPointSize(f.GetPointSize() + 2)
+        self.sens_sim.SetFont(f)
+        top.Add(self.sens_base, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
+        top.Add(self.sens_sim, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
+        top.AddStretchSpacer(1)
+        self.btn_sens_reset = wx.Button(panel, label="Réinitialiser")
+        self.btn_sens_reset.Bind(wx.EVT_BUTTON, lambda e: self._on_sens_reset())
+        self.btn_sens_apply = wx.Button(panel, label="Appliquer à la série")
+        self.btn_sens_apply.SetToolTip(
+            "Enregistre les temps et taux simulés comme valeurs Série des opérations\n"
+            "(appliqués à chaque ligne interne). Le chiffrage Proto n'est pas modifié.")
+        self.btn_sens_apply.Bind(wx.EVT_BUTTON, self._on_sens_apply)
+        top.Add(self.btn_sens_reset, 0, wx.ALL, 4)
+        top.Add(self.btn_sens_apply, 0, wx.ALL, 4)
+        root.Add(top, 0, wx.EXPAND)
+
+        hint = wx.StaticText(panel, label=(
+            "TC et TH de base sont hérités de la gamme (référence 0 des curseurs). Les curseurs ±100 % "
+            "simulent temps/taux sur toutes les lignes internes de l'opération ; capacité et charge suivent "
+            "le temps simulé et le nb de machines. Rien n'est enregistré avant « Appliquer »."))
+        hint.SetForegroundColour(wx.Colour(100, 100, 100))
+        root.Add(hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
+
+        # -- Liste des opérations avec curseurs intégrés --
+        self.op_grid = OperationSensGrid(panel, on_slider=self._on_sens_slider,
+                                         on_select=self._on_sens_select,
+                                         on_machines=self._on_sens_machines,
+                                         on_enable=self._on_sens_enabled,
+                                         on_launch=self._on_sens_launch)
+        # Min volontairement bas : la grille scrolle horizontalement dans son volet
+        # au lieu d'imposer sa pleine largeur (12 colonnes) et d'écraser l'inspecteur.
+        self.op_grid.SetMinSize((420, 200))
+        root.Add(self.op_grid, 3, wx.EXPAND | wx.LEFT | wx.RIGHT, 6)
+
+        # -- Graphe goulot (capacité vs volume cible) --
+        self.sens_chart = CapacityBottleneckChart(panel)
+        self.sens_chart.SetMinSize((-1, 200))
+        self.sens_chart.on_select = self._on_sens_select
+        root.Add(self.sens_chart, 2, wx.EXPAND | wx.ALL, 6)
+
+        panel.SetSizer(root)
         return panel
 
-    # ------------------------------------------------------------------ tab 3 : capacité & coûts
-
-    def _build_tab_capacite(self, parent):
-        panel = wx.ScrolledWindow(parent, style=wx.VSCROLL)
-        panel.SetScrollRate(0, 20)
-        sizer = wx.BoxSizer(wx.VERTICAL)
-
-        # Machine posts — linked to project operations
-        sizer.Add(_section_label(panel, "Capacité par poste machine (liés aux Opérations)"), 0, wx.EXPAND | wx.TOP, 6)
-        self.machine_table = MachineTable(panel, on_change=self._on_machines_changed,
-                                          serie_ref=self._get_serie_data)
-        sizer.Add(self.machine_table, 3, wx.EXPAND | wx.ALL, 6)
-
-        # Setup
-        sizer.Add(_section_label(panel, "Setup / Démarrage série"), 0, wx.EXPAND | wx.TOP, 8)
-        setup_grid = wx.FlexGridSizer(6, 3, 6, 10)
+    def _build_cost_sections(self):
+        """Panneaux Setup et Achats & Logistique de l'inspecteur."""
+        # Setup — indicateurs seulement : le temps de lancement se saisit par opération
+        # (colonne « Lancement » de la liste), au taux horaire de l'opération, ventilé
+        # sur les pièces produites par équipe. Pas de marge.
+        pane, sz = self._section("Setup / Démarrage série")
+        sz.Add(self._hint(pane,
+            "Temps de lancement défini par opération dans la liste (colonne « Lancement »), "
+            "au taux horaire de l'opération, ventilé sur les pièces produites par équipe. "
+            "Indicateurs globaux :"),
+            0, wx.LEFT | wx.RIGHT | wx.TOP, 6)
+        setup_grid = wx.FlexGridSizer(4, 2, 6, 10)
         setup_grid.AddGrowableCol(1, 1)
-        self.e_setup_mount  = self._hyp_row(panel, setup_grid, "Temps montage outillage",   "1.0",  "h")
-        self.e_setup_sop    = self._hyp_row(panel, setup_grid, "Validation SOP / 1er art.", "0.5",  "h")
-        self.e_lot          = self._hyp_row(panel, setup_grid, "Taille de lot / campagne",  "5000", "pcs")
-        self.e_setup_margin = self._hyp_row(panel, setup_grid, "Marge setup (%)",           "15.0", "%")
+        self._lbl_setup_time   = self._result_row(pane, setup_grid, "Temps de lancement total / équipe")
+        self._lbl_pieces_shift = self._result_row(pane, setup_grid, "Pièces produites / équipe (goulot)")
+        self._lbl_launch_cost  = self._result_row(pane, setup_grid, "Coût lancement / équipe")
+        self._lbl_setup_pc     = self._result_row(pane, setup_grid, "Setup / pièce")
+        sz.Add(setup_grid, 0, wx.EXPAND | wx.ALL, 6)
 
-        self._lbl_campaigns = self._result_row(panel, setup_grid, "Campagnes / an")
-        self._lbl_setup_pc  = self._result_row(panel, setup_grid, "Setup amorti / pièce (prix)")
-        sizer.Add(setup_grid, 0, wx.EXPAND | wx.ALL, 8)
+        # Le contrôle de production est désormais saisi comme une opération interne
+        # (chiffré ligne à ligne dans la liste des opérations), pas comme un coût séparé ici.
 
-        # Contrôle
-        sizer.Add(_section_label(panel, "Contrôle de production"), 0, wx.EXPAND | wx.TOP, 8)
-        ctrl_grid = wx.FlexGridSizer(6, 3, 6, 10)
-        ctrl_grid.AddGrowableCol(1, 1)
-        self.e_spc_freq  = self._hyp_row(panel, ctrl_grid, "Fréquence SPC (1/N pcs)",   "50",  "")
-        self.e_spc_time  = self._hyp_row(panel, ctrl_grid, "Temps contrôle SPC (min)",  "2.0", "min/pcs mesuré")
-        self.e_ctrl100_t = self._hyp_row(panel, ctrl_grid, "Temps contrôle 100% (s)",   "3.0", "s/pcs")
-        self.e_ctrl_mode = self._hyp_row(panel, ctrl_grid, "Mode (SPC ou 100%)",         "SPC", "")
+        # Achats
+        pane, sz = self._section("Achats")
+        sz.Add(self._hint(pane,
+            "Achats repris des opérations de sous-traitance / matières de la gamme à la création "
+            "(prix au volume série ; « À éditer » = prix indéterminé, à saisir). Éditables (unitaire, "
+            "au mètre, ou forfait au lot) ; « + Ajouter » pour un achat propre à la série."),
+            0, wx.LEFT | wx.RIGHT | wx.TOP, 6)
 
-        self._lbl_ctrl_spc = self._result_row(panel, ctrl_grid, "Coût SPC / pièce produite")
-        self._lbl_ctrl_100 = self._result_row(panel, ctrl_grid, "Coût 100% / pièce")
-        sizer.Add(ctrl_grid, 0, wx.EXPAND | wx.ALL, 8)
+        self.purchase_table = PurchaseTable(pane, on_change=self._on_table_changed)
+        self.purchase_table.SetMinSize((-1, 150))
+        sz.Add(self.purchase_table, 0, wx.EXPAND | wx.ALL, 6)
 
-        # Achats / logistique
-        sizer.Add(_section_label(panel, "Achats & Logistique"), 0, wx.EXPAND | wx.TOP, 8)
-        buy_grid = wx.FlexGridSizer(4, 3, 6, 10)
-        buy_grid.AddGrowableCol(1, 1)
-        self.e_mat_cost   = self._hyp_row(panel, buy_grid, "Matières / pièce (saisie)", "0.0", "€/pcs")
-        self.e_mat_margin = self._hyp_row(panel, buy_grid, "Marge matières (%)",    "10.0", "%")
-        self.e_log_cost   = self._hyp_row(panel, buy_grid, "Logistique / pièce",   "0.0", "€/pcs")
-        self.e_log_margin = self._hyp_row(panel, buy_grid, "Marge logistique (%)", "5.0",  "%")
-        sizer.Add(buy_grid, 0, wx.EXPAND | wx.ALL, 8)
+    # ------------------------------------------------------------------ sensibilité temps/taux (par opération)
 
-        panel.SetSizer(sizer)
-        return panel
+    def _sens_factor(self) -> float:
+        """€/pc pour 1 s·€/h de (temps par pièce × taux) — MO linéaire."""
+        sd = self.project.serie_data
+        return (1.0 + sd.overhead_coef) * sd.scrap_factor() * (1.0 + sd.global_commercial_margin) / 3600.0
+
+    def _load_sens(self):
+        """(Re)construit la liste des opérations depuis la version courante."""
+        if self._phase_serie_data() is None:
+            self.op_grid.set_rows([])
+            return
+        sd = self.project.serie_data
+        machines = {p.operation_code: p.machines_available for p in sd.machine_posts}
+        launch = {p.operation_code: p.setup_launch_h for p in sd.machine_posts}
+        disabled = set(sd.disabled_operation_codes or [])
+        rows = []
+        for op in self.project.current_version.operations:
+            if op.typology in (SUBCONTRACTING_TYPOLOGY, TOOLING_TYPOLOGY):
+                continue
+            row = _OpSensRow(op)
+            row.machines = machines.get(op.code, 1)
+            row.setup_launch_h = launch.get(op.code, 0.0)
+            row.enabled = op.code not in disabled
+            rows.append(row)
+        self.op_grid.set_rows(rows)
+        self._refresh_capacity_rows()
+        self._sens_recompute()
+
+    def _refresh_capacity_rows(self):
+        """Capacité / charge / amortissement par opération, en tenant compte du temps simulé.
+
+        La capacité suit le TEMPS SIMULÉ (curseur) et le nb de machines : bouger un
+        curseur Temps fait donc varier la charge en direct. Alimente aussi le graphe
+        « goulot » en bas à droite.
+        """
+        if not getattr(self, "op_grid", None) or not self.op_grid.rows:
+            if getattr(self, "sens_chart", None):
+                self.sens_chart.set_data(None)
+            return
+        if not self.project or not self.project.serie_data:
+            return
+        sd = self.project.serie_data
+        years = max(sd.program_lifetime_years, 1)
+        vol = max(sd.annual_volume, 1)
+        capex_by_op = {it.operation_code: it for it in sd.capex_items if it.operation_code}
+        items = []
+        for idx, (row, w) in enumerate(zip(self.op_grid.rows, self.op_grid._widgets)):
+            if not getattr(row, "enabled", True):
+                w["cap"].SetLabel("—")
+                w["charge"].SetLabel("désactivée")
+                w["charge"].SetForegroundColour(wx.Colour(150, 150, 150))
+                w["statut"].SetLabel("")
+                w["amort"].SetLabel("—")
+                continue
+            tc = row.tc_sim_s
+            cap_eq = cap_an = charge = 0.0
+            if tc > 0:
+                cap_eq = row.machines * sd.hours_per_shift * 3600.0 / tc * sd.trs
+                cap_an = cap_eq * sd.shifts_per_day * sd.working_days_per_year
+                # Même base que le taux de charge global : volume produit, rebuts inclus
+                charge = (sd.production_volume_per_year() / cap_an) if cap_an > 0 else 0.0
+            w["cap"].SetLabel(f"{cap_an:,.0f}".replace(",", " ") if tc > 0 else "—")
+            statut = "" if tc <= 0 else ("SURCHARGE" if charge > 0.85 else "OK")
+            w["charge"].SetLabel(f"{charge*100:.1f}%" if tc > 0 else "—")
+            w["charge"].SetForegroundColour(wx.RED if charge > 0.85 else wx.Colour(0, 140, 0))
+            w["statut"].SetLabel(statut)
+            w["statut"].SetForegroundColour(wx.Colour(190, 60, 30) if statut == "SURCHARGE"
+                                            else wx.Colour(0, 140, 0))
+            # Amortissement machine / pièce (coût) depuis la ligne CAPEX liée
+            cap_item = capex_by_op.get(row.op.code)
+            amort_pc = (cap_item.net_investment / years / vol) if cap_item else 0.0
+            w["amort"].SetLabel(f"{amort_pc:.2f} €" if amort_pc > 0 else "—")
+            if tc > 0:
+                items.append(dict(idx=idx, label=row.label, cap_an=cap_an,
+                                  charge=charge, machines=row.machines, tc=tc))
+        if getattr(self, "sens_chart", None):
+            self.sens_chart.set_data(dict(volume=sd.annual_volume, items=items))
+
+    def _simulated_sd(self) -> SerieData:
+        """SerieData reflétant l'état COURANT des curseurs (nominal + simulation).
+
+        Sert à mettre à jour toutes les infos en direct quand on bouge un curseur :
+        « Appliquer » ne fait qu'entériner ces valeurs comme nouveau nominal.
+        """
+        sd = self.project.serie_data
+        # Les simulations sont repérées par identité des lignes de coût : on relie chaque
+        # ligne de la grille aux opérations ACTUELLES de la version (gamme rechargée/copiée
+        # depuis la construction de la grille), sinon le taux global ignorerait le curseur.
+        live_ops = {o.code: o for o in self.project.current_version.operations}
+        for r in self.op_grid.rows:
+            live = live_ops.get(r.op.code)
+            if live is not None and live is not r.op:
+                r.bind(live)
+        overrides = {}
+        for r in self.op_grid.rows:
+            if r.moved and getattr(r, "enabled", True):
+                overrides.update(r.overrides())
+        if not overrides:
+            return sd
+        import copy
+        trial = copy.deepcopy(sd)
+        trial.sync_from_project(self.project, overrides=overrides)
+        return trial
+
+    def _refresh_indicators(self, sd: SerieData):
+        """Met à jour tous les indicateurs lus (rebut, capacité, setup, prix, synthèse)
+        à partir de `sd` : le nominal courant, ou la variante simulée par les curseurs."""
+        prod_vol  = sd.production_volume_per_year()
+        scrap_vol = sd.scrap_units_per_year()
+        self._lbl_prod_vol .SetLabel(f"{prod_vol:,.0f}  pcs/an")
+        self._lbl_scrap_vol.SetLabel(
+            f"{scrap_vol:,.0f}  pcs/an" if scrap_vol > 0 else "—  (pas de rebut)")
+
+        cap_eq  = sd.real_capacity_per_shift()
+        cap_day = cap_eq * sd.shifts_per_day
+        cap_yr  = sd.real_capacity_per_year()
+        charge  = sd.load_rate()
+        self._lbl_cap_eq .SetLabel(f"{cap_eq:,.0f}  pcs/équipe")
+        self._lbl_cap_day.SetLabel(f"{cap_day:,.0f}  pcs/jour")
+        self._lbl_cap_yr .SetLabel(f"{cap_yr:,.0f}  pcs/an")
+        self._lbl_charge.SetForegroundColour(wx.RED if charge > 0.85 else wx.Colour(0, 140, 0))
+        self._lbl_charge.SetLabel(f"{charge*100:.1f} %")
+
+        self._lbl_setup_time  .SetLabel(f"{sd.setup_launch_time_total_h():.2f}  h/équipe")
+        self._lbl_pieces_shift.SetLabel(f"{sd.pieces_per_shift():,.0f}  pcs/équipe".replace(",", " "))
+        self._lbl_launch_cost .SetLabel(f"{sd.setup_launch_cost_per_shift():,.2f}  €/équipe".replace(",", " "))
+        self._lbl_setup_pc    .SetLabel(f"{sd.setup_price_per_piece():.2f}  €/pcs")
+
+        self._refresh_synthese(sd)
+
+    def _sens_recompute(self):
+        """Recalcule prix, indicateurs et synthèse à partir de l'état COURANT des curseurs."""
+        if not getattr(self, "op_grid", None):
+            return
+        if self._phase_serie_data() is None:
+            self.sens_base.SetLabel("Le chiffrage Décomposé porte sur une version Série.")
+            self.sens_sim.SetLabel("")
+            self.sens_chart.set_data(None)
+            self.btn_sens_apply.Enable(False)
+            self.btn_sens_reset.Enable(False)
+            return
+        sd = self.project.serie_data
+        rows = self.op_grid.rows
+        trial = self._simulated_sd()
+        p_base = sd.selling_price_per_piece()
+        p_sim = trial.selling_price_per_piece()
+        delta = p_sim - p_base
+        any_moved = any(r.moved for r in rows)
+        self.sens_base.SetLabel(f"Prix série actuel : {_eur(p_base, 2)}/pc")
+        if any_moved:
+            pct = (delta / p_base * 100) if p_base else 0
+            self.sens_sim.SetLabel(f"→ simulé : {_eur(p_sim, 2)}/pc  ({delta:+.2f} € · {pct:+.1f} %)")
+            self.sens_sim.SetForegroundColour(wx.Colour(30, 130, 50) if delta < 0 else wx.Colour(190, 60, 30))
+        else:
+            self.sens_sim.SetLabel("")
+        self.btn_sens_apply.Enable(any_moved and not self._locked)
+        self.btn_sens_reset.Enable(any_moved and not self._locked)
+
+        # Labels simulés par opération + mise en évidence de la sélection
+        for idx, (row, w) in enumerate(zip(rows, self.op_grid._widgets)):
+            w["tc_sim"].SetLabel(f"{row.tc_sim_s:.2f} s ({row.time_pct:+d} %)" if row.tc0_s > 0 else "—")
+            w["r_sim"].SetLabel(f"{row.rate_sim:.0f} €/h ({row.rate_pct:+d} %)" if row.rate0 > 0 else "—")
+            sel = idx == self.op_grid.selected
+            w["name"].SetLabel(("▶ " if sel else "  ") + row.label)
+            if not getattr(row, "enabled", True):
+                w["name"].SetForegroundColour(wx.Colour(150, 150, 150))
+            else:
+                w["name"].SetForegroundColour(wx.Colour(30, 90, 160) if sel else wx.BLACK)
+            w["name"].Refresh()
+
+        # Toutes les infos (prix, dock, synthèse, setup, capacité) suivent l'état simulé.
+        self._refresh_indicators(trial)
+
+        # Le graphe « goulot » (bas-droite) est alimenté par _refresh_capacity_rows().
+        self.op_grid.Layout()
+
+    def _on_sens_slider(self, idx):
+        self.op_grid.selected = idx
+        self._refresh_capacity_rows()   # charge + goulot suivent le temps simulé
+        self._sens_recompute()
+
+    def _on_sens_select(self, idx):
+        if idx != self.op_grid.selected:
+            self.op_grid.selected = idx
+            self._sens_recompute()
+
+    def _on_sens_machines(self, idx):
+        sd = self.project.serie_data if self.project else None
+        if sd is None:
+            return
+        sd.machine_posts = self.op_grid.get_machine_posts()
+        sd.sync_from_project(self.project)
+        self._refresh_computed()
+        self._notify()
+
+    def _on_sens_launch(self, idx):
+        """Temps de lancement d'une opération modifié : recalcul du setup."""
+        sd = self.project.serie_data if self.project else None
+        if sd is None:
+            return
+        sd.machine_posts = self.op_grid.get_machine_posts()
+        sd.sync_from_project(self.project)
+        self._refresh_computed()
+        self._notify()
+
+    def _on_sens_enabled(self, idx):
+        """Case Actif cochée/décochée : exclut l'opération du calcul série."""
+        sd = self.project.serie_data if self.project else None
+        if sd is None:
+            return
+        sd.disabled_operation_codes = [r.op.code for r in self.op_grid.rows if not r.enabled]
+        sd.machine_posts = self.op_grid.get_machine_posts()
+        sd.sync_from_project(self.project)
+        self._load_sens()        # reconstruit la grille : grise les lignes désactivées
+        self._refresh_computed()
+        self._notify()
+
+    def _on_sens_reset(self):
+        self.op_grid.reset()
+        self._sens_recompute()
+
+    def _on_sens_apply(self, event):
+        moved = [r for r in self.op_grid.rows if r.moved]
+        if not moved:
+            return
+        for r in moved:
+            r.apply()
+        self._on_sensitivity_applied()
+        self._load_sens()
 
     # ------------------------------------------------------------------ tab 4 : synthèse
 
@@ -808,8 +1392,8 @@ class SeriePricingPanel(wx.Panel):
                 # Synchronise les postes machine depuis les opérations du projet
                 project.serie_data.sync_from_project(project)
                 self._load_fields(project.serie_data)
+                self._load_sens()
                 self._refresh_computed()
-                self.sensitivity.load(project)
                 if self._eur_usd_rate is None:
                     self._fetch_eur_usd_rate()
         finally:
@@ -822,8 +1406,8 @@ class SeriePricingPanel(wx.Panel):
         self._building = True
         try:
             self.project.serie_data.sync_from_project(self.project)
+            self._load_sens()
             self._refresh_computed()
-            self.sensitivity.load(self.project)
         finally:
             self._building = False
 
@@ -835,35 +1419,12 @@ class SeriePricingPanel(wx.Panel):
         self.e_trs.ChangeValue(str(sd.trs))
         self.e_scrap_rate.ChangeValue(str(sd.scrap_rate * 100))
         self.e_program_years.ChangeValue(str(sd.program_lifetime_years))
-        self.e_fallback_tc.ChangeValue(str(sd.fallback_cycle_time_s))
-        self.e_mo_prod.ChangeValue(str(sd.mo_production_rate))
-        self.e_mo_qual.ChangeValue(str(sd.mo_quality_rate))
-        self.e_overhead.ChangeValue(str(sd.overhead_coef))
 
         self._lbl_capex_years.SetLabel(str(sd.program_lifetime_years))
-        self.e_capex_margin.SetValue(sd.capex_global_margin * 100)
         self.capex_table.set_items(sd.capex_items)
         self.tooling_table.set_items(sd.tooling_items)
-        self.machine_table.set_items(sd.machine_posts)
-
-        self.cb_sync_purchases.SetValue(sd.sync_purchases)
-        self.cb_sync_tooling.SetValue(sd.sync_tooling)
-        self.cb_setup_fixed.SetValue(sd.setup_from_fixed_times)
-
-        self.e_setup_mount.ChangeValue(str(sd.tooling_setup_time_h))
-        self.e_setup_sop.ChangeValue(str(sd.sop_validation_time_h))
-        self.e_lot.ChangeValue(str(sd.lot_size))
-        self.e_setup_margin.ChangeValue(str(sd.setup_margin * 100))
-
-        self.e_spc_freq.ChangeValue(str(sd.spc_frequency))
-        self.e_spc_time.ChangeValue(str(sd.spc_time_per_piece_min))
-        self.e_ctrl100_t.ChangeValue(str(sd.control_100pct_time_s))
-        self.e_ctrl_mode.ChangeValue(sd.control_mode)
-
-        self.e_mat_cost.ChangeValue(str(sd.material_cost_per_piece))
-        self.e_mat_margin.ChangeValue(str(sd.material_margin * 100))
-        self.e_log_cost.ChangeValue(str(sd.logistics_cost_per_piece))
-        self.e_log_margin.ChangeValue(str(sd.logistics_margin * 100))
+        self.purchase_table.set_items(sd.purchase_items)
+        # Nb de machines et temps de lancement par opération : chargés dans la grille via _load_sens().
 
         self.e_global_margin.SetValue(sd.global_commercial_margin * 100)
 
@@ -885,17 +1446,17 @@ class SeriePricingPanel(wx.Panel):
             except Exception:
                 return default
 
-        # Récupère les postes existants avec machines_available mis à jour par MachineTable
-        machine_posts = self.machine_table.get_items()
+        # Récupère les postes avec machines_available mis à jour depuis la grille d'opérations
+        machine_posts = self.op_grid.get_machine_posts()
 
         # Partir des données existantes : les champs non affichés (synchronisation,
         # outillages repris, surcharges…) sont conservés.
         current = self.project.serie_data if self.project and self.project.serie_data else SerieData()
         sd = dataclasses.replace(
             current,
-            sync_purchases=self.cb_sync_purchases.GetValue(),
-            sync_tooling=self.cb_sync_tooling.GetValue(),
-            setup_from_fixed_times=self.cb_setup_fixed.GetValue(),
+            sync_purchases=current.sync_purchases,
+            sync_tooling=current.sync_tooling,
+            setup_from_fixed_times=current.setup_from_fixed_times,
             annual_volume=i(self.e_volume, 100000),
             working_days_per_year=i(self.e_days, 220),
             shifts_per_day=i(self.e_shifts, 2),
@@ -903,106 +1464,84 @@ class SeriePricingPanel(wx.Panel):
             trs=f(self.e_trs, 0.85),
             scrap_rate=min(f(self.e_scrap_rate, 0.0) / 100.0, 0.99),
             program_lifetime_years=max(1, i(self.e_program_years, 5)),
-            fallback_cycle_time_s=f(self.e_fallback_tc, 0.0),
-            mo_production_rate=f(self.e_mo_prod, 28.0),
-            mo_quality_rate=f(self.e_mo_qual, 28.0),
-            overhead_coef=f(self.e_overhead, 0.30),
+            fallback_cycle_time_s=current.fallback_cycle_time_s,
+            # Taux horaires et overhead : plus de saisie ici, tout vient des opérations.
+            mo_production_rate=current.mo_production_rate,
+            mo_quality_rate=current.mo_quality_rate,
+            overhead_coef=current.overhead_coef,
             capex_items=self.capex_table.get_items(),
-            capex_global_margin=self.e_capex_margin.GetValue() / 100.0,
+            capex_global_margin=current.capex_global_margin,
             tooling_items=self.tooling_table.get_items(),
             machine_posts=machine_posts,
-            tooling_setup_time_h=(current.tooling_setup_time_h if self.cb_setup_fixed.GetValue()
-                                  else f(self.e_setup_mount, 1.0)),
-            sop_validation_time_h=f(self.e_setup_sop, 0.5),
-            lot_size=i(self.e_lot, 5000),
-            setup_margin=f(self.e_setup_margin, 15.0) / 100.0,
-            spc_frequency=i(self.e_spc_freq, 50),
-            spc_time_per_piece_min=f(self.e_spc_time, 2.0),
-            control_100pct_time_s=f(self.e_ctrl100_t, 3.0),
-            control_mode=self.e_ctrl_mode.GetValue().strip() or "SPC",
-            material_cost_per_piece=f(self.e_mat_cost, 0.0),
-            material_margin=f(self.e_mat_margin, 10.0) / 100.0,
-            logistics_cost_per_piece=f(self.e_log_cost, 0.0),
-            logistics_margin=f(self.e_log_margin, 5.0) / 100.0,
+            # Setup : temps de lancement porté par opération (machine_posts) ; pas de marge.
+            setup_launch_time_h=current.setup_launch_time_h,
+            tooling_setup_time_h=current.tooling_setup_time_h,
+            sop_validation_time_h=current.sop_validation_time_h,
+            lot_size=current.lot_size,
+            setup_margin=current.setup_margin,
+            # Contrôle = opération de gamme : plus de coût contrôle séparé (freq 0 → 0 €/pc).
+            spc_frequency=0,
+            spc_time_per_piece_min=current.spc_time_per_piece_min,
+            control_100pct_time_s=current.control_100pct_time_s,
+            control_mode="SPC",
+            material_cost_per_piece=current.material_cost_per_piece,
+            material_margin=current.material_margin,
+            # Logistique retirée de l'UI : conservée (0 par défaut) pour compat fichiers.
+            logistics_cost_per_piece=current.logistics_cost_per_piece,
+            logistics_margin=current.logistics_margin,
+            purchase_items=self.purchase_table.get_items(),
             global_commercial_margin=self.e_global_margin.GetValue() / 100.0,
         )
         return sd
-
-    def _on_synced_tooling_override(self, name, lifetime_pieces, margin_rate):
-        sd = self.project.serie_data if self.project else None
-        if sd is None:
-            return
-        sd.synced_tooling_overrides[name] = {"lifetime_pieces": int(lifetime_pieces),
-                                             "margin_rate": float(margin_rate)}
-        sd.sync_from_project(self.project)
-        self._refresh_computed()
-        self._notify()
 
     def _refresh_computed(self):
         """Met à jour les labels de résultats et la grille de synthèse."""
         if not self.project or not self.project.serie_data:
             return
         sd = self.project.serie_data
+        # Contrôle = opération de gamme : neutralise tout coût contrôle séparé hérité
+        # d'anciens fichiers, pour que le prix affiché soit cohérent dès le chargement.
+        sd.spc_frequency = 0
+        # Outillage NON repris de la gamme : les outillages amortis de la gamme sont
+        # ignorés à 100 % en série, y compris sur d'anciens fichiers (sync_tooling=True).
+        sd.sync_tooling = False
 
-        # -- Reprise depuis la gamme --
-        self._lbl_sync_purchases.SetLabel(
-            f"{sd.synced_purchase_cost_per_piece:.4f} €/pcs repris" if sd.sync_purchases else "—")
-        n_tools = len(sd.synced_tooling_items)
-        total_tools = sum(t.cost for t in sd.synced_tooling_items)
-        self._lbl_sync_tooling.SetLabel(
-            f"{n_tools} outillage(s), {total_tools:,.0f} €".replace(",", " ") if sd.sync_tooling else "—")
-        self._lbl_sync_setup.SetLabel(
-            f"{sd.synced_setup_time_h:.2f} h / campagne" if sd.setup_from_fixed_times else "—")
-        self.e_setup_mount.Enable(not sd.setup_from_fixed_times)
-        if sd.setup_from_fixed_times:
-            self.e_setup_mount.ChangeValue(f"{sd.synced_setup_time_h:.2f}")
-        self.synced_tooling_table.set_items(sd.synced_tooling_items if sd.sync_tooling else [])
-        self.synced_tooling_table.Show(sd.sync_tooling)
-        self._synced_tooling_label.Show(sd.sync_tooling)
-        self._tab_inv.Layout()
+        self.inspector.Layout()
 
-        # -- Rebut --
-        prod_vol   = sd.production_volume_per_year()
-        scrap_vol  = sd.scrap_units_per_year()
-        self._lbl_prod_vol .SetLabel(f"{prod_vol:,.0f}  pcs/an")
-        self._lbl_scrap_vol.SetLabel(
-            f"{scrap_vol:,.0f}  pcs/an" if scrap_vol > 0 else "—  (pas de rebut)")
-
-        # -- Goulot TC --
-        tc_goulot = sd.get_target_cycle_time_s()
-        if tc_goulot > 0:
-            self._lbl_goulot.SetLabel(f"{tc_goulot:.2f}")
-        else:
-            self._lbl_goulot.SetLabel("—  (aucune opération interne active)")
-
-        # -- Tab 1 computed --
-        cap_eq  = sd.real_capacity_per_shift()
-        cap_day = cap_eq * sd.shifts_per_day
-        cap_yr  = sd.real_capacity_per_year()
-        charge  = sd.load_rate()
-        self._lbl_cap_eq .SetLabel(f"{cap_eq:,.0f}  pcs/équipe")
-        self._lbl_cap_day.SetLabel(f"{cap_day:,.0f}  pcs/jour")
-        self._lbl_cap_yr .SetLabel(f"{cap_yr:,.0f}  pcs/an")
-        charge_txt = f"{charge*100:.1f} %"
-        if charge > 0.85:
-            self._lbl_charge.SetForegroundColour(wx.RED)
-        else:
-            self._lbl_charge.SetForegroundColour(wx.Colour(0, 140, 0))
-        self._lbl_charge.SetLabel(charge_txt)
-
-        # -- Tab 3 computed --
-        self._lbl_campaigns.SetLabel(f"{sd.campaigns_per_year():.1f}  campagnes/an")
-        self._lbl_setup_pc .SetLabel(f"{sd.setup_price_per_piece():.4f}  €/pcs")
-        self._lbl_ctrl_spc .SetLabel(f"{sd.spc_cost_per_piece():.4f}  €/pcs")
-        self._lbl_ctrl_100 .SetLabel(f"{sd.control_100pct_cost_per_piece():.4f}  €/pcs")
-
-        # -- Refresh machine table --
-        self.machine_table.set_items(sd.machine_posts)
+        # -- Reprise des machines dans les lignes CAPEX (amortissement) --
+        self._sync_machine_capex(sd)
         self.capex_table.set_items(sd.capex_items)
+        self.purchase_table.set_items(sd.purchase_items)
         self._lbl_capex_years.SetLabel(str(sd.program_lifetime_years))
+        self.inspector.FitInside()   # tables redimensionnées → recalcule la zone scrollable
 
-        # -- Tab 4 synthèse --
-        self._refresh_synthese(sd)
+        # Indicateurs + synthèse : _sens_recompute() les met à jour à partir de l'état
+        # simulé (nominal si aucun curseur n'a bougé), pour que tout suive en direct.
+        self._refresh_capacity_rows()
+        self._sens_recompute()
+
+    def _sync_machine_capex(self, sd: SerieData):
+        """Assure une ligne CAPEX « Machine » par opération équipée (amortissement).
+
+        Les montants saisis (coût, résiduel, marge) sont conservés par operation_code ;
+        la désignation et le nb de machines suivent le poste de la liste des opérations.
+        Les lignes CAPEX manuelles (operation_code == "") restent intactes, à la suite.
+        """
+        by_op = {it.operation_code: it for it in sd.capex_items if it.operation_code}
+        manual = [it for it in sd.capex_items if not it.operation_code]
+        machine_rows = []
+        seen = set()
+        for p in sd.machine_posts:
+            if not p.operation_code or p.cycle_time_s <= 0 or p.operation_code in seen:
+                continue   # une seule ligne CAPEX machine par code opération
+            seen.add(p.operation_code)
+            it = by_op.get(p.operation_code)
+            if it is None:
+                it = CapexItem(operation_code=p.operation_code, margin_rate=sd.capex_global_margin)
+            it.name = f"Machine · {p.name}"
+            it.machines_count = max(p.machines_available, 1)
+            machine_rows.append(it)
+        sd.capex_items = machine_rows + manual
 
     def _refresh_synthese(self, sd: SerieData):
         grid = self.syn_grid
@@ -1028,7 +1567,7 @@ class SeriePricingPanel(wx.Panel):
              sd.control_cost_per_piece()),
             ("Matières premières / achats",
              sd.purchase_cost_per_piece(),
-             sd.purchase_cost_per_piece() * (1 + sd.material_margin)),
+             sd.purchase_price_per_piece()),
             ("Logistique / Emballage",
              sd.logistics_cost_per_piece,
              sd.logistics_cost_per_piece * (1 + sd.logistics_margin)),
@@ -1043,8 +1582,8 @@ class SeriePricingPanel(wx.Panel):
         for r, (label, cost, price) in enumerate(rows):
             pct = (price / pv * 100) if pv > 0 else 0
             grid.SetCellValue(r, 0, label)
-            grid.SetCellValue(r, 1, f"{cost:.4f} €")
-            grid.SetCellValue(r, 2, f"{price:.4f} €")
+            grid.SetCellValue(r, 1, f"{cost:.2f} €")
+            grid.SetCellValue(r, 2, f"{price:.2f} €")
             grid.SetCellValue(r, 3, f"{pct:.1f} %")
             grid.SetCellAlignment(r, 1, wx.ALIGN_RIGHT, wx.ALIGN_CENTER)
             grid.SetCellAlignment(r, 2, wx.ALIGN_RIGHT, wx.ALIGN_CENTER)
@@ -1052,8 +1591,8 @@ class SeriePricingPanel(wx.Panel):
 
         r_sub = len(rows)
         grid.SetCellValue(r_sub, 0, "SOUS-TOTAL (avant marge commerciale)")
-        grid.SetCellValue(r_sub, 1, f"{total_cost:.4f} €")
-        grid.SetCellValue(r_sub, 2, f"{subtotal_price:.4f} €")
+        grid.SetCellValue(r_sub, 1, f"{total_cost:.2f} €")
+        grid.SetCellValue(r_sub, 2, f"{subtotal_price:.2f} €")
         grid.SetCellValue(r_sub, 3, "—")
         for c in range(4):
             grid.SetCellBackgroundColour(r_sub, c, TOTAL_BG)
@@ -1063,7 +1602,7 @@ class SeriePricingPanel(wx.Panel):
         r_tot = len(rows) + 1
         grid.SetCellValue(r_tot, 0, f"PRIX DE VENTE (marge ciale {sd.global_commercial_margin*100:.0f}%)")
         grid.SetCellValue(r_tot, 1, "")
-        grid.SetCellValue(r_tot, 2, f"{pv:.4f} €")
+        grid.SetCellValue(r_tot, 2, f"{pv:.2f} €")
         grid.SetCellValue(r_tot, 3, "100 %")
         for c in range(4):
             grid.SetCellBackgroundColour(r_tot, c, wx.Colour(30, 90, 160))
@@ -1074,8 +1613,20 @@ class SeriePricingPanel(wx.Panel):
         grid.AutoSizeColumns()
         grid.EndBatch()
 
-        self.lbl_pv.SetLabel(f"{pv:.4f} €")
+        self.lbl_pv.SetLabel(f"{pv:.2f} €")
         self.lbl_ca.SetLabel(f"{sd.annual_revenue():,.0f} €/an")
+
+        # Dock prix permanent : décomposition par poste (prix /pièce)
+        segments = [dict(label=COST_COLOURS[i][0], value=max(price, 0.0), colour=COST_COLOURS[i][1])
+                    for i, (_, _, price) in enumerate(rows)]
+        mlabel, mcolour = COST_COLOURS[-1]
+        segments.append(dict(label=mlabel, value=max(pv - subtotal_price, 0.0), colour=mcolour))
+        self.price_dock.set_data(dict(
+            price=pv,
+            price_usd=(pv * self._eur_usd_rate if self._eur_usd_rate else None),
+            total_cost=total_cost,
+            segments=segments,
+        ))
 
         # LOP
         capex_fixed    = sd.total_capex_net_investment()
@@ -1104,6 +1655,7 @@ class SeriePricingPanel(wx.Panel):
             # Sync posts from operations before loading fields
             self.project.serie_data.sync_from_project(self.project)
             self._load_fields(self.project.serie_data)
+            self._load_sens()
             self._refresh_computed()
             if self._eur_usd_rate is None:
                 self._fetch_eur_usd_rate()
@@ -1121,19 +1673,6 @@ class SeriePricingPanel(wx.Panel):
 
     def _on_table_changed(self):
         self._commit_to_model()
-
-    def _on_machines_changed(self):
-        """Appelé quand machines_available est modifié dans MachineTable.
-
-        Ne re-sync pas depuis les opérations (ce qui écraserait l'édition).
-        Met à jour le projet avec les machines_available édités.
-        """
-        if not self.project or not self.project.serie_data:
-            return
-        # Update machines_available in the existing posts from UI
-        self.project.serie_data.machine_posts = self.machine_table.get_items()
-        self._refresh_computed()
-        self._notify()
 
     def _commit_to_model(self):
         if self._locked or not self.project or not self.project.serie_data:
@@ -1172,8 +1711,19 @@ class SeriePricingPanel(wx.Panel):
                 "Pour la chiffrer en Décomposé, créez une nouvelle version de type Décomposé "
                 "(« + Nouvelle version »).")
             self.lbl_status.SetForegroundColour(wx.Colour(120, 120, 120))
-        self.nb.Show(active)
+        self.workspace.Show(active)
+        self.price_dock.Show(active)
         self.Layout()
+        if active:
+            wx.CallAfter(self._place_sash)
+
+    def _place_sash(self):
+        """Fixe la largeur de l'inspecteur une fois le volet réellement dimensionné."""
+        if not getattr(self, "workspace", None) or not self.workspace.IsShownOnScreen():
+            return
+        w = self.workspace.GetClientSize().width
+        if w > 760:
+            self.workspace.SetSashPosition(w - 440)
 
     # ------------------------------------------------------------------ verrouillage
 
@@ -1197,7 +1747,7 @@ class SeriePricingPanel(wx.Panel):
             self._locked_controls = []
             self._locked = locked
             if locked:
-                self._disable_inputs(self.nb)
+                self._disable_inputs(self.workspace)
             elif self.project and self.project.serie_data:
                 self._refresh_computed()          # rétablit les champs désactivés par la synchro
         self.lock_banner.Show(locked)
@@ -1243,7 +1793,7 @@ class SeriePricingPanel(wx.Panel):
             return
         pv = self.project.serie_data.selling_price_per_piece()
         if self._eur_usd_rate and pv > 0:
-            self.lbl_pv_usd.SetLabel(f"{pv * self._eur_usd_rate:.4f} USD")
+            self.lbl_pv_usd.SetLabel(f"{pv * self._eur_usd_rate:.2f} USD")
         else:
             self.lbl_pv_usd.SetLabel("— USD")
 

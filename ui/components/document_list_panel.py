@@ -14,10 +14,20 @@ class DocumentListPanel(wx.Panel):
         self.on_changed = None
         self.project_name_callback = project_name_callback
         self._temp_files = []  # Track temporary files for cleanup
+        self._read_only = False
         self._locked = False          # version figée : seuls Voir/Exporter restent actifs
         self._delete_btns = []        # boutons « X » des lignes (désactivés si figé)
 
         self._build_ui(label)
+
+    def set_read_only(self, read_only: bool):
+        """Lecture seule : « Voir » et « Exporter » restent actifs, ni ajout ni suppression."""
+        read_only = bool(read_only)
+        if read_only == self._read_only:
+            return
+        self._read_only = read_only
+        self.add_btn.Show(not read_only)
+        self._refresh_list()
 
     def _build_ui(self, label):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -91,13 +101,15 @@ class DocumentListPanel(wx.Panel):
                 exp_btn.Bind(wx.EVT_BUTTON, lambda e, d=doc: self._on_export(d))
                 doc_row.Add(exp_btn, 0, wx.LEFT, 2)
 
-                # Delete button
-                del_btn = wx.Button(self.list_panel, label="X", size=(25, 22))
-                del_btn.SetForegroundColour(wx.Colour(200, 0, 0))
-                del_btn.Bind(wx.EVT_BUTTON, lambda e, i=idx: self._on_delete(i))
-                del_btn.Enable(not self._locked)
-                self._delete_btns.append(del_btn)
-                doc_row.Add(del_btn, 0, wx.LEFT, 2)
+                # Delete button (absent en lecture seule : gamme figée, consultation uniquement ;
+                # désactivé si la version est figée)
+                if not self._read_only:
+                    del_btn = wx.Button(self.list_panel, label="X", size=(25, 22))
+                    del_btn.SetForegroundColour(wx.Colour(200, 0, 0))
+                    del_btn.Bind(wx.EVT_BUTTON, lambda e, i=idx: self._on_delete(i))
+                    del_btn.Enable(not self._locked)
+                    self._delete_btns.append(del_btn)
+                    doc_row.Add(del_btn, 0, wx.LEFT, 2)
                 
                 self.list_sizer.Add(doc_row, 0, wx.EXPAND | wx.BOTTOM, 2)
         

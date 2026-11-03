@@ -82,7 +82,7 @@ class Indexer:
             'max_qty': qtys[-1] if qtys else 0,
             'content_hash': content_hash,
             'has_serie': any(getattr(v, 'is_serie', False) for v in getattr(project, 'versions', [])),
-            'is_prototype': bool(getattr(project, 'is_prototype', False)),
+            'is_prototype': any(getattr(v, 'is_prototype', False) for v in getattr(project, 'versions', [])),
         }
 
     def stop(self):

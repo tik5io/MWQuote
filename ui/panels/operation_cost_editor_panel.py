@@ -10,6 +10,7 @@ from domain.phase import ToolingBilling, PhaseKind
 from ui.components.step_summary_panel import StepSummaryPanel
 from ui.components.offer_info_panel import OfferInfoPanel
 from ui.components.cost_item_editor import CostItemEditor
+from ui.components.document_list_panel import DocumentListPanel
 from ui.components.offers_comparison_grid import OffersComparisonGrid
 from ui.components.ribbon_button import RibbonButton, ACCENT, DANGER, TOOLING, SURFACE
 from infrastructure.configuration import ConfigurationService
@@ -235,16 +236,43 @@ class OperationCostEditorPanel(wx.Panel):
             self.lock_text.SetLabel(f"🔒  Version émise{who} : la gamme est figée. "
                                     "Pour la modifier, créez une nouvelle version.")
         self.lock_banner.Show(self._locked)
-        # On ne désactive pas tout le properties_panel en bloc : cela désactiverait aussi
-        # les boutons « Voir »/« Exporter » des PDF (liste des offres fournisseur), qui
-        # doivent rester utilisables sur un devis figé. On verrouille chaque section
-        # d'édition séparément et on délègue le cas des PDF à l'éditeur de ligne.
-        for section in (self.children_bar, self.phase_row, self.op_props_panel):
-            section.Enable(not self._locked)
-        self.cost_editor.set_locked(self._locked)
+        # Verrou fin : on parcourt le panneau et on désactive chaque contrôle d'édition,
+        # en épargnant les listes de PDF (Voir/Exporter restent actifs sur un devis figé).
+        self._apply_properties_lock()
         self.btn_add_op.Enable(not self._locked)
         self.btn_del_op.Enable(not self._locked)
         self.Layout()
+
+    def _apply_properties_lock(self):
+        """Verrouille les propriétés SAUF les listes de PDF, qui restent consultables (Voir / Exporter).
+
+        Désactiver le panneau entier désactiverait aussi ces boutons : on désactive donc chaque
+        contrôle individuellement, en épargnant les ancêtres d'une liste de documents.
+        """
+        for win in getattr(self, "_lock_disabled", []):
+            try:
+                win.Enable(True)
+            except RuntimeError:        # contrôle détruit depuis (rechargement du panneau de coût)
+                pass
+        self._lock_disabled = []
+        self.properties_panel.Enable(True)
+
+        def walk(win) -> bool:
+            """Applique le verrou ; renvoie True si `win` contient une liste de documents."""
+            if isinstance(win, DocumentListPanel):
+                win.set_read_only(self._locked)
+                return True
+            children = list(win.GetChildren())
+            holds_docs = [walk(c) for c in children]
+            if any(holds_docs):
+                return True
+            if self._locked and win.IsEnabled() and win is not self.properties_panel:
+                win.Enable(False)
+                self._lock_disabled.append(win)
+            return False
+
+        for child in self.properties_panel.GetChildren():
+            walk(child)
 
     def _blocked(self) -> bool:
         """Vrai (et signal sonore) si la gamme est figée : l'action de modification est refusée."""
@@ -459,7 +487,9 @@ class OperationCostEditorPanel(wx.Panel):
             self.op_props_panel.Hide()
             self.cost_editor.Show()
             self.cost_editor.load_cost(data["cost"], self.project)
-        
+            if self._locked:
+                self._apply_properties_lock()
+
         # Ensure sizer and panel are correctly recalculated to avoid overlaps
         self.properties_content.Layout()
         self.properties_panel.Layout()
@@ -1148,7 +1178,9 @@ class OperationCostEditorPanel(wx.Panel):
         # Also refresh property editor if it was showing this cost
         if self.current_data and self.current_data.get("cost") == cost:
             self.cost_editor.load_cost(cost, self.project)
-            
+            if self._locked:
+                self._apply_properties_lock()
+
         if self.on_operation_updated:
             self.on_operation_updated(None)
 
