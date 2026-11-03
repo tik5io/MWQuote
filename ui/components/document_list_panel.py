@@ -14,6 +14,8 @@ class DocumentListPanel(wx.Panel):
         self.on_changed = None
         self.project_name_callback = project_name_callback
         self._temp_files = []  # Track temporary files for cleanup
+        self._locked = False          # version figée : seuls Voir/Exporter restent actifs
+        self._delete_btns = []        # boutons « X » des lignes (désactivés si figé)
 
         self._build_ui(label)
 
@@ -25,10 +27,11 @@ class DocumentListPanel(wx.Panel):
         lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
         header_sizer.Add(lbl, 1, wx.ALIGN_CENTER_VERTICAL)
         
-        add_btn = RibbonButton(self, "📎", "Ajouter un PDF", accent=ACCENT, size=(170, 40))
-        add_btn.SetToolTip("Joindre un ou plusieurs fichiers PDF")
-        add_btn.Bind(wx.EVT_BUTTON, self._on_add)
-        header_sizer.Add(add_btn, 0)
+        self.add_btn = RibbonButton(self, "📎", "Ajouter un PDF", accent=ACCENT, size=(170, 40))
+        self.add_btn.SetToolTip("Joindre un ou plusieurs fichiers PDF")
+        self.add_btn.Bind(wx.EVT_BUTTON, self._on_add)
+        self.add_btn.Enable(not self._locked)
+        header_sizer.Add(self.add_btn, 0)
         
         main_sizer.Add(header_sizer, 0, wx.EXPAND | wx.BOTTOM, 5)
         
@@ -44,9 +47,28 @@ class DocumentListPanel(wx.Panel):
         self.documents = documents if documents is not None else []
         self._refresh_list()
 
+    def set_locked(self, locked: bool) -> None:
+        """Version figée : on ne peut plus ajouter ni supprimer de PDF.
+
+        Les boutons « Voir » et « Exporter » restent actifs (consultation du devis
+        figé). La liste n'est pas reconstruite ici pour ne pas déclencher on_changed ;
+        seuls les boutons concernés sont (dés)activés.
+        """
+        self._locked = bool(locked)
+        try:
+            self.add_btn.Enable(not self._locked)
+        except RuntimeError:
+            pass
+        for btn in self._delete_btns:
+            try:
+                btn.Enable(not self._locked)
+            except RuntimeError:
+                pass
+
     def _refresh_list(self):
         self.list_sizer.Clear(True)
-        
+        self._delete_btns = []
+
         if not self.documents:
             empty_lbl = wx.StaticText(self.list_panel, label="Aucun document")
             empty_lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
@@ -73,6 +95,8 @@ class DocumentListPanel(wx.Panel):
                 del_btn = wx.Button(self.list_panel, label="X", size=(25, 22))
                 del_btn.SetForegroundColour(wx.Colour(200, 0, 0))
                 del_btn.Bind(wx.EVT_BUTTON, lambda e, i=idx: self._on_delete(i))
+                del_btn.Enable(not self._locked)
+                self._delete_btns.append(del_btn)
                 doc_row.Add(del_btn, 0, wx.LEFT, 2)
                 
                 self.list_sizer.Add(doc_row, 0, wx.EXPAND | wx.BOTTOM, 2)
@@ -93,6 +117,8 @@ class DocumentListPanel(wx.Panel):
             self.on_changed()
 
     def _on_add(self, event):
+        if self._locked:
+            return
         with wx.FileDialog(self, "Sélectionner un PDF", wildcard="Fichiers PDF (*.pdf)|*.pdf",
                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST | wx.FD_MULTIPLE) as fileDialog:
             if fileDialog.ShowModal() == wx.ID_CANCEL:
@@ -114,6 +140,8 @@ class DocumentListPanel(wx.Panel):
             self._refresh_list()
 
     def _on_delete(self, index):
+        if self._locked:
+            return
         if 0 <= index < len(self.documents):
             del self.documents[index]
             self._refresh_list()
