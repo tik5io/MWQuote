@@ -251,3 +251,38 @@ class OfferWorkbookNameTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OfferCommentTest(unittest.TestCase):
+    def _history(self):
+        return [{"devis_ref": "OD1", "version_index": 1, "revision": "A"},
+                {"devis_ref": "OD1", "version_index": 1, "revision": "B"},
+                {"devis_ref": "OD2", "version_index": 2, "revision": "A"}]
+
+    def test_comment_is_shared_by_all_revisions_of_the_offer(self):
+        h = self._history()
+        self.assertTrue(offers.set_offer_comment(h, 1, "OD1", "Retour client : -5 %"))
+        self.assertEqual(offers.offer_comment(h, 1, "OD1"), "Retour client : -5 %")
+        self.assertEqual(offers.offer_comment(h, 2, "OD2"), "")
+        self.assertEqual(offers.version_offer_comments(h, 1), [("OD1", "Retour client : -5 %")])
+        self.assertEqual(offers.version_offer_comments(h, 2), [])
+
+    def test_clearing_removes_the_key_and_unknown_offer_is_refused(self):
+        h = self._history()
+        offers.set_offer_comment(h, 1, "OD1", "x")
+        offers.set_offer_comment(h, 1, "OD1", "")
+        self.assertFalse(any("comment" in e for e in h))
+        self.assertFalse(offers.set_offer_comment(h, 1, "NOPE", "x"))
+
+    def test_comment_appears_in_quality_export(self):
+        import io
+        from openpyxl import load_workbook
+        from infrastructure.export_service import ExportService
+        p = _project()
+        p.export_history = [{"devis_ref": "OD1", "version_index": p.current_version_index, "revision": "A",
+                             "comment": "Conditions spécifiques client"}]
+        buf = io.BytesIO()
+        ExportService().export_fabrication_quality(p, buf)
+        ws = load_workbook(io.BytesIO(buf.getvalue())).active
+        values = [c.value for row in ws.iter_rows() for c in row if c.value]
+        self.assertIn("Conditions spécifiques client", values)

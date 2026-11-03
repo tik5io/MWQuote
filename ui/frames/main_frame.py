@@ -182,6 +182,8 @@ class MainFrame(wx.Frame):
         self.sales_panel.on_select_revision = self._on_offer_revision_selected
         self.sales_panel.on_select_version = self._on_offer_version_selected
         self.sales_panel.on_open_revision = self._open_offer_xlsx
+        self.sales_panel.on_export_quality = self._on_export_fabrication_quality
+        self.sales_panel.on_comment_changed = self._mark_dirty
         self.editor_panel.on_request_new_version = lambda: self._on_add_version(None)
         self.serie_panel.on_request_new_version = lambda: self._on_add_version(None)
         self.serie_panel.on_generate_serie_offer = self._on_export_serie_xlsx
@@ -906,6 +908,9 @@ class MainFrame(wx.Frame):
     def _on_serie_updated(self):
         """Appelé quand les données Série sont modifiées."""
         self._rebuild_version_bar()
+        # Le Tarif de Vente lit le prix série en direct : le rafraîchir pour que
+        # CAPEX / outillages / achats / setup y soient pris en compte aussitôt.
+        self.sales_panel.refresh_data()
         self._mark_dirty()
 
     def _refresh_all_data_panels(self):

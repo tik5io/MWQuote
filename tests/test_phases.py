@@ -81,7 +81,9 @@ class VersionConfigTest(unittest.TestCase):
         self.assertEqual((v2.version_index, v2.created_from_version), (2, 1))
         self.assertEqual(v2.phase.kind, PhaseKind.SERIE)
         self.assertEqual(v2.serie_data.annual_volume, 50000)
-        self.assertTrue(v2.serie_data.sync_purchases)
+        # Les achats sont repris comme lignes éditables à la création : la synchro
+        # continue des achats est retirée (sync_purchases=False).
+        self.assertFalse(v2.serie_data.sync_purchases)
         self.assertIsNot(v2.operations[0], p.versions[0].operations[0])
         # la version d'origine n'a pas bougé
         self.assertEqual(p.versions[0].phase.kind, PhaseKind.LOT)
@@ -202,7 +204,8 @@ class VersionPersistenceTest(unittest.TestCase):
         self.assertEqual([v.phase.kind for v in q.versions], [PhaseKind.LOT, PhaseKind.SERIE])
         self.assertEqual(q.current_version_index, 2)
         self.assertEqual(q.serie_data.annual_volume, 500000)
-        self.assertTrue(q.serie_data.sync_purchases)
+        # Achats repris en lignes éditables à la création → synchro continue retirée.
+        self.assertFalse(q.serie_data.sync_purchases)
         q.switch_to_version(1)
         self.assertEqual(q.volume_margin_rates, {10: 1.2, 100: 1.1})
         self.assertAlmostEqual(q.total_price(10), expected)
@@ -546,8 +549,38 @@ class SerieSyncTest(unittest.TestCase):
         self.assertAlmostEqual(sd.synced_setup_time_h, 2.0)
         self.assertEqual(sorted((t.name, t.cost) for t in sd.synced_tooling_items),
                          [("Découpe › Outil", 10000.0), ("Ogive › Outillage Stueken", 19400.0)])
-        self.assertAlmostEqual(sd.tooling_cost_per_piece(), 29400.0 / 100000)
+        # Outillage de gamme ignoré à 100 % en série (sync_tooling=False) : les
+        # lignes repérées restent calculées pour info mais n'entrent pas dans le coût pièce.
+        self.assertFalse(sd.sync_tooling)
+        self.assertAlmostEqual(sd.tooling_cost_per_piece(), 0.0)
         self.assertAlmostEqual(sd.purchase_cost_per_piece(), sd.synced_purchase_cost_per_piece)
+
+    def test_decompose_version_seeds_purchase_lines_from_subcontracting(self):
+        # Reprise effectuée à la création (add_version_variant).
+        p = self._project_with_serie()
+        sd = p.serie_data
+        stueken = next(it for it in sd.purchase_items if it.name == "Ogive › Stueken")
+        self.assertFalse(stueken.needs_edit)
+        self.assertEqual(stueken.mode, "unit")
+        self.assertAlmostEqual(stueken.per_piece_cost(), (100000 - 500) * 0.5 / 100000)
+        self.assertEqual(stueken.operation_code, "Sous-traitance")
+        # Les lignes reprises remplacent la synchro continue des achats.
+        self.assertFalse(sd.sync_purchases)
+        self.assertAlmostEqual(sd.purchase_cost_per_piece(), stueken.per_piece_cost())
+
+    def test_incompatible_purchase_price_is_zeroed_and_flagged(self):
+        op = Operation(code="Microdécoupe", label="Découpe", typology="Interne")
+        op.costs["Découpe"] = _internal("Découpe", fixed_h=2.0, per_piece_h=0.01, rate=100.0)
+        sub = Operation(code="Sous-traitance", label="Ogive", typology="Sous-traitance")
+        sub.costs["Stueken"] = _subcontract("Stueken", unit_price=0.0, tooling=0.0, included=0)
+        p = Project(name="P", reference="R", client="C", operations=[op, sub])
+        v = p.add_version_variant("Décomposé", PhaseKind.SERIE, annual_volume=100000)
+        p.switch_to_version(v.version_index)
+        sd = p.serie_data
+        stueken = next(it for it in sd.purchase_items if "Stueken" in it.name)
+        self.assertTrue(stueken.needs_edit)
+        self.assertEqual(stueken.per_piece_cost(), 0.0)
+        self.assertTrue(sd.purchase_items_need_edit())
 
     def test_legacy_serie_data_is_not_altered_by_sync(self):
         p = self._project_with_serie(legacy=True)
@@ -595,6 +628,7 @@ class SerieStepValuesTest(unittest.TestCase):
         v2 = p.add_version_variant("Décomposé", PhaseKind.SERIE, annual_volume=500000)
         v2.serie_data.global_commercial_margin = 0.0
         v2.serie_data.overhead_coef = 0.0
+        v2.serie_data.setup_launch_time_h = 0.0   # isole la MO (le setup dépend sinon de la cadence)
         p.switch_to_version(v2.version_index)
         c2 = p.operations[0].costs["Découpe Latérale"]
         return p, c2, v2.serie_data, proto_price

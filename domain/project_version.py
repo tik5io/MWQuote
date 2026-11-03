@@ -57,6 +57,8 @@ class ProjectVersion:
     operations: List[Operation] = field(default_factory=list)
     documents: List[Document] = field(default_factory=list)  # Plans de la pièce
     phase: Phase = field(default_factory=build_lot_phase)
+    # Pièce prototype (pas de traçabilité ISO, pas de qualification) : propre à la version
+    is_prototype: bool = False
 
     # ------------------------------------------------------- compat « phases »
 
