@@ -236,6 +236,8 @@ class OperationCostEditorPanel(wx.Panel):
             self.lock_text.SetLabel(f"🔒  Version émise{who} : la gamme est figée. "
                                     "Pour la modifier, créez une nouvelle version.")
         self.lock_banner.Show(self._locked)
+        # Verrou fin : on parcourt le panneau et on désactive chaque contrôle d'édition,
+        # en épargnant les listes de PDF (Voir/Exporter restent actifs sur un devis figé).
         self._apply_properties_lock()
         self.btn_add_op.Enable(not self._locked)
         self.btn_del_op.Enable(not self._locked)

@@ -24,6 +24,8 @@ class CostItemEditor(wx.Panel):
         self._updating_time = False
         self.config_service = ConfigurationService()
         self.doc_list = None
+        self._locked = False          # version figée : édition verrouillée (PDF Voir/Exporter exceptés)
+        self._locked_controls = []    # contrôles désactivés par le verrou, à réactiver au déverrouillage
         
         # Debounce timer for UI refresh
         self._update_timer = wx.Timer(self)
@@ -37,6 +39,42 @@ class CostItemEditor(wx.Panel):
         if event.GetEventObject() is self and hasattr(self, "_update_timer") and self._update_timer:
             self._update_timer.Stop()
         event.Skip()
+
+    # ------------------------------------------------------------------ verrouillage
+
+    def set_locked(self, locked: bool) -> None:
+        """Gamme figée : les champs d'édition passent en lecture seule.
+
+        La liste des PDF (doc_list) n'est pas désactivée en bloc : ses boutons
+        « Voir » et « Exporter » doivent rester utilisables même sur un devis figé.
+        """
+        self._locked = bool(locked)
+        self._apply_lock()
+
+    def _apply_lock(self) -> None:
+        # Réactive ce que le verrou avait désactivé (les contrôles détruits par une
+        # reconstruction sont ignorés), puis ré-applique le verrou si besoin.
+        for ctrl in self._locked_controls:
+            try:
+                ctrl.Enable(True)
+            except RuntimeError:
+                pass
+        self._locked_controls = []
+        if self._locked:
+            self._disable_inputs(self)
+        if self.doc_list:
+            self.doc_list.set_locked(self._locked)
+
+    def _disable_inputs(self, window) -> None:
+        inputs = (wx.TextCtrl, wx.Choice, wx.CheckBox, wx.Button, wx.ComboBox,
+                  wx.SpinCtrl, wx.SpinCtrlDouble, wx.RadioButton, gridlib.Grid)
+        for child in window.GetChildren():
+            if child is self.doc_list:
+                continue          # géré via doc_list.set_locked (Voir/Exporter restent actifs)
+            if isinstance(child, inputs) and child.IsEnabled():
+                child.Enable(False)
+                self._locked_controls.append(child)
+            self._disable_inputs(child)
 
     @staticmethod
     def get_analysis_preview_metrics(cost, qty):
@@ -403,6 +441,8 @@ class CostItemEditor(wx.Panel):
         self.left_sizer.Layout()
         self.main_h_sizer.Layout()
         self.notify_change()
+        # Les champs viennent d'être reconstruits (actifs) : ré-appliquer le verrou éventuel.
+        self._apply_lock()
 
     # ------------------------------------------------------------------ détail outillage
 
