@@ -9,6 +9,7 @@ import tempfile
 from domain.document import Document
 
 from ui.components.document_list_panel import DocumentListPanel
+from ui.components import trades
 from infrastructure.project_folder_service import ProjectFolderService
 from infrastructure.configuration import ConfigurationService
 from domain.client import SECTORS, SECTOR_OTHER, PROTOTYPE_LABEL, normalize_sector
@@ -288,7 +289,11 @@ class ProjectPanel(wx.ScrolledWindow):
 
     def _build_ui(self):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
-        
+
+        # En-tête métier : tout ce panneau (client, plans, dossier réseau) est l'amont projet
+        main_sizer.Add(trades.stripe(self, trades.PROJET), 0, wx.EXPAND)
+        main_sizer.Add(trades.caption(self, trades.PROJET, "Contexte et plans"), 0, wx.LEFT | wx.TOP, 10)
+
         # Infos projet : libellé + champ, une ligne par info (le panneau gauche est étroit)
         grid = wx.FlexGridSizer(cols=2, hgap=8, vgap=8)
         grid.AddGrowableCol(1, 1)

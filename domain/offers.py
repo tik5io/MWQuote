@@ -162,6 +162,15 @@ def version_offer_comments(history: List[dict], version_index: int) -> List[tupl
     return result
 
 
+def version_offers(history: List[dict], version_index: int) -> List[tuple]:
+    """[(devis_ref, nombre d'indices)] des offres émises sur la version, dans l'ordre d'émission.
+
+    Vide si la version n'est pas figée.
+    """
+    return [(g["devis_ref"], len(g["entries"]))
+            for g in group_offers(history or []) if g["version_index"] == version_index]
+
+
 def latest_offer_ref(history: List[dict], version_index: int):
     """Numéro de devis de la dernière offre émise sur la version (None si la version n'a pas d'offre)."""
     refs = [e.get("devis_ref") for e in history or [] if e.get("version_index", 1) == version_index and e.get("devis_ref")]

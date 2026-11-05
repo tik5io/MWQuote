@@ -7,6 +7,7 @@ from ui.components.line_price_panel import LinePricePanel
 from ui.components.result_summary_panel import ResultSummaryPanel
 from domain import offers
 from ui.components.ribbon_button import RibbonButton, ACCENT, TOOLING, SURFACE
+from ui.components import trades
 from infrastructure.fx_rate import FxRate
 from infrastructure.logging_service import get_module_logger
 
@@ -49,19 +50,19 @@ class SalesPricingPanel(wx.Panel):
         ribbon = wx.Panel(self.offers_panel)
         ribbon.SetBackgroundColour(SURFACE)
         ribbon_sizer = wx.BoxSizer(wx.VERTICAL)
-        caption = wx.StaticText(ribbon, label="OFFRES")
-        caption.SetFont(wx.Font(wx.FontInfo(8).FaceName("Segoe UI").Bold()))
-        caption.SetForegroundColour(wx.Colour(100, 116, 139))
-        ribbon_sizer.Add(caption, 0, wx.LEFT | wx.TOP, 10)
+        ribbon_sizer.Add(trades.stripe(ribbon, trades.CHIFFRAGE), 0, wx.EXPAND)
+        ribbon_sizer.Add(trades.caption(ribbon, trades.CHIFFRAGE, "Offres"), 0, wx.LEFT | wx.TOP, 10)
         btns = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_preview = RibbonButton(ribbon, "👁", "Aperçu", accent=ACCENT, big=True, size=(100, 78))
+        self.btn_preview = RibbonButton(ribbon, "👁", "Aperçu", accent=trades.CHIFFRAGE.colour, big=True, size=(100, 78))
         self.btn_preview.SetToolTip(
             "Ouvre l'offre XLSX en brouillon (BROUILLON / DRAFT) depuis un dossier temporaire.\n"
             "Aucun numéro de devis n'est consommé et rien n'est enregistré dans le projet.")
         self.btn_preview.Bind(wx.EVT_BUTTON, self._on_preview_offer)
-        self.btn_new_offer = RibbonButton(ribbon, "💾", "Convertir en offre", accent=ACCENT, big=True, size=(120, 78))
+        self.btn_new_offer = RibbonButton(ribbon, "💾", "Convertir en offre", accent=trades.CHIFFRAGE.colour,
+                                          big=True, size=(120, 78))
         self.btn_new_offer.Bind(wx.EVT_BUTTON, self._on_generate_offer)
-        self.btn_quality = RibbonButton(ribbon, "📎", "Export méthode", accent=ACCENT, big=True, size=(120, 78))
+        self.btn_quality = RibbonButton(ribbon, "📎", "Méthode / Qualité", accent=trades.QUALITE.colour,
+                                        big=True, size=(140, 78))
         self.btn_quality.SetToolTip(
             "Exporte le XLSX méthode / qualité de cette version (gamme, temps, commentaires), "
             "avec les commentaires projet de l'offre.")
@@ -85,6 +86,7 @@ class SalesPricingPanel(wx.Panel):
         # repris dans l'export méthode / qualité.
         self.comment_label = wx.StaticText(self.offers_panel, label="Commentaires projet")
         self.comment_label.SetFont(wx.Font(wx.FontInfo(9).FaceName("Segoe UI").Bold()))
+        trades.tag(self.comment_label, trades.QUALITE)   # repris dans l'export Méthode / Qualité
         offers_sizer.Add(self.comment_label, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
         self.comment_ctrl = wx.TextCtrl(self.offers_panel, style=wx.TE_MULTILINE, size=(-1, 110))
         self.comment_ctrl.SetHint("Retour client, conditions spécifiques… (disponible une fois l'offre émise)")
@@ -133,6 +135,7 @@ class SalesPricingPanel(wx.Panel):
         title = wx.StaticText(self.grid_panel, label="Récapitulatif des Prix de Vente")
         self.title = title
         title.SetFont(wx.Font(wx.FontInfo(10).FaceName("Segoe UI").Bold()))
+        trades.tag(title, trades.CHIFFRAGE)
         grid_sizer.Add(title, 0, wx.ALL, 10)
         self.grid = gridlib.Grid(self.grid_panel)
         self.grid.CreateGrid(0, 2)
@@ -147,6 +150,7 @@ class SalesPricingPanel(wx.Panel):
         tool_sizer = wx.BoxSizer(wx.VERTICAL)
         tool_title = wx.StaticText(self.tool_panel, label="Synthèse outillage")
         tool_title.SetFont(wx.Font(wx.FontInfo(10).FaceName("Segoe UI").Bold()))
+        trades.tag(tool_title, trades.CHIFFRAGE)
         tool_sizer.Add(tool_title, 0, wx.ALL, 10)
         self.tool_grid = gridlib.Grid(self.tool_panel)
         self.tool_grid.CreateGrid(0, 4)

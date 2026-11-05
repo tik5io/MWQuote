@@ -13,6 +13,7 @@ from ui.components.cost_item_editor import CostItemEditor
 from ui.components.document_list_panel import DocumentListPanel
 from ui.components.offers_comparison_grid import OffersComparisonGrid
 from ui.components.ribbon_button import RibbonButton, ACCENT, DANGER, TOOLING, SURFACE
+from ui.components import trades
 from infrastructure.configuration import ConfigurationService
 from infrastructure.logging_service import get_module_logger
 from infrastructure.template_manager import TemplateManager
@@ -48,12 +49,10 @@ class OperationCostEditorPanel(wx.Panel):
         ribbon = wx.Panel(left_panel)
         ribbon.SetBackgroundColour(SURFACE)
         ribbon_sizer = wx.BoxSizer(wx.VERTICAL)
-        caption = wx.StaticText(ribbon, label="GAMME")
-        caption.SetFont(wx.Font(wx.FontInfo(8).FaceName("Segoe UI").Bold()))
-        caption.SetForegroundColour(wx.Colour(100, 116, 139))
-        ribbon_sizer.Add(caption, 0, wx.LEFT | wx.TOP, 10)
+        ribbon_sizer.Add(trades.stripe(ribbon, trades.METHODE), 0, wx.EXPAND)
+        ribbon_sizer.Add(trades.caption(ribbon, trades.METHODE, "Gamme"), 0, wx.LEFT | wx.TOP, 10)
         ribbon_btns = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_add_op = RibbonButton(ribbon, "➕", "Ajouter", accent=ACCENT, big=True, size=(130, 78))
+        self.btn_add_op = RibbonButton(ribbon, "➕", "Ajouter", accent=trades.METHODE.colour, big=True, size=(130, 78))
         self.btn_add_op.SetToolTip("Ajouter une opération à la gamme")
         self.btn_add_op.Bind(wx.EVT_BUTTON, self._on_add_operation)
         self.btn_del_op = RibbonButton(ribbon, "🗑", "Supprimer", accent=DANGER, big=True, size=(130, 78))
@@ -84,10 +83,10 @@ class OperationCostEditorPanel(wx.Panel):
         self.children_bar.SetBackgroundColour(SURFACE)
         children_sizer = wx.WrapSizer(wx.HORIZONTAL)
         self.btn_add_cost = RibbonButton(self.children_bar, "⚙", "Nouvelle étape",
-                                         "Temps × taux horaire", accent=ACCENT, size=(230, 54))
+                                         "Temps × taux horaire", accent=trades.METHODE.colour, size=(230, 54))
         self.btn_add_cost.Bind(wx.EVT_BUTTON, self._on_add_cost_to_selected_op)
         self.btn_add_tooling = RibbonButton(self.children_bar, "🛠", "Nouvel outillage",
-                                            "Montant, détail, pièces fournies", accent=TOOLING, size=(250, 54))
+                                            "Montant, détail, pièces fournies", accent=trades.CHIFFRAGE.colour, size=(250, 54))
         self.btn_add_tooling.Bind(wx.EVT_BUTTON, self._on_add_tooling_cost_to_selected_op)
         children_sizer.Add(self.btn_add_cost, 0, wx.ALL, 8)
         children_sizer.Add(self.btn_add_tooling, 0, wx.ALL, 8)
@@ -142,7 +141,8 @@ class OperationCostEditorPanel(wx.Panel):
         
         # Commentaire de chiffrage de l'opération : 5-6 lignes suffisent
         comment_sizer = wx.BoxSizer(wx.VERTICAL)
-        comment_sizer.Add(wx.StaticText(self.op_props_panel, label="Commentaire de chiffrage:"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 5)
+        comment_sizer.Add(trades.tag(wx.StaticText(self.op_props_panel, label="Commentaire de chiffrage:"),
+                                     trades.CHIFFRAGE), 0, wx.LEFT | wx.RIGHT | wx.TOP, 5)
         self.prop_op_comment = wx.TextCtrl(self.op_props_panel, style=wx.TE_MULTILINE | wx.TE_WORDWRAP, size=(-1, 100))
         self.prop_op_comment.SetMinSize((-1, 100))
         comment_sizer.Add(self.prop_op_comment, 0, wx.EXPAND | wx.ALL, 5)
@@ -386,12 +386,16 @@ class OperationCostEditorPanel(wx.Panel):
         return label
 
     def _cost_colour(self, cost, op):
+        """Couleur de la ligne selon l'information qu'elle porte :
+        temps (étape interne) = méthode, achats / outillage = chiffrage."""
         if op.typology == SUBCONTRACTING_TYPOLOGY and not cost.is_active:
             return wx.Colour(150, 150, 150)
-        return wx.BLACK
+        if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION:
+            return trades.METHODE.text
+        return trades.CHIFFRAGE.text   # matière, sous-traitance, outillage
 
     def _op_colour(self, op):
-        return wx.BLACK
+        return trades.METHODE.text
 
     def _refresh_tree(self):
         self.tree.DeleteAllItems()

@@ -10,6 +10,7 @@ from infrastructure.project_folder_service import ProjectFolderService
 from ui.panels.operation_cost_editor_panel import OperationCostEditorPanel
 from ui.panels.sales_pricing_panel import SalesPricingPanel
 from ui.panels.serie_pricing_panel import SeriePricingPanel
+from ui.components import trades
 from infrastructure.persistence import PersistenceService
 from infrastructure.logging_service import clear_logs_directory
 from infrastructure.export_service import ExportService
@@ -26,7 +27,12 @@ from infrastructure.template_manager import TemplateManager
 
 
 class MainFrame(wx.Frame):
-    """Fenêtre principale de l'application de chiffrage"""
+    """Fenêtre principale : fiche projet (amont, méthode, qualité, chiffrage)."""
+
+    # Libellés d'onglets « Métier · Écran » (le métier donne aussi la couleur de la pastille)
+    TAB_GAMME = "Méthode · Gamme"
+    TAB_DECOMPOSE = "Chiffrage · Décomposé"
+    TAB_TARIF = "Chiffrage · Tarif de vente"
 
     def __init__(self, project=None, clear_logs=False, filepath=None, new_quote=False):
         super().__init__(None, title="MWQuote", size=(1200, 800))
@@ -37,7 +43,9 @@ class MainFrame(wx.Frame):
         self.project = project or Project(name="", reference="", client="")
         self.current_path = filepath
         self._dirty = False
-        
+        # Rappel optionnel appelé une fois la fiche réellement fermée : on_closed(chemin)
+        self.on_closed = None
+
         # Services
         self.db = Database()
         self.indexer = Indexer(self.db)
@@ -87,7 +95,14 @@ class MainFrame(wx.Frame):
         exit_item = file_menu.Append(wx.ID_EXIT, "&Quitter\tAlt+F4")
 
         menu_bar.Append(file_menu, "&Fichier")
+
+        version_menu = wx.Menu()
+        dup_version_item = version_menu.Append(wx.ID_ANY, "&Dupliquer la version courante")
+        del_version_item = version_menu.Append(wx.ID_ANY, "&Supprimer la version courante…")
+        menu_bar.Append(version_menu, "&Version")
         self.SetMenuBar(menu_bar)
+        self.Bind(wx.EVT_MENU, lambda e: self._on_duplicate_version(), dup_version_item)
+        self.Bind(wx.EVT_MENU, lambda e: self._on_delete_version(), del_version_item)
 
         # Bindings
         self.Bind(wx.EVT_MENU, self._on_new, new_item)
@@ -143,18 +158,25 @@ class MainFrame(wx.Frame):
         self._phase_warnings = []
         self._version_bar_sizer.Add(self.phase_warn_lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
 
+        # Légende du code couleur par métier (Projet / Méthode / Qualité / Chiffrage)
+        self._version_bar_sizer.Add(trades.legend(self.version_bar, self.version_bar.GetBackgroundColour()),
+                                    0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+
         self.version_bar.SetSizer(self._version_bar_sizer)
         right_sizer.Add(self.version_bar, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 5)
 
         # --- Notebook for editing tabs ---
         self.notebook = wx.Notebook(right_panel)
+        # Chaque onglet porte le métier qui le travaille : pastille de couleur + « Métier · Écran ».
+        self._trade_images = trades.TradeImages()
+        self.notebook.SetImageList(self._trade_images.imagelist)
 
         self.editor_panel = OperationCostEditorPanel(self.notebook)
         self.editor_panel.set_database(self.db)
-        self.notebook.AddPage(self.editor_panel, "Gamme")
+        self.notebook.AddPage(self.editor_panel, self.TAB_GAMME, imageId=self._trade_images.index(trades.METHODE))
 
         self.sales_panel = SalesPricingPanel(self.notebook)
-        self.notebook.AddPage(self.sales_panel, "Tarif de Vente")
+        self.notebook.AddPage(self.sales_panel, self.TAB_TARIF, imageId=self._trade_images.index(trades.CHIFFRAGE))
 
         # Le panneau Décomposé n'a pas d'onglet propre : dans une version Décomposé il prend la
         # place de l'onglet Gamme (voir _update_gamme_tab).
@@ -230,9 +252,11 @@ class MainFrame(wx.Frame):
             return
         is_serie = self.project.current_phase.is_serie
         wanted, other = (self.serie_panel, self.editor_panel) if is_serie else (self.editor_panel, self.serie_panel)
-        title = "Décomposé" if is_serie else "Gamme"
+        title = self.TAB_DECOMPOSE if is_serie else self.TAB_GAMME
+        image = self._trade_images.index(trades.CHIFFRAGE if is_serie else trades.METHODE)
         if self.notebook.FindPage(wanted) == 0:
             self.notebook.SetPageText(0, title)
+            self.notebook.SetPageImage(0, image)
             return
         selected = self.notebook.GetSelection()
         current_page = self.notebook.GetPage(selected) if selected not in (wx.NOT_FOUND, 0) else None
@@ -241,7 +265,7 @@ class MainFrame(wx.Frame):
             self.notebook.RemovePage(old)
         other.Hide()
         show_it = selected in (0, wx.NOT_FOUND)
-        self.notebook.InsertPage(0, wanted, title, select=show_it)
+        self.notebook.InsertPage(0, wanted, title, select=show_it, imageId=image)
         # Ne jamais afficher de force : sur un autre onglet (Tarif…), la page insérée
         # recouvrirait l'onglet courant.
         wanted.Show(show_it)
@@ -297,15 +321,8 @@ class MainFrame(wx.Frame):
 
     def _after_offer_issued(self, was_frozen: bool):
         """Offre émise : l'arbre se met à jour et la gamme se fige (avec information au 1er passage)."""
+        # Pas de popup : le verrouillage est visible dans l'éditeur (bandeau « figée »).
         self._reload_keeping_selection()
-        if not was_frozen and self.project.is_version_frozen():
-            v = self.project.current_version_index
-            wx.MessageBox(
-                f"L'offre {self.project.version_frozen_by()} est émise : la gamme de la version V{v} est "
-                "désormais figée.\n\nToute modification de gamme passera par une nouvelle version (« + Nouvelle version »). "
-                "Une modification des coefficients, suivie de « Convertir en offre », crée automatiquement "
-                "l'indice suivant de cette offre.",
-                "Version figée", wx.OK | wx.ICON_INFORMATION)
 
     def _on_offer_version_selected(self, version_index: int):
         """Clic sur une version dans l'arbre d'offres : on bascule dessus."""
@@ -390,11 +407,12 @@ class MainFrame(wx.Frame):
                  if self.project.is_version_frozen(v_idx) else "") +
                 f"\nCréée le {version.created_at[:10]}" +
                 (f"\nDepuis V{version.created_from_version}" if version.created_from_version else "") +
-                "\n\nDouble-clic : modifier (nom, quantités)"
+                "\n\nDouble-clic : modifier (nom, quantités)\nClic droit : dupliquer / supprimer"
             )
             v_idx_captured = v_idx
             btn.Bind(wx.EVT_TOGGLEBUTTON, lambda e, idx=v_idx_captured: self._on_version_selected(idx))
             btn.Bind(wx.EVT_LEFT_DCLICK, lambda e, idx=v_idx_captured: self._on_edit_version(idx))
+            btn.Bind(wx.EVT_RIGHT_UP, lambda e, idx=v_idx_captured: self._on_version_context_menu(idx))
             sizer.Insert(insert_pos, btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
             self._version_btns.append((v_idx, btn))
             insert_pos += 1
@@ -406,6 +424,19 @@ class MainFrame(wx.Frame):
         add_btn.Bind(wx.EVT_BUTTON, self._on_add_version)
         sizer.Insert(insert_pos, add_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 6)
         self._version_btns.append((-1, add_btn))  # -1 = not a real version btn
+
+        # Dupliquer / supprimer : agissent sur la version courante
+        dup_btn = wx.Button(self.version_bar, label="Dupliquer", size=(-1, 26))
+        dup_btn.SetToolTip("Dupliquer la version courante (copie modifiable, jamais figée)")
+        dup_btn.Bind(wx.EVT_BUTTON, lambda e: self._on_duplicate_version())
+        sizer.Insert(insert_pos + 1, dup_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+        self._version_btns.append((-1, dup_btn))
+        del_btn = wx.Button(self.version_bar, label="Supprimer", size=(-1, 26))
+        del_btn.SetToolTip("Supprimer la version courante (avertit si une offre l'a figée)")
+        del_btn.Bind(wx.EVT_BUTTON, lambda e: self._on_delete_version())
+        del_btn.Enable(len(self.project.versions) > 1)
+        sizer.Insert(insert_pos + 2, del_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self._version_btns.append((-1, del_btn))
 
         self._refresh_phase_warnings()
         self._update_version_nav()
@@ -603,6 +634,81 @@ class MainFrame(wx.Frame):
         self._dirty = True  # La création d'une version est une modification
         self._update_title()
 
+    def _on_version_context_menu(self, version_index: int):
+        """Clic droit sur une version : modifier, dupliquer, supprimer."""
+        menu = wx.Menu()
+        m_edit = menu.Append(wx.ID_ANY, "Modifier (nom, quantités)…")
+        m_dup = menu.Append(wx.ID_ANY, "Dupliquer")
+        m_del = menu.Append(wx.ID_ANY, "Supprimer…")
+        m_del.Enable(len(self.project.versions) > 1)
+        self.Bind(wx.EVT_MENU, lambda e: self._on_edit_version(version_index), m_edit)
+        self.Bind(wx.EVT_MENU, lambda e: self._on_duplicate_version(version_index), m_dup)
+        self.Bind(wx.EVT_MENU, lambda e: self._on_delete_version(version_index), m_del)
+        self.PopupMenu(menu)
+        menu.Destroy()
+
+    def _on_duplicate_version(self, version_index: int = None):
+        """Copie une version (par défaut la courante) et bascule dessus.
+
+        Pas de confirmation : la copie est toujours libre, y compris depuis une version
+        figée par une offre (c'est la façon de continuer à modifier une gamme émise).
+        """
+        if not self.project:
+            return
+        sel_path = self.editor_panel.get_selection_path()
+        tab_idx = self.notebook.GetSelection()
+        new_version = self.project.duplicate_version(version_index)
+        self.project.switch_to_version(new_version.version_index)
+        self._rebuild_version_bar()
+        self._reload_all_panels(editor_selection_path=sel_path)
+        if tab_idx != wx.NOT_FOUND:
+            self.notebook.SetSelection(tab_idx)
+        self._mark_dirty()
+
+    def _on_delete_version(self, version_index: int = None):
+        """Supprime une version (par défaut la courante), avec avertissement si une offre la fige."""
+        if not self.project:
+            return
+        from domain import offers
+        if version_index is None:
+            version_index = self.project.current_version_index
+        version = self.project.get_version(version_index)
+        if version is None:
+            return
+        if len(self.project.versions) <= 1:
+            wx.MessageBox("Impossible de supprimer la seule version du projet.",
+                          "Supprimer la version", wx.OK | wx.ICON_INFORMATION)
+            return
+
+        name = version.label.strip() or f"V{version_index}"
+        issued = offers.version_offers(self.project.export_history, version_index)
+        if issued:
+            lines = "\n".join(f"  • {ref}" + (f"  ({n} indices)" if n > 1 else "") for ref, n in issued)
+            text = (f"⚠ La version « {name} » est figée par une offre émise :\n\n{lines}\n\n"
+                    "La supprimer retire aussi ces offres de l'historique du projet, fichiers XLSX "
+                    "embarqués compris. Les devis déjà envoyés au client ne sont pas touchés, mais ils "
+                    "ne seront plus retrouvables dans MWQuote.\n\nSupprimer quand même cette version ?")
+            icon = wx.ICON_WARNING
+        else:
+            text = f"Supprimer la version « {name} » et toute sa gamme ?"
+            icon = wx.ICON_QUESTION
+        if wx.MessageBox(text, "Supprimer la version", wx.YES_NO | wx.NO_DEFAULT | icon) != wx.YES:
+            return
+
+        was_current = version_index == self.project.current_version_index
+        tab_idx = self.notebook.GetSelection()
+        if not self.project.delete_version(version_index):
+            return
+        self._rebuild_version_bar()
+        if was_current:
+            self._reload_all_panels()
+            if tab_idx != wx.NOT_FOUND:
+                self.notebook.SetSelection(tab_idx)
+        else:
+            self._reload_keeping_selection()
+        self.sales_panel.refresh_offers()
+        self._mark_dirty()
+
     def _on_split_version(self, event):
         """Sépare la version courante en un nouveau projet autonome."""
         if not self.project:
@@ -743,6 +849,12 @@ class MainFrame(wx.Frame):
 
         offer_kind = "Série" if serie_offer else "standard"
 
+        # Le numéro de devis et l'historique d'export vivent dans le fichier .mwq :
+        # on s'assure qu'il existe AVANT de consommer un numéro, sinon l'offre émise
+        # n'aurait aucune trace dans la base (projet jamais enregistré).
+        if not self.current_path and not self._save_project(allow_dialog=True):
+            return
+
         # Référence devis : nouveau numéro, ou numéro existant pour un nouvel indice
         from domain import offers
         was_frozen = self.project.is_version_frozen()
@@ -788,6 +900,16 @@ class MainFrame(wx.Frame):
                 revision=revision
             )
             progress.Destroy()
+
+            # L'export a enregistré le projet (historique d'offres inclus) : on réindexe
+            # pour que la liste voie la nouvelle offre, et il n'y a plus rien à enregistrer.
+            try:
+                self.indexer.index_file(self.current_path)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning("Réindexation après export impossible", exc_info=True)
+            self._dirty = False
+            self._update_title()
 
             # Arbre d'offres à jour + gel de la gamme
             self._after_offer_issued(was_frozen)
@@ -944,7 +1066,7 @@ class MainFrame(wx.Frame):
         quantités standard).
         """
         from ui.dialogs.phase_dialog import PhaseDialog
-        dlg = PhaseDialog(self, title="Première version de la quote")
+        dlg = PhaseDialog(self, title="Première version du projet")
         try:
             if dlg.ShowModal() != wx.ID_OK:
                 return
@@ -1032,7 +1154,13 @@ class MainFrame(wx.Frame):
                     event.Veto()
                     return
         clear_logs_directory()
+        # La fermeture est acquise (ni annulée, ni refusée) : on prévient l'appelant
+        # (fenêtre liste) avec le chemin du projet, une fois la sauvegarde faite.
+        closed_path = self.current_path
+        callback = self.on_closed
         self.Destroy()
+        if callback:
+            wx.CallAfter(callback, closed_path)
 
     def _confirm_discard_or_save(self) -> bool:
         """Propose l'enregistrement si des modifications sont en attente.

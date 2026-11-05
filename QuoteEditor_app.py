@@ -22,24 +22,25 @@ def _setup_modal_behavior(editor_frame, parent_frame):
 
     parent_frame.Disable()
 
-    def on_editor_close(event):
-        parent_frame.Enable()
-        parent_frame.Raise()
-        
-        # Get the filepath of the newly created/saved quote
-        created_filepath = getattr(editor_frame, 'current_path', None)
-        
-        # Rafraîchir la liste si le parent a cette méthode
-        if hasattr(parent_frame, '_refresh_list'):
-            parent_frame._refresh_list()
-        
-        # Display the newly created quote in the parent if filepath exists
-        if created_filepath and hasattr(parent_frame, '_select_and_display_quote'):
-            wx.CallAfter(parent_frame._select_and_display_quote, created_filepath)
-        
-        event.Skip()
+    def on_editor_closed(created_filepath):
+        # Appelé par la fiche à la fin de sa fermeture réelle (après l'éventuelle
+        # sauvegarde et l'indexation ; jamais si l'utilisateur annule).
+        # La fenêtre liste est réactivée d'abord, quoi qu'il arrive ensuite.
+        try:
+            parent_frame.Enable()
+            parent_frame.Raise()
+        except RuntimeError:
+            return  # fenêtre parente déjà détruite
+        try:
+            if hasattr(parent_frame, '_refresh_list'):
+                parent_frame._refresh_list()
+            if created_filepath and hasattr(parent_frame, '_select_and_display_quote'):
+                parent_frame._select_and_display_quote(created_filepath)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Rafraîchissement de la liste après fermeture")
 
-    editor_frame.Bind(wx.EVT_CLOSE, on_editor_close)
+    editor_frame.on_closed = on_editor_closed
 
 
 def open_new_quote(parent_frame=None, parent_indexer=None):
