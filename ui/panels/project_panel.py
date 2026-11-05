@@ -346,7 +346,7 @@ class ProjectPanel(wx.ScrolledWindow):
         self.export_btn.SetToolTip(
             "Ouvrir la fenêtre d'export : choisir la destination et les éléments "
             "(plans, offres, devis fournisseur, fabrication/qualité) à copier, "
-            "rangés par version."
+            "rangés par scénario (sous-dossiers V1, V2…)."
         )
         self.export_btn.Bind(wx.EVT_BUTTON, self._on_open_export_dialog)
         folder_box.Add(self.export_btn, 0, wx.ALL, 6)
@@ -420,7 +420,7 @@ class ProjectPanel(wx.ScrolledWindow):
                     pass  # Invalid date format, leave empty
             
             # Le statut prototype est propre à la version affichée
-            self.prototype_chk.SetLabel(f"Prototype (V{project.current_version_index})")
+            self.prototype_chk.SetLabel(f"Prototype (S{project.current_version_index})")
             self.prototype_chk.SetValue(bool(project.is_prototype))
             self.doc_list.load_documents(project.documents)
             self._set_preview_bitmap(getattr(project, 'preview_image', None))

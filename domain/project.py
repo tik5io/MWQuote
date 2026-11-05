@@ -134,7 +134,7 @@ class Project:
         base = self.get_version(version_index) if version_index is not None else None
         base = base or self.current_version
         if label is None:
-            name = base.label.strip() or f"V{base.version_index}"
+            name = base.label.strip() or f"S{base.version_index}"
             label = f"{name} (copie)"
         return self.add_version(label, base_version_index=base.version_index)
 

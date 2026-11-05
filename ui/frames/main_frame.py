@@ -90,16 +90,16 @@ class MainFrame(wx.Frame):
         save_as_item = file_menu.Append(wx.ID_SAVEAS, "Enregistrer &sous...\tCtrl+Shift+S")
         file_menu.AppendSeparator()
         duplicate_item = file_menu.Append(wx.ID_DUPLICATE, "&Dupliquer le projet")
-        self._split_version_item = file_menu.Append(wx.ID_ANY, "Séparer la version courante en nouveau projet")
+        self._split_version_item = file_menu.Append(wx.ID_ANY, "Séparer le scénario courant en nouveau projet")
         file_menu.AppendSeparator()
         exit_item = file_menu.Append(wx.ID_EXIT, "&Quitter\tAlt+F4")
 
         menu_bar.Append(file_menu, "&Fichier")
 
         version_menu = wx.Menu()
-        dup_version_item = version_menu.Append(wx.ID_ANY, "&Dupliquer la version courante")
-        del_version_item = version_menu.Append(wx.ID_ANY, "&Supprimer la version courante…")
-        menu_bar.Append(version_menu, "&Version")
+        dup_version_item = version_menu.Append(wx.ID_ANY, "&Dupliquer le scénario courant")
+        del_version_item = version_menu.Append(wx.ID_ANY, "&Supprimer le scénario courant…")
+        menu_bar.Append(version_menu, "&Scénario")
         self.SetMenuBar(menu_bar)
         self.Bind(wx.EVT_MENU, lambda e: self._on_duplicate_version(), dup_version_item)
         self.Bind(wx.EVT_MENU, lambda e: self._on_delete_version(), del_version_item)
@@ -136,15 +136,15 @@ class MainFrame(wx.Frame):
         self.version_bar.SetBackgroundColour(wx.Colour(230, 235, 245))
         self._version_bar_sizer = wx.WrapSizer(wx.HORIZONTAL)  # les versions passent à la ligne si besoin
         self._version_bar_sizer.Add(
-            wx.StaticText(self.version_bar, label="  Versions :"),
+            wx.StaticText(self.version_bar, label="  Scénarios :"),
             0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4
         )
         # Navigation : version précédente / suivante
         self.btn_prev_version = wx.Button(self.version_bar, label="◀", size=(30, 26))
-        self.btn_prev_version.SetToolTip("Version précédente")
+        self.btn_prev_version.SetToolTip("Scénario précédent")
         self.btn_prev_version.Bind(wx.EVT_BUTTON, lambda e: self._navigate_version(-1))
         self.btn_next_version = wx.Button(self.version_bar, label="▶", size=(30, 26))
-        self.btn_next_version.SetToolTip("Version suivante")
+        self.btn_next_version.SetToolTip("Scénario suivant")
         self.btn_next_version.Bind(wx.EVT_BUTTON, lambda e: self._navigate_version(+1))
         self._version_bar_sizer.Add(self.btn_prev_version, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
         self._version_bar_sizer.Add(self.btn_next_version, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 2)
@@ -400,13 +400,13 @@ class MainFrame(wx.Frame):
             btn = wx.ToggleButton(self.version_bar, label=self._version_button_label(version), size=(-1, 26))
             btn.SetValue(v_idx == current_idx)
             btn.SetToolTip(
-                f"Version {v_idx}" + (f" — {version.label}" if version.label.strip() else "") +
+                f"Scénario {v_idx}" + (f" — {version.label}" if version.label.strip() else "") +
                 f"\n{version.describe()}" +
                 f"\nOutillage : {version.phase.effective_tooling_billing.value}" +
                 (f"\n🔒 Gamme figée (offre {self.project.version_frozen_by(v_idx)})"
                  if self.project.is_version_frozen(v_idx) else "") +
                 f"\nCréée le {version.created_at[:10]}" +
-                (f"\nDepuis V{version.created_from_version}" if version.created_from_version else "") +
+                (f"\nDepuis S{version.created_from_version}" if version.created_from_version else "") +
                 "\n\nDouble-clic : modifier (nom, quantités)\nClic droit : dupliquer / supprimer"
             )
             v_idx_captured = v_idx
@@ -418,8 +418,8 @@ class MainFrame(wx.Frame):
             insert_pos += 1
 
         # "+" button to create a new version
-        add_btn = wx.Button(self.version_bar, label="+  Nouvelle version", size=(-1, 26))
-        add_btn.SetToolTip("Créer une nouvelle version (copie de la gamme courante) : autres quantités, "
+        add_btn = wx.Button(self.version_bar, label="+  Nouveau scénario", size=(-1, 26))
+        add_btn.SetToolTip("Créer un nouveau scénario (copie de la gamme courante) : autres quantités, "
                            "autre mode de calcul (Taux horaire / Décomposé)")
         add_btn.Bind(wx.EVT_BUTTON, self._on_add_version)
         sizer.Insert(insert_pos, add_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 6)
@@ -427,12 +427,12 @@ class MainFrame(wx.Frame):
 
         # Dupliquer / supprimer : agissent sur la version courante
         dup_btn = wx.Button(self.version_bar, label="Dupliquer", size=(-1, 26))
-        dup_btn.SetToolTip("Dupliquer la version courante (copie modifiable, jamais figée)")
+        dup_btn.SetToolTip("Dupliquer le scénario courant (copie modifiable, jamais figée)")
         dup_btn.Bind(wx.EVT_BUTTON, lambda e: self._on_duplicate_version())
         sizer.Insert(insert_pos + 1, dup_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
         self._version_btns.append((-1, dup_btn))
         del_btn = wx.Button(self.version_bar, label="Supprimer", size=(-1, 26))
-        del_btn.SetToolTip("Supprimer la version courante (avertit si une offre l'a figée)")
+        del_btn.SetToolTip("Supprimer le scénario courant (avertit si une offre l'a figé)")
         del_btn.Bind(wx.EVT_BUTTON, lambda e: self._on_delete_version())
         del_btn.Enable(len(self.project.versions) > 1)
         sizer.Insert(insert_pos + 2, del_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
@@ -466,8 +466,8 @@ class MainFrame(wx.Frame):
     # ------------------------------------------------------------------ #
 
     def _version_button_label(self, version) -> str:
-        """« V1 · Taux horaire · 10 / 100 pc » — ou le nom donné à la version ; 🔒 si figée."""
-        name = version.label.strip() if version.label.strip() else f"V{version.version_index}"
+        """« S1 · Taux horaire · 10 / 100 pc » — ou le nom donné au scénario ; 🔒 si figée."""
+        name = version.label.strip() if version.label.strip() else f"S{version.version_index}"
         qtys = sorted(version.phase.sale_quantities or [])
         if version.is_serie:
             sd = version.phase.serie_data
@@ -494,7 +494,7 @@ class MainFrame(wx.Frame):
         if not self._phase_warnings:
             return
         text = "\n\n".join(f"• {w.message}" for w in self._phase_warnings)
-        wx.MessageBox(text, "Cohérence de la version", wx.OK | wx.ICON_INFORMATION)
+        wx.MessageBox(text, "Cohérence du scénario", wx.OK | wx.ICON_INFORMATION)
 
     def _reload_keeping_selection(self):
         sel_path = self.editor_panel.get_selection_path()
@@ -519,7 +519,7 @@ class MainFrame(wx.Frame):
         if version is None:
             return
         phase = version.phase
-        dlg = PhaseDialog(self, phase, title=f"Modifier la version V{version_index}", label=version.label)
+        dlg = PhaseDialog(self, phase, title=f"Modifier le scénario S{version_index}", label=version.label)
         try:
             if dlg.ShowModal() != wx.ID_OK:
                 return
@@ -550,7 +550,7 @@ class MainFrame(wx.Frame):
         # Version figée par une offre : la gamme n'est plus éditable, rien à confirmer
         if self._dirty and not self.project.is_version_frozen():
             res = wx.MessageBox(
-                "Des modifications n'ont pas été enregistrées.\nSouhaitez-vous enregistrer avant de changer de version ?",
+                "Des modifications n'ont pas été enregistrées.\nSouhaitez-vous enregistrer avant de changer de scénario ?",
                 "Modifications non enregistrées",
                 wx.YES_NO | wx.CANCEL | wx.ICON_QUESTION
             )
@@ -586,7 +586,7 @@ class MainFrame(wx.Frame):
         # Version figée par une offre : la gamme n'est plus éditable, rien à confirmer
         if self._dirty and not self.project.is_version_frozen():
             res = wx.MessageBox(
-                "Des modifications n'ont pas été enregistrées.\nSouhaitez-vous enregistrer avant de créer une nouvelle version ?",
+                "Des modifications n'ont pas été enregistrées.\nSouhaitez-vous enregistrer avant de créer un nouveau scénario ?",
                 "Modifications non enregistrées",
                 wx.YES_NO | wx.CANCEL | wx.ICON_QUESTION
             )
@@ -602,7 +602,7 @@ class MainFrame(wx.Frame):
                  sorted(self.project.versions, key=lambda v: v.version_index) if not v.is_serie]
         cur = self.project.current_version
         default_base = cur.version_index if not cur.is_serie else (bases[0][0] if bases else None)
-        dlg = PhaseDialog(self, title="Nouvelle version", template=self.project.current_phase,
+        dlg = PhaseDialog(self, title="Nouveau scénario", template=self.project.current_phase,
                           bases=bases, default_base=default_base)
         try:
             if dlg.ShowModal() != wx.ID_OK:
@@ -676,23 +676,23 @@ class MainFrame(wx.Frame):
         if version is None:
             return
         if len(self.project.versions) <= 1:
-            wx.MessageBox("Impossible de supprimer la seule version du projet.",
-                          "Supprimer la version", wx.OK | wx.ICON_INFORMATION)
+            wx.MessageBox("Impossible de supprimer le seul scénario du projet.",
+                          "Supprimer le scénario", wx.OK | wx.ICON_INFORMATION)
             return
 
-        name = version.label.strip() or f"V{version_index}"
+        name = version.label.strip() or f"S{version_index}"
         issued = offers.version_offers(self.project.export_history, version_index)
         if issued:
             lines = "\n".join(f"  • {ref}" + (f"  ({n} indices)" if n > 1 else "") for ref, n in issued)
-            text = (f"⚠ La version « {name} » est figée par une offre émise :\n\n{lines}\n\n"
+            text = (f"⚠ Le scénario « {name} » est figé par une offre émise :\n\n{lines}\n\n"
                     "La supprimer retire aussi ces offres de l'historique du projet, fichiers XLSX "
                     "embarqués compris. Les devis déjà envoyés au client ne sont pas touchés, mais ils "
-                    "ne seront plus retrouvables dans MWQuote.\n\nSupprimer quand même cette version ?")
+                    "ne seront plus retrouvables dans MWQuote.\n\nSupprimer quand même ce scénario ?")
             icon = wx.ICON_WARNING
         else:
-            text = f"Supprimer la version « {name} » et toute sa gamme ?"
+            text = f"Supprimer le scénario « {name} » et toute sa gamme ?"
             icon = wx.ICON_QUESTION
-        if wx.MessageBox(text, "Supprimer la version", wx.YES_NO | wx.NO_DEFAULT | icon) != wx.YES:
+        if wx.MessageBox(text, "Supprimer le scénario", wx.YES_NO | wx.NO_DEFAULT | icon) != wx.YES:
             return
 
         was_current = version_index == self.project.current_version_index
@@ -719,13 +719,13 @@ class MainFrame(wx.Frame):
             (v.label for v in self.project.versions if v.version_index == v_idx),
             ""
         )
-        v_name = v_label.strip() if v_label.strip() else f"V{v_idx}"
+        v_name = v_label.strip() if v_label.strip() else f"S{v_idx}"
 
         if wx.MessageBox(
-            f"Créer un nouveau projet à partir de la version {v_name} ?\n\n"
+            f"Créer un nouveau projet à partir du scénario {v_name} ?\n\n"
             "Le nouveau projet héritera de la référence, du client, de la preview "
-            "et des exports de cette version.",
-            "Séparer la version",
+            "et des exports de ce scénario.",
+            "Séparer le scénario",
             wx.YES_NO | wx.ICON_QUESTION
         ) != wx.YES:
             return
@@ -748,7 +748,7 @@ class MainFrame(wx.Frame):
 
         with wx.FileDialog(
             self,
-            f"Enregistrer le nouveau projet (version {v_name})",
+            f"Enregistrer le nouveau projet (scénario {v_name})",
             defaultFile=os.path.basename(default_file) if default_file else "",
             defaultDir=os.path.dirname(default_file) if default_file else "",
             wildcard="Fichiers MWQuote (*.mwq)|*.mwq",
@@ -762,7 +762,7 @@ class MainFrame(wx.Frame):
             PersistenceService.save_project(new_project, save_path)
             self.indexer.index_file(save_path)
             wx.MessageBox(
-                f"Version {v_name} séparée avec succès !\n{save_path}",
+                f"Scénario {v_name} séparé avec succès !\n{save_path}",
                 "Séparation réussie",
                 wx.OK | wx.ICON_INFORMATION
             )
@@ -779,7 +779,7 @@ class MainFrame(wx.Frame):
             return
         if getattr(self.project, 'serie_data', None) is None:
             wx.MessageBox(
-                "Cette version n'a pas de phase Série.\n"
+                "Ce scénario n'a pas de phase Série.\n"
                 "Ajoutez-en une avec « + Phase » (type : Série) avant de générer une offre série.",
                 "Pas de phase Série",
                 wx.OK | wx.ICON_INFORMATION
@@ -807,7 +807,7 @@ class MainFrame(wx.Frame):
             return
         if serie_offer:
             if self.project.serie_data is None:
-                wx.MessageBox("Cette version n'a pas de phase Série.", "Pas de phase Série",
+                wx.MessageBox("Ce scénario n'a pas de phase Série.", "Pas de phase Série",
                               wx.OK | wx.ICON_INFORMATION)
                 return
             self.project.serie_data.sync_from_project(self.project)
@@ -1007,7 +1007,7 @@ class MainFrame(wx.Frame):
         v_idx = self.project.current_version_index
         phase = self.project.current_phase.display_label
         dirty_marker = " ●" if self._dirty else ""
-        self.SetTitle(f"MWQuote - {display_name}  [V{v_idx} · {phase}]{dirty_marker}")
+        self.SetTitle(f"MWQuote - {display_name}  [S{v_idx} · {phase}]{dirty_marker}")
 
     def _on_operation_updated(self, operation, reload_header=False):
         """Appelé quand une opération est modifiée.
@@ -1066,7 +1066,7 @@ class MainFrame(wx.Frame):
         quantités standard).
         """
         from ui.dialogs.phase_dialog import PhaseDialog
-        dlg = PhaseDialog(self, title="Première version du projet")
+        dlg = PhaseDialog(self, title="Premier scénario du projet")
         try:
             if dlg.ShowModal() != wx.ID_OK:
                 return

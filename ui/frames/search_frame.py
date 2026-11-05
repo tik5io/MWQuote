@@ -221,6 +221,8 @@ class SearchFrame(wx.Frame):
         self.template_manager = TemplateManager(self.db)
         self.analytics_service = AnalyticsService(self.db)
         
+        self._start_weekly_backup()
+
         self._build_ui()
         self._build_menu()
         self._set_app_icon()
@@ -244,6 +246,46 @@ class SearchFrame(wx.Frame):
                 self.SetIcon(wx.Icon(str(icon_path), wx.BITMAP_TYPE_ICO))
         except Exception:
             pass
+
+    def _backup_service(self):
+        from infrastructure.backup_service import BackupService
+        return BackupService(
+            db_path=self.db.get_db_path(),
+            projects_root=self.config.get_quotes_root_folder(),
+            config_path=self.config.config_path,
+            backup_dir=self.config.get_backup_folder(),
+        )
+
+    def _start_weekly_backup(self):
+        """Sauvegarde hebdomadaire automatique (base + projets), en tâche de fond, sans popup."""
+        try:
+            self._backup_service().start_background()
+        except Exception:
+            logger.exception("Démarrage de la sauvegarde automatique impossible")
+
+    def _on_backup_now(self, event):
+        """Sauvegarde immédiate à la demande (action explicite : un message de fin est affiché)."""
+        svc = self._backup_service()
+
+        def _done(path, error):
+            def _show():
+                if error:
+                    wx.MessageBox(f"La sauvegarde a échoué :\n{error}", "Sauvegarde", wx.OK | wx.ICON_ERROR)
+                else:
+                    wx.MessageBox(f"Sauvegarde créée :\n{path}", "Sauvegarde", wx.OK | wx.ICON_INFORMATION)
+            wx.CallAfter(_show)
+
+        def _work():
+            try:
+                path = svc.create_backup()
+                svc.prune()
+                _done(path, None)
+            except Exception as exc:
+                logger.exception("Sauvegarde manuelle échouée")
+                _done(None, exc)
+
+        import threading
+        threading.Thread(target=_work, name="mwquote-backup-now", daemon=True).start()
 
     def _on_activate(self, event):
         """Refresh list when window gets focus (return from editor)"""
@@ -399,6 +441,8 @@ class SearchFrame(wx.Frame):
         m_maintenance = file_menu.Append(wx.ID_ANY, "Maintenance de la base...", "Ouvrir les outils de maintenance")
         m_series_root = file_menu.Append(wx.ID_ANY, "Dossier racine PROJET SERIE...",
                                          "Définir la racine réseau des dossiers projet")
+        m_backup_now = file_menu.Append(wx.ID_ANY, "Sauvegarder maintenant (base + projets)",
+                                        "Sauvegarde complète immédiate ; une sauvegarde automatique a lieu chaque semaine")
         file_menu.AppendSeparator()
         m_exit = file_menu.Append(wx.ID_EXIT, "Quitter", "Quitter l'application")
 
@@ -411,6 +455,7 @@ class SearchFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self._on_open_file, m_open)
         self.Bind(wx.EVT_MENU, self._on_maintenance, m_maintenance)
         self.Bind(wx.EVT_MENU, self._on_set_series_root, m_series_root)
+        self.Bind(wx.EVT_MENU, self._on_backup_now, m_backup_now)
         self.Bind(wx.EVT_MENU, self._on_open_business_dashboard, m_business_dashboard)
         self.Bind(wx.EVT_MENU, lambda e: self.Close(), m_exit)
 
@@ -1148,7 +1193,7 @@ class SearchFrame(wx.Frame):
                 "index": op_idx,
                 "code": op.code,
                 "label": op.label,
-                "typology": op.display_family,
+                "typology": op.typology,
                 "comment": op.comment or "",
                 "costs_count": len(op.costs),
                 "costs": costs_payload,

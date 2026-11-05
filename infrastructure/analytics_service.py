@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import statistics
 
 from infrastructure.persistence import PersistenceService
@@ -44,7 +43,7 @@ class AnalyticsService:
                         metrics["status"],
                         metrics["exports_count"],
                         metrics["avg_margin"],
-                        json.dumps(metrics["typology_margins"], ensure_ascii=False),
+                        "{}",   # colonne héritée de l'ancienne analyse par famille (supprimée), conservée vide
                     ),
                 )
 
@@ -63,17 +62,9 @@ class AnalyticsService:
         filepath = db_row.get("filepath")
         project = PersistenceService.load_project(filepath)
         margins = []
-        typology_map: dict[str, list[float]] = {}
         for op in project.operations:
             for cost in op._get_active_costs():
-                m = float(getattr(cost, "margin_rate", 0.0) or 0.0)
-                margins.append(m)
-                typ = (op.display_family or "N/A").strip() or "N/A"
-                typology_map.setdefault(typ, []).append(m)
-
-        typology_avg = {}
-        for typ, values in typology_map.items():
-            typology_avg[typ] = round(statistics.mean(values), 3) if values else 0.0
+                margins.append(float(getattr(cost, "margin_rate", 0.0) or 0.0))
 
         devis_refs = db_row.get("devis_refs") or ""
         exports_count = len([x for x in devis_refs.split(",") if x.strip()])
@@ -83,13 +74,12 @@ class AnalyticsService:
             "status": db_row.get("status") or "",
             "exports_count": exports_count,
             "avg_margin": avg_margin,
-            "typology_margins": typology_avg,
         }
 
     def _aggregate_from_cache(self) -> dict:
         with self.db.get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT client, status, exports_count, avg_margin, typology_margins_json FROM analytics_project_cache")
+            cur.execute("SELECT client, status, exports_count, avg_margin FROM analytics_project_cache")
             rows = cur.fetchall()
 
         if not rows:
@@ -101,29 +91,20 @@ class AnalyticsService:
                     "avg_exports_per_project": 0.0,
                 },
                 "margin_by_client": [],
-                "margin_by_typology": [],
             }
 
         margins_by_client: dict[str, list[float]] = {}
-        margins_by_typology: dict[str, list[float]] = {}
         finalized_count = 0
         transmitted_count = 0
         total_exports = 0
 
-        for client, status, exports_count, avg_margin, typ_json in rows:
+        for client, status, exports_count, avg_margin in rows:
             margins_by_client.setdefault(client or "(vide)", []).append(float(avg_margin or 0.0))
             total_exports += int(exports_count or 0)
             if (status or "") == "Finalisée":
                 finalized_count += 1
             if (status or "") == "Transmise":
                 transmitted_count += 1
-
-            try:
-                tmap = json.loads(typ_json or "{}")
-            except Exception:
-                tmap = {}
-            for typ, val in tmap.items():
-                margins_by_typology.setdefault(typ, []).append(float(val or 0.0))
 
         total_projects = len(rows)
         non_finalized = len([1 for _, s, *_ in rows if (s or "") != "Finalisée"])
@@ -136,12 +117,6 @@ class AnalyticsService:
         ]
         by_client.sort(key=lambda x: x["avg_margin"], reverse=True)
 
-        by_typology = [
-            {"typology": t, "avg_margin": round(statistics.mean(vals), 3), "samples": len(vals)}
-            for t, vals in margins_by_typology.items()
-        ]
-        by_typology.sort(key=lambda x: x["avg_margin"], reverse=True)
-
         return {
             "kpis": {
                 "projects_total": total_projects,
@@ -152,7 +127,6 @@ class AnalyticsService:
                 "transmitted_projects": transmitted_count,
             },
             "margin_by_client": by_client[:20],
-            "margin_by_typology": by_typology,
             "cache_mode": "incremental",
             "large_dataset": total_projects > self.LARGE_DATASET_THRESHOLD,
         }

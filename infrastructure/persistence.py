@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple
 from domain.project import Project
 from domain.project_version import ProjectVersion, build_lot_phase, build_serie_phase
 from domain.phase import Phase, PhaseKind, ToolingBilling
-from domain.operation import Operation
+from domain.operation import Operation, merge_family_into_label
 from domain.operation import TOOLING_TYPOLOGY
 from domain.cost import CostItem, CostType, PricingType, PricingStructure, PricingTier, ConversionType, ToolingLine
 from domain.document import Document
@@ -20,7 +20,7 @@ from domain.serie_data import SerieData, CapexItem, ToolingItem, MachinePost, Se
 # Constants
 PROJECT_JSON_FILENAME = "project.json"
 DOCUMENTS_FOLDER = "documents/"
-MWQ_VERSION = "3.3"  # 3.3 : une version = une gamme + une configuration de vente (phase unique) ; outillage unifié
+MWQ_VERSION = "3.4"  # 3.4 : opération = un seul nom (Famille - Libellé fusionnés, plus de famille) ; 3.3 : une version = une gamme + une configuration de vente (phase unique) ; outillage unifié
 
 
 class EnhancedJSONEncoder(json.JSONEncoder):
@@ -250,7 +250,8 @@ class PersistenceService:
         Idempotent et sans impact sur les chiffres (vérifié par l'empreinte de
         prix de l'outil de conversion) :
         - typologie d'opération ramenée à {Interne, Sous-traitance}, la famille
-          d'usinage d'origine étant conservée dans Operation.family ;
+          d'usinage d'origine étant fusionnée dans le nom de l'opération
+          (« Famille - Libellé », merge_family_into_label) ;
         - outillage fournisseur (montant + pièces incluses portés par la ligne
           d'achat) converti en vraie ligne Outillage de l'opération, rattachée
           à l'offre : les pièces incluses vivent désormais dans l'outillage.
@@ -263,7 +264,7 @@ class PersistenceService:
         Appelé à chaque chargement (rattrape les fichiers encore anciens) et par
         l'outil de conversion de masse qui réécrit ensuite au format courant.
         """
-        from domain.operation import normalize_typology, family_from_typology
+        from domain.operation import normalize_typology, family_from_typology, merge_family_into_label
 
         versions = getattr(project, "versions", None) or [getattr(project, "current_version", None)]
         for version in versions:
@@ -271,8 +272,9 @@ class PersistenceService:
                 continue
             for op in version.operations:
                 old = getattr(op, "typology", "")
-                if not getattr(op, "family", ""):
-                    op.family = family_from_typology(old)
+                # Ancienne typologie = famille d'usinage (« Microdécoupe »…) : fusionnée dans le nom.
+                # Idempotent : une fois normalisée en Interne, family_from_typology rend « ».
+                op.label = merge_family_into_label(family_from_typology(old), op.label)
                 op.typology = normalize_typology(old)
                 PersistenceService._move_supplier_tooling_to_tooling_lines(op)
                 op.refresh_free_pieces()
@@ -581,9 +583,8 @@ class PersistenceService:
 
             op = Operation(
                 code=op_data['code'],
-                label=op_data['label'],
+                label=merge_family_into_label(op_data.get('family', ""), op_data['label']),
                 typology=op_data.get('typology', ""),
-                family=op_data.get('family', "") or "",
                 comment=op_data.get('comment', ""),
                 template_id=op_data.get('template_id'),
                 template_name=op_data.get('template_name', ""),
@@ -761,9 +762,8 @@ class PersistenceService:
 
             op = Operation(
                 code=op_data['code'],
-                label=op_data['label'],
+                label=merge_family_into_label(op_data.get('family', ""), op_data['label']),
                 typology=op_data.get('typology', ""),
-                family=op_data.get('family', "") or "",
                 comment=op_data.get('comment', ""),
                 template_id=op_data.get('template_id'),
                 template_name=op_data.get('template_name', ""),

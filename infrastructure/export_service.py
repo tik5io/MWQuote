@@ -942,7 +942,7 @@ class ExportService:
             for op in getattr(project, "operations", []):
                 # Ligne d'opération
                 ws.cell(row=row, column=1, value=f"🔧 {op.label}").font = subheader_font
-                ws.cell(row=row, column=2, value=op.display_family or "").font = normal_font
+                ws.cell(row=row, column=2, value=op.typology or "").font = normal_font
                 ws.cell(row=row, column=5, value=op.comment or "").font = normal_font
                 ws.cell(row=row, column=5).alignment = Alignment(wrap_text=True)
 
@@ -1275,7 +1275,7 @@ class ExportService:
 
         # Lignes opérations
         for op in getattr(project, "operations", []):
-            op_name = f"{getattr(op, 'display_family', '') or getattr(op, 'typology', '') or 'Op'} | {getattr(op, 'label', '')}"
+            op_name = getattr(op, 'label', '') or 'Op'
             nc = ws.cell(row=r, column=1, value=op_name)
             nc.font = Font(name=FONT, size=10)
             nc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)

@@ -4,8 +4,7 @@ import copy
 from datetime import datetime
 import domain.cost as domain_cost
 from domain.operation import (Operation, SUBCONTRACTING_TYPOLOGY, TOOLING_TYPOLOGY,
-                               INTERNAL_TYPOLOGY, OPERATION_TYPOLOGIES, normalize_typology,
-                               family_from_typology)
+                               INTERNAL_TYPOLOGY, OPERATION_TYPOLOGIES, normalize_typology)
 from domain.phase import ToolingBilling, PhaseKind
 from ui.components.step_summary_panel import StepSummaryPanel
 from ui.components.offer_info_panel import OfferInfoPanel
@@ -121,20 +120,15 @@ class OperationCostEditorPanel(wx.Panel):
         self.template_status.SetForegroundColour(wx.Colour(170, 90, 0))
         self.op_props_sizer.Add(self.template_status, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
 
-        # Fixed grid for Typology and Label
+        # Type d'opération + nom unique (l'ancienne « Famille » est fusionnée dans le nom)
         grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=10)
         grid.AddGrowableCol(1, 1)
         grid.Add(wx.StaticText(self.op_props_panel, label="Type d'opération:"))
         self.prop_op_typology = wx.Choice(self.op_props_panel, choices=OPERATION_TYPOLOGIES)
         grid.Add(self.prop_op_typology, 1, wx.EXPAND)
-        grid.Add(wx.StaticText(self.op_props_panel, label="Famille:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        families = [t for t in self.config_service.get_cost_typologies()
-                    if t.strip() not in OPERATION_TYPOLOGIES]
-        self.prop_op_family = wx.ComboBox(self.op_props_panel, choices=families)
-        self.prop_op_family.SetToolTip("Famille d'usinage (optionnelle) : sert aux analyses et exports, pas au calcul.")
-        grid.Add(self.prop_op_family, 1, wx.EXPAND)
-        grid.Add(wx.StaticText(self.op_props_panel, label="Libellé:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(wx.StaticText(self.op_props_panel, label="Nom de l'opération:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.prop_op_label = wx.TextCtrl(self.op_props_panel)
+        self.prop_op_label.SetHint("ex. Perçage - D1")
         grid.Add(self.prop_op_label, 1, wx.EXPAND)
         
         self.op_props_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
@@ -195,7 +189,7 @@ class OperationCostEditorPanel(wx.Panel):
         self.lock_text.SetFont(wx.Font(wx.FontInfo(10).FaceName("Segoe UI")))
         self.lock_text.SetForegroundColour(wx.Colour(130, 80, 0))
         banner_sizer.Add(self.lock_text, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 10)
-        self.btn_new_version = RibbonButton(self.lock_banner, "➕", "Nouvelle version",
+        self.btn_new_version = RibbonButton(self.lock_banner, "➕", "Nouveau scénario",
                                             "Copie de cette gamme, modifiable", accent=TOOLING, size=(250, 50))
         self.btn_new_version.Bind(wx.EVT_BUTTON, self._on_request_new_version)
         banner_sizer.Add(self.btn_new_version, 0, wx.ALL, 6)
@@ -215,8 +209,6 @@ class OperationCostEditorPanel(wx.Panel):
 
         # Bind events for the Operation properties
         self.prop_op_typology.Bind(wx.EVT_CHOICE, self._on_op_field_changed)
-        self.prop_op_family.Bind(wx.EVT_TEXT, self._on_op_field_changed)
-        self.prop_op_family.Bind(wx.EVT_COMBOBOX, self._on_op_field_changed)
         self.prop_op_label.Bind(wx.EVT_TEXT, self._on_op_field_changed)
         self.prop_op_comment.Bind(wx.EVT_TEXT, self._on_op_field_changed)
         self.prop_op_label.Bind(wx.EVT_TEXT, self._on_op_field_changed)
@@ -229,12 +221,12 @@ class OperationCostEditorPanel(wx.Panel):
         return self._locked
 
     def set_locked(self, locked: bool, frozen_by: str = "") -> None:
-        """Gamme figée (offre émise) : lecture seule, avec bandeau et accès à « Nouvelle version »."""
+        """Gamme figée (offre émise) : lecture seule, avec bandeau et accès à « Nouveau scénario »."""
         self._locked = bool(locked)
         if locked:
             who = f" (offre {frozen_by})" if frozen_by else ""
-            self.lock_text.SetLabel(f"🔒  Version émise{who} : la gamme est figée. "
-                                    "Pour la modifier, créez une nouvelle version.")
+            self.lock_text.SetLabel(f"🔒  Scénario émis{who} : la gamme est figée. "
+                                    "Pour la modifier, créez un nouveau scénario.")
         self.lock_banner.Show(self._locked)
         # Verrou fin : on parcourt le panneau et on désactive chaque contrôle d'édition,
         # en épargnant les listes de PDF (Voir/Exporter restent actifs sur un devis figé).
@@ -365,7 +357,7 @@ class OperationCostEditorPanel(wx.Panel):
             self._show_properties(self.current_data)
 
     def _op_label(self, op):
-        return f"🔧 {op.display_family or 'Op'} | {op.label}"
+        return f"🔧 {op.label or 'Op'}"
 
     def _cost_label(self, cost, op):
         if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION and getattr(cost, 'is_temps_masque', False):
@@ -479,7 +471,6 @@ class OperationCostEditorPanel(wx.Panel):
                 self.prop_op_typology.SetStringSelection(op.typology)
             else:
                 self.prop_op_typology.SetSelection(0)
-            self.prop_op_family.ChangeValue(op.family or "")
             self.prop_op_label.ChangeValue(op.label or "")
             self.prop_op_comment.ChangeValue(op.comment or "")
             self._populate_template_choice(op)
@@ -581,7 +572,6 @@ class OperationCostEditorPanel(wx.Panel):
         before_state = [(k, v.cost_type.value, v.name) for k, v in op.costs.items()]
         previous_typology = op.typology
         op.typology = self.prop_op_typology.GetStringSelection() or INTERNAL_TYPOLOGY
-        op.family = self.prop_op_family.GetValue().strip()
         # op.code reste stable (clé des postes machine série) : il n'est plus
         # écrasé par la typologie.
         op.label = self.prop_op_label.GetValue().strip()
@@ -700,7 +690,6 @@ class OperationCostEditorPanel(wx.Panel):
         built = self.template_manager.build_operation_from_template(tpl)
         op.costs = built.costs
         op.comment = built.comment
-        op.family = family_from_typology(built.typology) or op.family
         op.typology = normalize_typology(built.typology)
         op.template_id, op.template_name = built.template_id, built.template_name
         op.template_snapshot, op.template_drift_score = built.template_snapshot, 0.0
@@ -741,7 +730,7 @@ class OperationCostEditorPanel(wx.Panel):
             wx.MessageBox("TemplateManager indisponible.", "Erreur", wx.OK | wx.ICON_ERROR)
             return
         op = data["operation"]
-        default_name = f"{op.display_family or 'Template'} - {op.label or 'Operation'}"
+        default_name = op.label or "Template"
         dlg = wx.TextEntryDialog(self, "Nom du template :", "Enregistrer comme template", default_name)
         if dlg.ShowModal() != wx.ID_OK:
             dlg.Destroy()
@@ -1007,7 +996,7 @@ class OperationCostEditorPanel(wx.Panel):
             self.phase_row_sizer.Add(wx.StaticText(self.phase_row, label="Facturation de l'outillage :"), 0,
                                      wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
             version_mode = self.project.current_phase.effective_tooling_billing.value
-            choices = [f"Selon la version ({version_mode})", ToolingBilling.REINVOICED.value, ToolingBilling.AMORTIZED.value]
+            choices = [f"Selon le scénario ({version_mode})", ToolingBilling.REINVOICED.value, ToolingBilling.AMORTIZED.value]
             ch = wx.Choice(self.phase_row, choices=choices)
             ch.SetSelection(0 if target.tooling_billing is None else
                             1 if target.tooling_billing == ToolingBilling.REINVOICED else 2)
@@ -1081,7 +1070,7 @@ class OperationCostEditorPanel(wx.Panel):
         lines.append("")
         lines.append(f"Date generation: {now_str}")
         lines.append(f"Projet: {self.project.display_name if self.project else '-'}")
-        lines.append(f"Operation: {op.display_family or '-'} | {op.label}")
+        lines.append(f"Operation: {op.label or '-'}")
         lines.append(f"Poste de cout: {cost.name}")
         lines.append(f"Type de cout: {cost.cost_type.value}")
         lines.append(f"Conversion: {cost.conversion_type.value} x facteur {number(cost.conversion_factor if cost.conversion_factor else 1.0)}")

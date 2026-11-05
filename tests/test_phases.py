@@ -191,7 +191,7 @@ class VersionPersistenceTest(unittest.TestCase):
             PersistenceService.save_project(p, path)
             with zipfile.ZipFile(path) as zf:
                 data = json.loads(zf.read("project.json").decode("utf-8"))
-            self.assertEqual(data["_mwq_version"], "3.3")
+            self.assertEqual(data["_mwq_version"], "3.4")
             v1d, v2d = data["versions"]
             # Miroir lisible par les anciens postes : quantités / coefficients du Taux horaire
             self.assertEqual(v1d["sale_quantities"], [10, 100])
@@ -332,7 +332,7 @@ class SafeSaveTest(unittest.TestCase):
                 backup = os.path.join(tmp, "backups", "format-3.0", "p.mwq")
                 with open(backup, "rb") as fh:
                     self.assertEqual(fh.read(), original)
-                self.assertEqual(PersistenceService.read_file_format_version(path), "3.3")
+                self.assertEqual(PersistenceService.read_file_format_version(path), "3.4")
                 # Une nouvelle sauvegarde n'écrase pas la copie d'origine
                 PersistenceService.save_project(p, path)
                 with open(backup, "rb") as fh:
@@ -465,14 +465,14 @@ class PhaseCalcRulesTest(unittest.TestCase):
 
 
 class CleanModelConversionTest(unittest.TestCase):
-    """Réorg catégories : typologie → {Interne, Sous-traitance}, famille conservée,
+    """Réorg catégories : typologie → {Interne, Sous-traitance}, famille fusionnée dans le nom,
     lignes Matière inchangées (le MOQ ne s'applique qu'à la Sous-traitance)."""
 
     def _material(self, name, unit_price):
         return CostItem(name=name, cost_type=CostType.MATERIAL,
                         pricing=PricingStructure(PricingType.PER_UNIT, unit_price=unit_price))
 
-    def test_typology_normalized_family_kept_prices_unchanged(self):
+    def test_typology_normalized_family_merged_prices_unchanged(self):
         from domain.operation import INTERNAL_TYPOLOGY, SUBCONTRACTING_TYPOLOGY
         op = Operation(code="OP1", label="Découpe", typology="Microdécoupe")
         op.costs["Matière"] = self._material("Matière", 3.0)
@@ -486,13 +486,13 @@ class CleanModelConversionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "p.mwq")
             PersistenceService.save_project(p, path)
-            self.assertEqual(PersistenceService.read_file_format_version(path), "3.3")
+            self.assertEqual(PersistenceService.read_file_format_version(path), "3.4")
             q = PersistenceService.load_project(path)
 
         qop, qsub = q.operations
         self.assertEqual(qop.typology, INTERNAL_TYPOLOGY)          # « Microdécoupe » → Interne
-        self.assertEqual(qop.family, "Microdécoupe")               # la famille n'est pas perdue
-        self.assertEqual(qop.display_family, "Microdécoupe")
+        self.assertEqual(qop.label, "Microdécoupe - Découpe")      # la famille est fusionnée dans le nom
+        self.assertFalse(hasattr(qop, "family"))
         self.assertEqual(qsub.typology, SUBCONTRACTING_TYPOLOGY)
         self.assertEqual(qop.costs["Matière"].cost_type, CostType.MATERIAL)  # pas de conversion de type
         self.assertAlmostEqual(q.total_price(10), price_before)
@@ -520,7 +520,7 @@ class CleanModelConversionTest(unittest.TestCase):
         p = Project(name="P", reference="R", client="C", operations=[op], sale_quantities=[1])
         PersistenceService.convert_project_to_clean_model(p)
         PersistenceService.convert_project_to_clean_model(p)
-        self.assertEqual((p.operations[0].typology, p.operations[0].family), (INTERNAL_TYPOLOGY, "Tournage"))
+        self.assertEqual((p.operations[0].typology, p.operations[0].label), (INTERNAL_TYPOLOGY, "Tournage - X"))
 
 
 class SerieSyncTest(unittest.TestCase):
@@ -677,3 +677,45 @@ class SerieStepValuesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FamilyLabelMergeTest(unittest.TestCase):
+    """Famille + Libellé → un seul nom « Famille - Libellé » (migration des anciens projets)."""
+
+    def test_merge_rules(self):
+        from domain.operation import merge_family_into_label as merge
+        self.assertEqual(merge("Perçage", "D1"), "Perçage - D1")
+        self.assertEqual(merge("", "D1"), "D1")
+        self.assertEqual(merge("Perçage", ""), "Perçage")
+        self.assertEqual(merge("Perçage", "Perçage D1"), "Perçage D1")      # pas de doublon
+        self.assertEqual(merge("perçage", "Perçage D1"), "Perçage D1")      # insensible à la casse
+        self.assertEqual(merge("  Tournage ", " Axe "), "Tournage - Axe")
+
+    def test_old_file_with_family_key_is_migrated_once(self):
+        """Un fichier 3.3 (clé « family » dans l'opération) est migré au chargement, sans doublon à la relecture."""
+        import json, zipfile
+        p = Project(name="P", reference="R", client="C",
+                    operations=[Operation(code="OP1", label="D1", typology="Interne")], sale_quantities=[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.mwq")
+            PersistenceService.save_project(p, path)
+            # fabrique un ancien fichier : clé family + version 3.3
+            with zipfile.ZipFile(path) as zf:
+                members = {n: zf.read(n) for n in zf.namelist()}
+            data = json.loads(members["project.json"])
+            data["_mwq_version"] = "3.3"
+            for v in data["versions"]:
+                for op in v["operations"]:
+                    op["family"] = "Perçage"
+            members["project.json"] = json.dumps(data).encode("utf-8")
+            old = os.path.join(tmp, "old.mwq")
+            with zipfile.ZipFile(old, "w") as zf:
+                for n, b in members.items():
+                    zf.writestr(n, b)
+
+            q = PersistenceService.load_project(old)
+            self.assertEqual(q.operations[0].label, "Perçage - D1")
+            PersistenceService.save_project(q, old)
+            r = PersistenceService.load_project(old)
+            self.assertEqual(r.operations[0].label, "Perçage - D1")          # stable
+            self.assertEqual(PersistenceService.read_file_format_version(old), "3.4")

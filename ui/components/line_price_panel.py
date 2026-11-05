@@ -116,7 +116,7 @@ class LinePricePanel(wx.Panel):
                 op.refresh_free_pieces()
                 costs.extend(op._get_active_costs())
             self.title.SetLabel("Total du projet")
-            self.subtitle.SetLabel(f"Toutes les opérations de la version — {project.current_version.describe()}")
+            self.subtitle.SetLabel(f"Toutes les opérations du scénario — {project.current_version.describe()}")
             self._show_costs(costs, None, quantities)
 
     # ------------------------------------------------------------------ calcul

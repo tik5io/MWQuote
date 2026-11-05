@@ -64,7 +64,7 @@ class SalesPricingPanel(wx.Panel):
         self.btn_quality = RibbonButton(ribbon, "📎", "Méthode / Qualité", accent=trades.QUALITE.colour,
                                         big=True, size=(140, 78))
         self.btn_quality.SetToolTip(
-            "Exporte le XLSX méthode / qualité de cette version (gamme, temps, commentaires), "
+            "Exporte le XLSX méthode / qualité de ce scénario (gamme, temps, commentaires), "
             "avec les commentaires projet de l'offre.")
         self.btn_quality.Bind(wx.EVT_BUTTON, lambda e: self.on_export_quality() if callable(self.on_export_quality) else None)
         for b in (self.btn_preview, self.btn_new_offer, self.btn_quality):
@@ -227,7 +227,7 @@ class SalesPricingPanel(wx.Panel):
     # ------------------------------------------------------------------ arbre des offres
 
     def _version_node_label(self, version) -> str:
-        name = version.label.strip() if version.label and version.label.strip() else f"V{version.version_index}"
+        name = version.label.strip() if version.label and version.label.strip() else f"S{version.version_index}"
         lock = "  🔒" if self.project.is_version_frozen(version.version_index) else ""
         return f"{name} · {version.describe()}{lock}"
 
@@ -245,7 +245,13 @@ class SalesPricingPanel(wx.Panel):
             for g in groups:
                 by_version.setdefault(g["version_index"], []).append(g)
             current_item = None
+            # Seulement les versions de la phase (mode de calcul) courante : mêler Taux horaire
+            # et Décomposé dans la même liste prêtait à confusion (la navigation entre phases
+            # se fait par la barre des versions).
+            current_is_serie = self.project.current_version.is_serie
             for version in sorted(self.project.versions, key=lambda v: v.version_index):
+                if version.is_serie != current_is_serie:
+                    continue
                 v_item = tree.AppendItem(root, self._version_node_label(version))
                 tree.SetItemData(v_item, {"type": "version", "version_index": version.version_index})
                 if version.version_index == self.project.current_version_index:
@@ -312,8 +318,8 @@ class SalesPricingPanel(wx.Panel):
             else:
                 self.btn_new_offer.set_label("Convertir en offre")
                 self.btn_new_offer.SetToolTip(
-                    "Convertit cette version en offre (indice A) : nouveau numéro de devis, fichier XLSX choisi.\n"
-                    "La gamme est alors figée : toute modification de gamme créera une nouvelle version, "
+                    "Convertit ce scénario en offre (indice A) : nouveau numéro de devis, fichier XLSX choisi.\n"
+                    "La gamme est alors figée : toute modification de gamme créera un nouveau scénario, "
                     "toute modification de coefficients un nouvel indice.")
         self.btn_quality.Show(bool(ref))
         self._refresh_comment()
@@ -463,8 +469,8 @@ class SalesPricingPanel(wx.Panel):
         if show:
             label = self.project.current_phase.display_label
             self.serie_notice.SetLabel(
-                f"La version « {label} » est chiffrée en Décomposé (volume annuel) dans l'onglet « Décomposé ».\n"
-                "Les offres de cette version se gèrent ici ; sélectionnez une version Taux horaire pour "
+                f"Le scénario « {label} » est chiffré en Décomposé (volume annuel) dans l'onglet « Décomposé ».\n"
+                "Les offres de ce scénario se gèrent ici ; sélectionnez un scénario Taux horaire pour "
                 "afficher le tarif par quantité.")
         if self.serie_notice.IsShown() != show or self.splitter.IsShown() == show:
             self.serie_notice.Show(show)

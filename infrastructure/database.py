@@ -383,7 +383,9 @@ class Database:
                     parent_folder = os.path.dirname(projects_folder)
                     os.makedirs(parent_folder, exist_ok=True)
                     for member in zipf.namelist():
-                        if member != "mwquote_index.db" and not member.endswith('/'):
+                        # La config et le manifeste des sauvegardes automatiques ne sont pas des projets
+                        if (member != "mwquote_index.db" and not member.endswith('/')
+                                and member != "MANIFEST.json" and not member.startswith("_MWQuote_config/")):
                             zipf.extract(member, path=parent_folder)
             return True
         except Exception as e:
