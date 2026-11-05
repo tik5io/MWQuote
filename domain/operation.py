@@ -30,6 +30,25 @@ def family_from_typology(typology: str) -> str:
         return ""
     return value
 
+
+def merge_family_into_label(family: str, label: str) -> str:
+    """Migration « Famille » + « Libellé » → un seul nom : « Famille - Libellé ».
+
+    Les anciens projets avaient deux champs redondants ; le nom unique les concatène.
+    Pas de doublon : si le libellé commence déjà par la famille (« Perçage D1 » pour la
+    famille « Perçage »), il est conservé tel quel. Famille vide → libellé inchangé ;
+    libellé vide → famille seule.
+    """
+    family, label = (family or "").strip(), (label or "").strip()
+    if not family:
+        return label
+    if not label:
+        return family
+    if label.lower().startswith(family.lower()):
+        return label
+    return f"{family} - {label}"
+
+
 @dataclass
 class Operation:
     code: str
@@ -42,14 +61,8 @@ class Operation:
     template_drift_score: float = 0.0
     costs: Dict[str, CostItem] = field(default_factory=dict)
     total_pieces: int = 1  # Number of pieces for per-piece calculations
-    # Famille d'usinage (Microdécoupe, Tournage…) : descriptive, hors typologie.
-    # Alimente les analyses par famille et les exports ; n'influe pas sur le calcul.
-    family: str = ""
-
-    @property
-    def display_family(self) -> str:
-        """Famille à afficher/analyser : la famille, à défaut la typologie."""
-        return self.family or self.typology
+    # NB : l'ancienne « famille » d'usinage n'existe plus. Elle est fusionnée dans `label`
+    # (« Famille - Libellé ») au chargement des anciens projets (merge_family_into_label).
 
     def __post_init__(self):
         # Contexte de phase courant (non persisté) : posé par Project.operations.

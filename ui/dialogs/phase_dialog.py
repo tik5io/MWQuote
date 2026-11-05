@@ -35,7 +35,7 @@ class PhaseDialog(wx.Dialog):
 
     def __init__(self, parent, phase: Phase = None, title: str = None, label: str = None,
                  template: Phase = None, bases: list = None, default_base: int = None):
-        title = title or ("Modifier la version" if phase else "Nouvelle version")
+        title = title or ("Modifier le scénario" if phase else "Nouveau scénario")
         super().__init__(parent, title=title, style=wx.DEFAULT_DIALOG_STYLE)
         self._editing = phase is not None
         source = phase or template
@@ -61,17 +61,17 @@ class PhaseDialog(wx.Dialog):
         self.kind_ctrl.Bind(wx.EVT_CHOICE, self._on_kind_changed)
         grid.Add(self.kind_ctrl, 1, wx.EXPAND)
 
-        # Version Taux horaire dont on reprend la gamme et les temps (Décomposé uniquement)
+        # Scénario Taux horaire dont on reprend la gamme et les temps (Décomposé uniquement)
         self._bases = list(bases or [])
-        self.base_label = wx.StaticText(self, label="Version Taux horaire de départ :")
+        self.base_label = wx.StaticText(self, label="Scénario Taux horaire de départ :")
         grid.Add(self.base_label, 0, wx.ALIGN_CENTER_VERTICAL)
         self.base_ctrl = wx.Choice(self, choices=[name for _, name in self._bases])
         if self._bases:
             ids = [i for i, _ in self._bases]
             self.base_ctrl.SetSelection(ids.index(default_base) if default_base in ids else 0)
         self.base_ctrl.SetToolTip(
-            "La structure (étapes) et les temps de cette version sont copiés à la création.\n"
-            "Ensuite le lien est rompu : les deux versions évoluent indépendamment.")
+            "La structure (étapes) et les temps de ce scénario sont copiés à la création.\n"
+            "Ensuite le lien est rompu : les deux scénarios évoluent indépendamment.")
         grid.Add(self.base_ctrl, 1, wx.EXPAND)
 
         self.billing_label = wx.StaticText(self, label="Facturation outillage :")

@@ -71,7 +71,7 @@ class ProjectDetailsPanel(wx.Panel):
 
         # Version selector row
         version_row = wx.BoxSizer(wx.HORIZONTAL)
-        version_row.Add(wx.StaticText(self, label="Version :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 6)
+        version_row.Add(wx.StaticText(self, label="Scénario :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 6)
         self.version_choice = wx.Choice(self, choices=[])
         self.version_choice.Bind(wx.EVT_CHOICE, self._on_version_changed)
         version_row.Add(self.version_choice, 1, wx.EXPAND | wx.RIGHT, 6)
@@ -129,7 +129,7 @@ class ProjectDetailsPanel(wx.Panel):
             return
         versions = getattr(self.project, 'versions', [])
         for v in versions:
-            label = f"V{v.version_index}"
+            label = f"S{v.version_index}"
             if getattr(v, 'label', ''):
                 label += f" — {v.label}"
             self.version_choice.Append(label, v.version_index)
@@ -176,7 +176,7 @@ class ProjectDetailsPanel(wx.Panel):
             time_str = f" {entry['time']}" if 'time' in entry else ""
             rev = f" ind. {entry['revision']}" if entry.get('revision') else ""
             self.history_list.Append(
-                f"{has_xlsx}{entry['devis_ref']}{rev} [V{v_idx}] - {entry['date']}{time_str}"
+                f"{has_xlsx}{entry['devis_ref']}{rev} [S{v_idx}] - {entry['date']}{time_str}"
             )
 
     def _on_history_double_click(self, event):
@@ -222,7 +222,7 @@ class ProjectDetailsPanel(wx.Panel):
         root = self.tree.AddRoot("Root")
         
         for op in self.project.operations:
-            op_item = self.tree.AppendItem(root, f"🔧 {op.display_family or 'Op'} | {op.label}")
+            op_item = self.tree.AppendItem(root, f"🔧 {op.label or 'Op'}")
             for cost in op.costs.values():
                 cost_icon = "💰" if cost.cost_type in [domain_cost.CostType.MATERIAL, domain_cost.CostType.SUBCONTRACTING] else "⚙️" if cost.cost_type == domain_cost.CostType.INTERNAL_OPERATION else "🛠️" if cost.cost_type == domain_cost.CostType.TOOLING else "📈"
                 label = f"{cost_icon} {cost.name}"

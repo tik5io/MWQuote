@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # tools/convert_base.py
-"""Conversion one-shot de toute la base de projets au format courant (3.3).
+"""Conversion one-shot de toute la base de projets au format courant (3.4).
 
 Garde-fou d'intégrité (les prix de la base sont critiques) — pour CHAQUE .mwq :
   1. les prix calculés par le code de référence (commit HEAD par défaut : ce que

@@ -125,6 +125,39 @@ class Project:
         self._versions.append(new_version)
         return new_version
 
+    def duplicate_version(self, version_index: int = None, label: str = None) -> ProjectVersion:
+        """Copie à l'identique une version (même mode de calcul, mêmes quantités, même gamme).
+
+        La copie est libre : les offres émises appartiennent à la version d'origine
+        (l'historique est indexé par version), la copie n'est donc jamais figée.
+        """
+        base = self.get_version(version_index) if version_index is not None else None
+        base = base or self.current_version
+        if label is None:
+            name = base.label.strip() or f"S{base.version_index}"
+            label = f"{name} (copie)"
+        return self.add_version(label, base_version_index=base.version_index)
+
+    def delete_version(self, version_index: int) -> bool:
+        """Supprime une version, ses offres émises comprises (historique et XLSX embarqués).
+
+        Refuse (False) de supprimer la dernière version ou une version inconnue.
+        Si la version supprimée était la courante, on bascule sur la version
+        précédente (à défaut la première). Les offres sont retirées de l'historique :
+        sinon un indice de version réutilisé plus tard apparaîtrait figé à tort.
+        """
+        version = self.get_version(version_index)
+        if version is None or len(self._versions) <= 1:
+            return False
+        order = sorted(v.version_index for v in self._versions)
+        self._versions.remove(version)
+        self.export_history[:] = [e for e in self.export_history
+                                  if e.get("version_index", 1) != version_index]
+        if self._current_version_index == version_index:
+            before = [i for i in order if i < version_index]
+            self._current_version_index = before[-1] if before else min(v.version_index for v in self._versions)
+        return True
+
     def split_version_to_project(self, version_index: int) -> 'Project':
         """Crée un nouveau projet autonome à partir d'une version."""
         version = next((v for v in self._versions if v.version_index == version_index), None)

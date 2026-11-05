@@ -118,6 +118,18 @@ class ConfigurationService:
         self.config["auto_migrate_on_root_change"] = enabled
         self.save()
 
+    def get_backup_folder(self) -> str:
+        """Dossier des sauvegardes automatiques (paramétrable : idéalement un autre disque)."""
+        folder = self.config.get("backup_folder")
+        if folder:
+            return folder
+        app_data = os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local'))
+        return os.path.join(app_data, "MWQuote", "backups", "hebdo")
+
+    def set_backup_folder(self, folder: str):
+        self.config["backup_folder"] = folder
+        self.save()
+
     def get_series_root_folder(self) -> str:
         """Racine des projets série (ex. Z:\\0 - PROJET SERIE). Paramétrable globalement."""
         folder = self.config.get("series_projects_root_folder")

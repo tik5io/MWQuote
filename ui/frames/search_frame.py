@@ -211,7 +211,7 @@ class TimelinePanel(scrolled.ScrolledPanel):
 
 class SearchFrame(wx.Frame):
     def __init__(self):
-        super().__init__(None, title="MWQuote - Analyse et Recherche", size=(1200, 800))
+        super().__init__(None, title="MWQuote - Projets", size=(1200, 800))
 
         self.db = Database()
         self.indexer = Indexer(self.db)
@@ -221,6 +221,8 @@ class SearchFrame(wx.Frame):
         self.template_manager = TemplateManager(self.db)
         self.analytics_service = AnalyticsService(self.db)
         
+        self._start_weekly_backup()
+
         self._build_ui()
         self._build_menu()
         self._set_app_icon()
@@ -245,6 +247,46 @@ class SearchFrame(wx.Frame):
         except Exception:
             pass
 
+    def _backup_service(self):
+        from infrastructure.backup_service import BackupService
+        return BackupService(
+            db_path=self.db.get_db_path(),
+            projects_root=self.config.get_quotes_root_folder(),
+            config_path=self.config.config_path,
+            backup_dir=self.config.get_backup_folder(),
+        )
+
+    def _start_weekly_backup(self):
+        """Sauvegarde hebdomadaire automatique (base + projets), en tâche de fond, sans popup."""
+        try:
+            self._backup_service().start_background()
+        except Exception:
+            logger.exception("Démarrage de la sauvegarde automatique impossible")
+
+    def _on_backup_now(self, event):
+        """Sauvegarde immédiate à la demande (action explicite : un message de fin est affiché)."""
+        svc = self._backup_service()
+
+        def _done(path, error):
+            def _show():
+                if error:
+                    wx.MessageBox(f"La sauvegarde a échoué :\n{error}", "Sauvegarde", wx.OK | wx.ICON_ERROR)
+                else:
+                    wx.MessageBox(f"Sauvegarde créée :\n{path}", "Sauvegarde", wx.OK | wx.ICON_INFORMATION)
+            wx.CallAfter(_show)
+
+        def _work():
+            try:
+                path = svc.create_backup()
+                svc.prune()
+                _done(path, None)
+            except Exception as exc:
+                logger.exception("Sauvegarde manuelle échouée")
+                _done(None, exc)
+
+        import threading
+        threading.Thread(target=_work, name="mwquote-backup-now", daemon=True).start()
+
     def _on_activate(self, event):
         """Refresh list when window gets focus (return from editor)"""
         if event.GetActive():
@@ -260,7 +302,7 @@ class SearchFrame(wx.Frame):
         top_bar = wx.BoxSizer(wx.HORIZONTAL)
 
         # New Quote Button
-        new_btn = wx.Button(top_bar_container, label="Nouvelle Quote")
+        new_btn = wx.Button(top_bar_container, label="Nouveau projet")
         new_btn.SetBackgroundColour(wx.Colour(70, 130, 180))
         new_btn.SetForegroundColour(wx.WHITE)
         new_btn.Bind(wx.EVT_BUTTON, self._on_new_quote)
@@ -291,13 +333,13 @@ class SearchFrame(wx.Frame):
 
         # Master "select all" checkbox (acts on all displayed/filtered rows)
         self.select_all_cb = wx.CheckBox(top_bar_container, label="Tout sélectionner")
-        self.select_all_cb.SetToolTip("Cocher / décocher toutes les offres affichées (filtre en cours)")
+        self.select_all_cb.SetToolTip("Cocher / décocher tous les projets affichés (filtre en cours)")
         self.select_all_cb.Bind(wx.EVT_CHECKBOX, self._on_master_check)
         top_bar.Add(self.select_all_cb, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 
         # Export synthesis (single Excel with preview + gamme + prices for all checked offers)
         self.synth_export_btn = wx.Button(top_bar_container, label="📊 Exporter synthèse Excel")
-        self.synth_export_btn.SetToolTip("Générer un Excel unique de synthèse pour les offres cochées")
+        self.synth_export_btn.SetToolTip("Générer un Excel unique de synthèse pour les projets cochés")
         self.synth_export_btn.Bind(wx.EVT_BUTTON, self._on_export_synthesis)
         self.synth_export_btn.Disable()
         top_bar.Add(self.synth_export_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
@@ -393,12 +435,14 @@ class SearchFrame(wx.Frame):
         file_menu = wx.Menu()
         business_menu = wx.Menu()
 
-        m_new = file_menu.Append(wx.ID_NEW, "&Nouvelle Quote\tCtrl+N", "Créer une nouvelle quote")
+        m_new = file_menu.Append(wx.ID_NEW, "&Nouveau projet\tCtrl+N", "Créer un nouveau projet")
         m_open = file_menu.Append(wx.ID_OPEN, "&Ouvrir...\tCtrl+O", "Ouvrir un fichier .mwq")
         file_menu.AppendSeparator()
         m_maintenance = file_menu.Append(wx.ID_ANY, "Maintenance de la base...", "Ouvrir les outils de maintenance")
         m_series_root = file_menu.Append(wx.ID_ANY, "Dossier racine PROJET SERIE...",
                                          "Définir la racine réseau des dossiers projet")
+        m_backup_now = file_menu.Append(wx.ID_ANY, "Sauvegarder maintenant (base + projets)",
+                                        "Sauvegarde complète immédiate ; une sauvegarde automatique a lieu chaque semaine")
         file_menu.AppendSeparator()
         m_exit = file_menu.Append(wx.ID_EXIT, "Quitter", "Quitter l'application")
 
@@ -411,6 +455,7 @@ class SearchFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self._on_open_file, m_open)
         self.Bind(wx.EVT_MENU, self._on_maintenance, m_maintenance)
         self.Bind(wx.EVT_MENU, self._on_set_series_root, m_series_root)
+        self.Bind(wx.EVT_MENU, self._on_backup_now, m_backup_now)
         self.Bind(wx.EVT_MENU, self._on_open_business_dashboard, m_business_dashboard)
         self.Bind(wx.EVT_MENU, lambda e: self.Close(), m_exit)
 
@@ -1148,7 +1193,7 @@ class SearchFrame(wx.Frame):
                 "index": op_idx,
                 "code": op.code,
                 "label": op.label,
-                "typology": op.display_family,
+                "typology": op.typology,
                 "comment": op.comment or "",
                 "costs_count": len(op.costs),
                 "costs": costs_payload,
@@ -1188,7 +1233,7 @@ class SearchFrame(wx.Frame):
     def _on_set_root_folder(self):
         """Set or change the root folder for quotes."""
         current = self.config.get_quotes_root_folder() or ""
-        with wx.DirDialog(self, "Définir le dossier racine des quotes",
+        with wx.DirDialog(self, "Définir le dossier racine des projets",
                           defaultPath=current,
                           style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST) as dlg:
             if dlg.ShowModal() == wx.ID_OK:
@@ -1529,14 +1574,13 @@ class SearchFrame(wx.Frame):
                 finally:
                     progress.Destroy()
                 
-                # Show summary
-                msg = f"Export terminé!\n\n{success_count}/{len(selected_indices)} fichiers exportés."
+                # Pas de popup de validation : seules les erreurs sont signalées.
                 if error_list:
-                    msg += f"\n\n{len(error_list)} erreurs :\n" + "\n".join(error_list[:5])
+                    msg = (f"{len(error_list)} export(s) en erreur sur {len(selected_indices)} :\n"
+                           + "\n".join(error_list[:5]))
                     if len(error_list) > 5:
                         msg += f"\n... et {len(error_list) - 5} autres"
-                
-                wx.MessageBox(msg, "Export Excel", wx.OK | wx.ICON_INFORMATION if success_count > 0 else wx.ICON_WARNING)
+                    wx.MessageBox(msg, "Export Excel", wx.OK | wx.ICON_WARNING)
                 self._refresh_list()
                 return
         
@@ -1594,15 +1638,6 @@ class SearchFrame(wx.Frame):
                     except Exception as e:
                         logger.warning(f"Impossible d'ouvrir le fichier automatiquement: {e}")
 
-                    wx.MessageBox(
-                        f"Export réussi !\n\n"
-                        f"Référence : {reference}\n"
-                        f"Fichier : {os.path.basename(output_path)}\n\n"
-                        f"Le numéro a été enregistré dans la base de données.",
-                        "Succès",
-                        wx.OK | wx.ICON_INFORMATION
-                    )
-
                     # Refresh list and reload details panel to show updated history
                     self._refresh_list()
                     self.details_panel.load_project(p_data['filepath'])
@@ -1642,8 +1677,8 @@ class SearchFrame(wx.Frame):
         projects_data = self._get_checked_projects()
         if not projects_data:
             wx.MessageBox(
-                "Cochez au moins une offre (cases à cocher de la liste) pour générer la synthèse.",
-                "Aucune offre sélectionnée", wx.OK | wx.ICON_INFORMATION
+                "Cochez au moins un projet (cases à cocher de la liste) pour générer la synthèse.",
+                "Aucun projet sélectionné", wx.OK | wx.ICON_INFORMATION
             )
             return
 
@@ -1661,7 +1696,7 @@ class SearchFrame(wx.Frame):
 
         progress = wx.ProgressDialog(
             "Export synthèse Excel",
-            "Chargement des offres...",
+            "Chargement des projets...",
             maximum=len(projects_data) + 1,
             parent=self,
             style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE
@@ -1679,7 +1714,7 @@ class SearchFrame(wx.Frame):
 
             if not loaded:
                 progress.Destroy()
-                wx.MessageBox("Aucune offre n'a pu être chargée.", "Erreur", wx.OK | wx.ICON_ERROR)
+                wx.MessageBox("Aucun projet n'a pu être chargé.", "Erreur", wx.OK | wx.ICON_ERROR)
                 return
 
             progress.Update(len(projects_data), "Génération du classeur de synthèse...")
@@ -1691,11 +1726,10 @@ class SearchFrame(wx.Frame):
             except Exception as e:
                 logger.warning(f"Impossible d'ouvrir le fichier automatiquement: {e}")
 
-            msg = (f"Synthèse générée !\n\n{len(loaded)} offre(s) exportée(s).\n"
-                   f"Fichier : {os.path.basename(output_path)}")
+            # Pas de popup de validation : seuls les projets ignorés sont signalés.
             if errors:
-                msg += f"\n\n{len(errors)} offre(s) ignorée(s) :\n" + "\n".join(errors[:5])
-            wx.MessageBox(msg, "Export synthèse", wx.OK | wx.ICON_INFORMATION)
+                msg = f"{len(errors)} projet(s) ignoré(s) :\n" + "\n".join(errors[:5])
+                wx.MessageBox(msg, "Export synthèse", wx.OK | wx.ICON_WARNING)
 
         except Exception as e:
             try:
