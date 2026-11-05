@@ -13,6 +13,7 @@ from ui.components.document_list_panel import DocumentListPanel
 from ui.components.offers_comparison_grid import OffersComparisonGrid
 from ui.components.ribbon_button import RibbonButton, ACCENT, DANGER, TOOLING, SURFACE
 from ui.components import trades
+from ui.components.lock_utils import is_scrollable_text, lock_control, unlock_control
 from infrastructure.configuration import ConfigurationService
 from infrastructure.logging_service import get_module_logger
 from infrastructure.template_manager import TemplateManager
@@ -243,7 +244,7 @@ class OperationCostEditorPanel(wx.Panel):
         """
         for win in getattr(self, "_lock_disabled", []):
             try:
-                win.Enable(True)
+                unlock_control(win)
             except RuntimeError:        # contrôle détruit depuis (rechargement du panneau de coût)
                 pass
         self._lock_disabled = []
@@ -253,6 +254,12 @@ class OperationCostEditorPanel(wx.Panel):
             """Applique le verrou ; renvoie True si `win` contient une liste de documents."""
             if isinstance(win, DocumentListPanel):
                 win.set_read_only(self._locked)
+                return True
+            if is_scrollable_text(win):
+                # Commentaire multi-lignes : lecture seule, pour rester défilable une fois figé.
+                # Renvoie True : ses ancêtres ne sont pas désactivés (sinon il le redeviendrait).
+                if self._locked and lock_control(win):
+                    self._lock_disabled.append(win)
                 return True
             children = list(win.GetChildren())
             holds_docs = [walk(c) for c in children]

@@ -8,6 +8,7 @@ import tempfile
 from domain.cost import CostItem, CostType, PricingType, PricingStructure, ConversionType, PricingTier
 from domain.operation import SUBCONTRACTING_TYPOLOGY
 from ui.components.document_list_panel import DocumentListPanel
+from ui.components.lock_utils import lock_control, unlock_control
 from infrastructure.configuration import ConfigurationService
 from infrastructure.logging_service import get_module_logger
 
@@ -56,7 +57,7 @@ class CostItemEditor(wx.Panel):
         # reconstruction sont ignorés), puis ré-applique le verrou si besoin.
         for ctrl in self._locked_controls:
             try:
-                ctrl.Enable(True)
+                unlock_control(ctrl)
             except RuntimeError:
                 pass
         self._locked_controls = []
@@ -71,8 +72,8 @@ class CostItemEditor(wx.Panel):
         for child in window.GetChildren():
             if child is self.doc_list:
                 continue          # géré via doc_list.set_locked (Voir/Exporter restent actifs)
-            if isinstance(child, inputs) and child.IsEnabled():
-                child.Enable(False)
+            # Commentaires multi-lignes : lecture seule (donc défilables), pas désactivés
+            if isinstance(child, inputs) and lock_control(child):
                 self._locked_controls.append(child)
             self._disable_inputs(child)
 

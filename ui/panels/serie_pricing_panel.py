@@ -9,6 +9,7 @@ from domain.operation import SUBCONTRACTING_TYPOLOGY, TOOLING_TYPOLOGY
 from ui.components.serie_sensitivity_panel import _eur
 from ui.components.serie_analysis_charts import PriceDecompositionBar, CapacityBottleneckChart, COST_COLOURS
 from ui.components.ribbon_button import RibbonButton, TOOLING
+from ui.components.lock_utils import lock_control, unlock_control
 
 
 # ---------------------------------------------------------------------------
@@ -1898,7 +1899,7 @@ class SeriePricingPanel(wx.Panel):
         if locked != self._locked or locked:
             for ctrl in self._locked_controls:
                 try:
-                    ctrl.Enable(True)
+                    unlock_control(ctrl)
                 except RuntimeError:
                     pass
             self._locked_controls = []
@@ -1913,8 +1914,8 @@ class SeriePricingPanel(wx.Panel):
     def _disable_inputs(self, window):
         inputs = (wx.TextCtrl, wx.Choice, wx.CheckBox, wx.Button, wx.ComboBox, wx.SpinCtrl, wx.SpinCtrlDouble)
         for child in window.GetChildren():
-            if isinstance(child, inputs) and child.IsEnabled():
-                child.Enable(False)
+            # Commentaires multi-lignes : lecture seule (donc défilables), pas désactivés
+            if isinstance(child, inputs) and lock_control(child):
                 self._locked_controls.append(child)
             self._disable_inputs(child)
 
