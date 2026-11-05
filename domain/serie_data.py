@@ -112,6 +112,9 @@ class SerieData:
     # Opérations désactivées (case décochée dans la liste) : exclues du calcul
     # série (MO, capacité, goulot, CAPEX machine). Mémorisé par code opération.
     disabled_operation_codes: List[str] = field(default_factory=list)
+    # Étapes désactivées (case décochée devant l'étape dépliée) : exclues du calcul série
+    # (temps par pièce ET réglage). Clé « code_opération::clé_de_la_ligne » (voir step_key).
+    disabled_step_keys: List[str] = field(default_factory=list)
 
     # ---- Setup ----
     # Modèle série : un temps fixe de lancement par ÉQUIPE (setup_launch_time_h),
@@ -153,6 +156,11 @@ class SerieData:
     # Durée de vie / marge par outillage synchronisé : {nom: {"lifetime_pieces": int, "margin_rate": float}}
     synced_tooling_overrides: dict = field(default_factory=dict)
     synced_tooling_items: List[ToolingItem] = field(default_factory=list)  # calculé par sync_from_project
+
+    @staticmethod
+    def step_key(op_code: str, cost_key: str) -> str:
+        """Clé stable d'une étape (ligne interne d'une opération) pour `disabled_step_keys`."""
+        return f"{op_code}::{cost_key}"
 
     @classmethod
     def new_for_phase(cls) -> "SerieData":
@@ -197,6 +205,7 @@ class SerieData:
         old_machines = {p.operation_code: p.machines_available for p in self.machine_posts}
         old_launch = {p.operation_code: p.setup_launch_h for p in self.machine_posts}
         disabled = set(self.disabled_operation_codes or [])
+        disabled_steps = set(self.disabled_step_keys or [])
         self.machine_posts = []
 
         for op in operations:
@@ -206,18 +215,29 @@ class SerieData:
                 continue   # opération désactivée : exclue du calcul série
             tc_h = 0.0
             rate_x_time = 0.0
+            step_rates = []
 
-            for cost in op.costs.values():
+            for ckey, cost in op.costs.items():
                 if cost.cost_type == CostType.INTERNAL_OPERATION and getattr(cost, 'is_active', True):
+                    if self.step_key(op.code, ckey) in disabled_steps:
+                        continue   # étape désactivée : exclue du calcul série
                     # Valeurs Série de l'étape (saisies, sinon héritées du Proto),
                     # éventuellement remplacées par des valeurs d'essai (sliders).
                     ov = overrides.get(id(cost), {})
                     eff_time = cost.serie_time_per_piece_h(ov.get("cycle_s"))
                     tc_h += eff_time
-                    rate_x_time += eff_time * cost.serie_rate(ov.get("rate"))
+                    eff_rate = cost.serie_rate(ov.get("rate"))
+                    rate_x_time += eff_time * eff_rate
+                    step_rates.append(eff_rate)
 
-            # Inclure l'opération même si TC = 0 (pour info), sauf si aucun coût interne du tout
-            avg_rate = (rate_x_time / tc_h) if tc_h > 0 else self.mo_production_rate
+            # Inclure l'opération même si TC = 0 (pour info), sauf si aucun coût interne du tout.
+            # Temps nul = opération purement de LANCEMENT : son lancement est chiffré au taux
+            # de ses étapes (moyenne), à défaut au taux MO de production.
+            if tc_h > 0:
+                avg_rate = rate_x_time / tc_h
+            else:
+                positive = [r for r in step_rates if r > 0]
+                avg_rate = (sum(positive) / len(positive)) if positive else self.mo_production_rate
 
             self.machine_posts.append(MachinePost(
                 operation_code=op.code,
@@ -255,12 +275,15 @@ class SerieData:
         from domain.cost import CostType, ConversionType
         from domain.operation import SUBCONTRACTING_TYPOLOGY
 
-        for cost in op.costs.values():
+        disabled_steps = set(self.disabled_step_keys or [])
+        for ckey, cost in op.costs.items():
             if cost.cost_type in (CostType.MATERIAL, CostType.SUBCONTRACTING):
                 if op.typology == SUBCONTRACTING_TYPOLOGY and not cost.is_active:
                     continue
                 totals["purchases"] += Calculator.calculate_item(cost, volume).unit_cost_converted
             elif cost.cost_type == CostType.INTERNAL_OPERATION and cost.is_active:
+                if self.step_key(op.code, ckey) in disabled_steps:
+                    continue   # étape désactivée : son réglage n'est pas compté
                 totals["setup_h"] += cost.serie_setup()
         for tool in op.get_amortized_tooling_costs():
             amount = float(tool.pricing.fixed_price or 0.0) if tool.pricing else 0.0
@@ -526,13 +549,15 @@ class SerieData:
         return self.real_capacity_per_shift()
 
     def setup_launch_time_total_h(self) -> float:
-        """Temps de lancement total par équipe (Σ des temps par opération active)."""
-        return sum(p.setup_launch_h for p in self.machine_posts if p.cycle_time_s > 0)
+        """Temps de lancement total par équipe (Σ des temps par opération active).
+
+        Une opération au temps de cycle nul compte : elle peut être purement du lancement.
+        """
+        return sum(p.setup_launch_h for p in self.machine_posts)
 
     def setup_launch_cost_per_shift(self) -> float:
         """Coût du lancement par équipe : Σ (temps de lancement de l'opé × son taux horaire)."""
-        return sum(p.setup_launch_h * p.mo_rate_euro_per_h
-                   for p in self.machine_posts if p.cycle_time_s > 0)
+        return sum(p.setup_launch_h * p.mo_rate_euro_per_h for p in self.machine_posts)
 
     def setup_cost_per_piece(self) -> float:
         """Lancement par équipe (par opération, à son TH) ventilé sur les pièces/équipe."""

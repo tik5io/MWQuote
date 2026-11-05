@@ -527,9 +527,11 @@ class _StepSensRow:
     finement par-dessus.
     """
 
-    def __init__(self, parent_row, cost):
+    def __init__(self, parent_row, cost, key=None):
         self.parent = parent_row
         self.cost = cost
+        self.key = key if key is not None else cost.name   # clé de la ligne dans l'opération
+        self.enabled = True                                # case décochée : exclue du calcul série
         self.time_pct = 0
         self.rate_pct = 0
         self.t0_h = cost.serie_time_per_piece_h()     # h / pièce
@@ -586,17 +588,39 @@ class _OpSensRow:
 
     def bind(self, op):
         """(Re)lie la ligne aux coûts internes de `op` et recalcule les valeurs de base."""
-        previous = {s.cost.name: (s.time_pct, s.rate_pct) for s in self.steps}
+        previous = {s.key: (s.time_pct, s.rate_pct, s.enabled) for s in self.steps}
         self.op = op
         self.costs = [c for c in op.costs.values()
                       if c.cost_type == CostType.INTERNAL_OPERATION and getattr(c, "is_active", True)]
-        self.time0_h = sum(c.serie_time_per_piece_h() for c in self.costs)     # h / pièce
-        rate_x_time = sum(c.serie_time_per_piece_h() * c.serie_rate() for c in self.costs)
-        self.rate0 = (rate_x_time / self.time0_h) if self.time0_h > 0 else 0.0  # €/h moyen pondéré
         # Étapes : les réglages déjà faits survivent à un re-lien sur les lignes « vivantes »
-        self.steps = [_StepSensRow(self, c) for c in self.costs]
+        self.steps = [_StepSensRow(self, c, key)
+                      for key, c in op.costs.items()
+                      if c.cost_type == CostType.INTERNAL_OPERATION and getattr(c, "is_active", True)]
         for s in self.steps:
-            s.time_pct, s.rate_pct = previous.get(s.cost.name, (0, 0))
+            s.time_pct, s.rate_pct, s.enabled = previous.get(s.key, (0, 0, True))
+        self._compute_base()
+
+    def _compute_base(self):
+        """Valeurs de base (référence 0 des curseurs), sur les étapes ACTIVES seulement."""
+        active = self.active_steps
+        self.time0_h = sum(s.t0_h for s in active)                              # h / pièce
+        rate_x_time = sum(s.t0_h * s.rate0 for s in active)
+        if self.time0_h > 0:
+            self.rate0 = rate_x_time / self.time0_h                             # €/h moyen pondéré
+        else:
+            # Temps nul = opération purement de lancement : taux moyen de ses étapes
+            positive = [s.rate0 for s in active if s.rate0 > 0]
+            self.rate0 = (sum(positive) / len(positive)) if positive else 0.0
+
+    @property
+    def active_steps(self):
+        return [s for s in self.steps if s.enabled]
+
+    def set_step_enabled(self, key, enabled):
+        for s in self.steps:
+            if s.key == key:
+                s.enabled = bool(enabled)
+        self._compute_base()
 
     @property
     def label(self):
@@ -610,15 +634,20 @@ class _OpSensRow:
     @property
     def tc_sim_s(self):
         """Temps simulé agrégé = somme des temps simulés des étapes (opération × étape)."""
-        return sum(s.tc_sim_s for s in self.steps)
+        return sum(s.tc_sim_s for s in self.active_steps)
 
     @property
     def rate_sim(self):
         """Taux simulé : moyenne des taux simulés des étapes, pondérée par leur temps simulé."""
-        weight = sum(s.t0_h * s.time_factor for s in self.steps)
+        active = self.active_steps
+        weight = sum(s.t0_h * s.time_factor for s in active)
         if weight <= 0:
+            # Pas de temps : opération de lancement pur, taux moyen des étapes (simulé)
+            positive = [s.rate_sim for s in active if s.rate_sim > 0]
+            if positive:
+                return sum(positive) / len(positive)
             return self.rate0 * (1 + self.rate_pct / 100.0)
-        return sum(s.t0_h * s.time_factor * s.rate_sim for s in self.steps) / weight
+        return sum(s.t0_h * s.time_factor * s.rate_sim for s in active) / weight
 
     @property
     def op_moved(self):
@@ -626,12 +655,12 @@ class _OpSensRow:
 
     @property
     def moved(self):
-        return self.op_moved or any(s.moved for s in self.steps)
+        return self.op_moved or any(s.moved for s in self.active_steps)
 
     def overrides(self):
         """{id(ligne): {cycle_s, rate}} pour les lignes dont un curseur (opération ou étape) a bougé."""
         out = {}
-        for s in self.steps:
+        for s in self.active_steps:
             ov = {}
             if self.time_pct or s.time_pct:
                 ov["cycle_s"] = s.cost.serie_cycle_s() * s.time_factor
@@ -643,7 +672,7 @@ class _OpSensRow:
 
     def apply(self):
         """Enregistre les valeurs simulées comme valeurs Série des lignes internes."""
-        for s in self.steps:
+        for s in self.active_steps:
             if self.time_pct or s.time_pct:
                 s.cost.serie_cycle_time_s = round(s.cost.serie_cycle_s() * s.time_factor, 3)
             if self.rate_pct or s.rate_pct:
@@ -661,7 +690,7 @@ class OperationSensGrid(wx.ScrolledWindow):
             "Machines", "Lancement (h)", "Amort./pc", "Cap./an", "Charge", "Statut"]
 
     def __init__(self, parent, on_slider=None, on_select=None, on_machines=None,
-                 on_enable=None, on_launch=None, on_expand=None):
+                 on_enable=None, on_launch=None, on_expand=None, on_step_enable=None):
         super().__init__(parent, style=wx.VSCROLL | wx.HSCROLL | wx.BORDER_THEME)
         self.SetScrollRate(20, 20)
         self.on_slider = on_slider
@@ -670,6 +699,7 @@ class OperationSensGrid(wx.ScrolledWindow):
         self.on_enable = on_enable
         self.on_launch = on_launch
         self.on_expand = on_expand
+        self.on_step_enable = on_step_enable
         self.rows = []
         self.selected = 0
         self._widgets = []
@@ -725,7 +755,7 @@ class OperationSensGrid(wx.ScrolledWindow):
                 fold = wx.StaticText(self, label="", size=(18, -1))
             name_cell.Add(fold, 0, wx.ALIGN_CENTER_VERTICAL)
             name_cell.Add(name, 0, wx.ALIGN_CENTER_VERTICAL)
-            tc0 = wx.StaticText(self, label=f"{row.tc0_s:.2f} s" if row.tc0_s > 0 else "—")
+            tc0 = wx.StaticText(self, label=f"{row.tc0_s:.2f} s")
             s_tc = wx.Slider(self, value=row.time_pct, minValue=-100, maxValue=100, size=(110, -1))
             tc_sim = wx.StaticText(self, label="", size=(150, -1), style=wx.ST_NO_AUTORESIZE)
             r0 = wx.StaticText(self, label=f"{row.rate0:.0f} €/h" if row.rate0 > 0 else "—")
@@ -771,12 +801,19 @@ class OperationSensGrid(wx.ScrolledWindow):
         agissant sur l'étape seule (combinés à ceux de l'opération)."""
         sub_fg = wx.Colour(70, 100, 140)
         for j, step in enumerate(row.steps):
-            self.sizer.Add(wx.StaticText(self, label=""), 0)                      # Actif
+            chk = wx.CheckBox(self)                                               # Actif (étape)
+            chk.SetValue(step.enabled)
+            chk.Enable(op_enabled)
+            chk.SetToolTip("Décocher pour exclure cette étape du chiffrage série "
+                           "(temps par pièce et réglage). L'opération reste active.")
+            chk.Bind(wx.EVT_CHECKBOX, lambda e, a=i, b=j: self._on_step_enable(a, b))
+            self.sizer.Add(chk, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT)
             name = wx.StaticText(self, label="      ↳ " + step.label, size=(208, -1),
                                  style=wx.ST_NO_AUTORESIZE | wx.ST_ELLIPSIZE_END)
             name.SetToolTip(f"Étape « {step.label} » de l'opération « {row.label} »")
-            name.SetForegroundColour(sub_fg)
-            tc0 = wx.StaticText(self, label=f"{step.tc0_s:.2f} s" if step.tc0_s > 0 else "—")
+            name.SetForegroundColour(sub_fg if step.enabled else wx.Colour(150, 150, 150))
+            # Temps nul = valeur valide (étape de lancement pur), pas une ligne inactive : « 0.00 s »
+            tc0 = wx.StaticText(self, label=f"{step.tc0_s:.2f} s")
             s_tc = wx.Slider(self, value=step.time_pct, minValue=-100, maxValue=100, size=(110, -1))
             tc_sim = wx.StaticText(self, label="", size=(150, -1), style=wx.ST_NO_AUTORESIZE)
             r0 = wx.StaticText(self, label=f"{step.rate0:.0f} €/h" if step.rate0 > 0 else "—")
@@ -784,9 +821,10 @@ class OperationSensGrid(wx.ScrolledWindow):
             r_sim = wx.StaticText(self, label="", size=(120, -1), style=wx.ST_NO_AUTORESIZE)
             for wdg in (tc0, tc_sim, r0, r_sim):
                 wdg.SetForegroundColour(sub_fg)
-            if step.tc0_s <= 0 or not op_enabled:
+            live = op_enabled and step.enabled
+            if step.tc0_s <= 0 or not live:      # un % de 0 s ne change rien : curseur inerte, ligne active
                 s_tc.Enable(False)
-            if step.rate0 <= 0 or not op_enabled:
+            if step.rate0 <= 0 or not live:      # le taux compte aussi pour un lancement pur
                 s_rate.Enable(False)
             for wdg in (s_tc, s_rate):
                 wdg.Bind(wx.EVT_SLIDER, lambda e, a=i, b=j: self._on_step_slider(a, b))
@@ -796,7 +834,8 @@ class OperationSensGrid(wx.ScrolledWindow):
                                | (wx.EXPAND if isinstance(wdg, wx.Slider) else 0))
             for _ in range(6):                                                   # machines … statut
                 self.sizer.Add(wx.StaticText(self, label=""), 0)
-            self._sub_widgets[(i, j)] = dict(name=name, s_tc=s_tc, tc_sim=tc_sim, s_rate=s_rate, r_sim=r_sim)
+            self._sub_widgets[(i, j)] = dict(chk=chk, name=name, s_tc=s_tc, tc_sim=tc_sim,
+                                             s_rate=s_rate, r_sim=r_sim)
 
     def _toggle(self, i):
         """Déplie / replie les étapes de l'opération i."""
@@ -808,6 +847,13 @@ class OperationSensGrid(wx.ScrolledWindow):
         self._build()
         if callable(self.on_expand):
             self.on_expand(i)
+
+    def _on_step_enable(self, i, j):
+        step = self.rows[i].steps[j]
+        step.enabled = self._sub_widgets[(i, j)]["chk"].GetValue()
+        self.rows[i].set_step_enabled(step.key, step.enabled)
+        if callable(self.on_step_enable):
+            self.on_step_enable(i, j)
 
     def _on_step_slider(self, i, j):
         step = self.rows[i].steps[j]
@@ -821,7 +867,12 @@ class OperationSensGrid(wx.ScrolledWindow):
         """Libellés « simulé » des sous-lignes (valeur effective : opération × étape)."""
         for (i, j), w in self._sub_widgets.items():
             step = self.rows[i].steps[j]
-            w["tc_sim"].SetLabel(f"{step.tc_sim_s:.2f} s ({step.time_pct:+d} %)" if step.tc0_s > 0 else "—")
+            if not step.enabled:
+                w["tc_sim"].SetLabel("désactivée")
+                w["r_sim"].SetLabel("")
+                continue
+            w["tc_sim"].SetLabel(f"{step.tc_sim_s:.2f} s ({step.time_pct:+d} %)" if step.tc0_s > 0
+                                 else f"{step.tc_sim_s:.2f} s")
             w["r_sim"].SetLabel(f"{step.rate_sim:.0f} €/h ({step.rate_pct:+d} %)" if step.rate0 > 0 else "—")
 
     def _select(self, i):
@@ -1143,7 +1194,8 @@ class SeriePricingPanel(wx.Panel):
                                          on_machines=self._on_sens_machines,
                                          on_enable=self._on_sens_enabled,
                                          on_launch=self._on_sens_launch,
-                                         on_expand=self._on_sens_expand)
+                                         on_expand=self._on_sens_expand,
+                                         on_step_enable=self._on_sens_step_enabled)
         # Min volontairement bas : la grille scrolle horizontalement dans son volet
         # au lieu d'imposer sa pleine largeur (12 colonnes) et d'écraser l'inspecteur.
         self.op_grid.SetMinSize((420, 200))
@@ -1208,6 +1260,7 @@ class SeriePricingPanel(wx.Panel):
         machines = {p.operation_code: p.machines_available for p in sd.machine_posts}
         launch = {p.operation_code: p.setup_launch_h for p in sd.machine_posts}
         disabled = set(sd.disabled_operation_codes or [])
+        disabled_steps = set(sd.disabled_step_keys or [])
         rows = []
         for op in self.project.current_version.operations:
             if op.typology in (SUBCONTRACTING_TYPOLOGY, TOOLING_TYPOLOGY):
@@ -1216,6 +1269,9 @@ class SeriePricingPanel(wx.Panel):
             row.machines = machines.get(op.code, 1)
             row.setup_launch_h = launch.get(op.code, 0.0)
             row.enabled = op.code not in disabled
+            for st in row.steps:
+                st.enabled = SerieData.step_key(op.code, st.key) not in disabled_steps
+            row._compute_base()
             rows.append(row)
         self.op_grid.set_rows(rows)
         self._refresh_capacity_rows()
@@ -1356,7 +1412,8 @@ class SeriePricingPanel(wx.Panel):
             # Variation réelle de l'opération : curseurs de l'opération ET réglages d'étapes
             t_pct = (row.tc_sim_s / row.tc0_s - 1) * 100 if row.tc0_s > 0 else 0.0
             r_pct = (row.rate_sim / row.rate0 - 1) * 100 if row.rate0 > 0 else 0.0
-            w["tc_sim"].SetLabel(f"{row.tc_sim_s:.2f} s ({t_pct:+.0f} %)" if row.tc0_s > 0 else "—")
+            w["tc_sim"].SetLabel(f"{row.tc_sim_s:.2f} s ({t_pct:+.0f} %)" if row.tc0_s > 0
+                                 else f"{row.tc_sim_s:.2f} s")
             w["r_sim"].SetLabel(f"{row.rate_sim:.0f} €/h ({r_pct:+.0f} %)" if row.rate0 > 0 else "—")
             sel = idx == self.op_grid.selected
             w["name"].SetLabel(("▶ " if sel else "  ") + row.label)
@@ -1377,6 +1434,19 @@ class SeriePricingPanel(wx.Panel):
         self.op_grid.selected = idx
         self._refresh_capacity_rows()   # charge + goulot suivent le temps simulé
         self._sens_recompute()
+
+    def _on_sens_step_enabled(self, idx, step_idx):
+        """Case d'une étape cochée/décochée : l'étape sort du calcul série (temps par pièce et réglage)."""
+        sd = self.project.serie_data if self.project else None
+        if sd is None:
+            return
+        sd.disabled_step_keys = [SerieData.step_key(r.op.code, st.key)
+                                 for r in self.op_grid.rows for st in r.steps if not st.enabled]
+        sd.machine_posts = self.op_grid.get_machine_posts()
+        sd.sync_from_project(self.project)
+        self._load_sens()        # reconstruit la grille avec les nouvelles bases
+        self._refresh_computed()
+        self._notify()
 
     def _on_sens_expand(self, idx):
         """Opération dépliée / repliée : la grille a été reconstruite, on réaffiche capacités et libellés."""

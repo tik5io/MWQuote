@@ -865,6 +865,7 @@ class PersistenceService:
             tooling_items=[ToolingItem(**x) for x in d.get('tooling_items', [])],
             machine_posts=posts,
             disabled_operation_codes=list(d.get('disabled_operation_codes', []) or []),
+            disabled_step_keys=list(d.get('disabled_step_keys', []) or []),
             setup_launch_time_h=d.get('setup_launch_time_h', 0.5),
             tooling_setup_time_h=d.get('tooling_setup_time_h', 1.0),
             sop_validation_time_h=d.get('sop_validation_time_h', 0.5),

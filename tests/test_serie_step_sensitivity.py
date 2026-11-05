@@ -86,3 +86,99 @@ def test_no_internal_step_means_nothing_to_unfold():
     op = types.SimpleNamespace(code="OP", label="ST", costs={})
     r = _OpSensRow(op)
     assert r.steps == [] and not r.moved and r.tc_sim_s == 0
+
+
+# ---------------------------------------------------------------------------
+# Temps nul = lancement pur ; étapes désactivables
+# ---------------------------------------------------------------------------
+
+def _internal(name, fixed_h=0.0, per_piece_h=0.0, rate=70.0):
+    from domain.cost import CostItem, PricingStructure, PricingType
+    return CostItem(name=name, cost_type=CostType.INTERNAL_OPERATION,
+                    pricing=PricingStructure(PricingType.PER_UNIT),
+                    fixed_time=fixed_h, per_piece_time=per_piece_h, hourly_rate=rate)
+
+
+def _sd_and_ops(*ops):
+    from domain.serie_data import SerieData
+    sd = SerieData()
+    project = types.SimpleNamespace(phases=[])
+    sd.sync_from_project(project, operations=list(ops))
+    return sd, project
+
+
+def test_zero_time_operation_still_counts_for_launch():
+    """Une opération sans temps de cycle (lancement pur) garde son temps et son coût de lancement."""
+    from domain.operation import Operation
+    op = Operation(code="OP1", label="Mise en route", typology="Interne")
+    op.costs["Prépa"] = _internal("Prépa", fixed_h=0.5, per_piece_h=0.0, rate=70.0)
+    sd, project = _sd_and_ops(op)
+    sd.machine_posts[0].setup_launch_h = 2.0
+    post = sd.machine_posts[0]
+    assert post.cycle_time_s == 0
+    assert post.mo_rate_euro_per_h == pytest.approx(70.0)       # taux de l'étape, plus 28 €/h par défaut
+    assert sd.setup_launch_time_total_h() == pytest.approx(2.0)
+    assert sd.setup_launch_cost_per_shift() == pytest.approx(140.0)
+
+
+def test_disabled_step_is_excluded_from_cycle_time_and_setup():
+    from domain.operation import Operation
+    op = Operation(code="OP1", label="Op", typology="Interne")
+    op.costs["A"] = _internal("A", fixed_h=1.0, per_piece_h=0.01, rate=100.0)    # 36 s / pièce
+    op.costs["B"] = _internal("B", fixed_h=0.5, per_piece_h=0.005, rate=50.0)    # 18 s / pièce
+    sd, project = _sd_and_ops(op)
+    assert sd.machine_posts[0].cycle_time_s == pytest.approx(54.0)
+
+    sd.disabled_step_keys = [sd.step_key("OP1", "B")]
+    sd.setup_from_fixed_times = True
+    sd.sync_from_project(project, operations=[op])
+    assert sd.machine_posts[0].cycle_time_s == pytest.approx(36.0)
+    assert sd.machine_posts[0].mo_rate_euro_per_h == pytest.approx(100.0)
+    assert sd.synced_setup_time_h == pytest.approx(1.0)          # le réglage de B n'est plus compté
+
+    sd.disabled_step_keys = []
+    sd.sync_from_project(project, operations=[op])
+    assert sd.machine_posts[0].cycle_time_s == pytest.approx(54.0)
+    assert sd.synced_setup_time_h == pytest.approx(1.5)
+
+
+def test_disabled_step_keys_survive_save_and_load():
+    import os, tempfile
+    from domain.operation import Operation
+    from domain.phase import PhaseKind
+    from domain.project import Project
+    from infrastructure.persistence import PersistenceService
+    op = Operation(code="OP1", label="Op", typology="Interne")
+    op.costs["A"] = _internal("A", per_piece_h=0.01)
+    p = Project(name="P", reference="R", client="C", operations=[op], sale_quantities=[1])
+    v = p.add_version_variant("Série", PhaseKind.SERIE, annual_volume=1000)
+    v.phase.serie_data.disabled_step_keys = ["OP1::A"]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "p.mwq")
+        PersistenceService.save_project(p, path)
+        q = PersistenceService.load_project(path)
+    serie = [x for x in q.versions if x.is_serie][0]
+    assert serie.phase.serie_data.disabled_step_keys == ["OP1::A"]
+
+
+def test_grid_row_ignores_disabled_steps(row):
+    r, a, b = row
+    r.set_step_enabled("b", False)
+    assert [s.label for s in r.active_steps] == ["Perçage"]
+    assert r.tc0_s == pytest.approx(60.0)                 # le contrôle (30 s) sort de la base
+    assert r.rate0 == pytest.approx(100.0)
+    r.time_pct = 10
+    assert id(b) not in r.overrides()                     # pas de simulation sur une étape désactivée
+    assert r.tc_sim_s == pytest.approx(66.0)
+
+
+def test_grid_row_with_zero_time_keeps_a_rate():
+    """Opération de lancement pur : le curseur de taux reste utilisable (taux moyen des étapes)."""
+    a, b = _cost("Prépa", 0.0, 80.0), _cost("Réglage", 0.0, 60.0)
+    op = types.SimpleNamespace(code="OP", label="Lancement", costs={"a": a, "b": b})
+    r = _OpSensRow(op)
+    assert r.tc0_s == 0
+    assert r.rate0 == pytest.approx(70.0)
+    r.rate_pct = 10
+    assert r.rate_sim == pytest.approx(77.0)
+    assert r.overrides()[id(a)] == {"rate": pytest.approx(88.0)}
