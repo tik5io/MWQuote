@@ -247,13 +247,14 @@ class SearchFrame(wx.Frame):
         except Exception:
             pass
 
-    def _backup_service(self):
+    def _backup_service(self, backup_dir=None):
+        """Service de sauvegarde ; `backup_dir` surcharge le dossier configuré (fenêtre Réglages)."""
         from infrastructure.backup_service import BackupService
         return BackupService(
             db_path=self.db.get_db_path(),
             projects_root=self.config.get_quotes_root_folder(),
             config_path=self.config.config_path,
-            backup_dir=self.config.get_backup_folder(),
+            backup_dir=backup_dir or self.config.get_backup_folder(),
         )
 
     def _start_weekly_backup(self):
@@ -263,12 +264,14 @@ class SearchFrame(wx.Frame):
         except Exception:
             logger.exception("Démarrage de la sauvegarde automatique impossible")
 
-    def _on_backup_now(self, event):
+    def _on_backup_now(self, backup_dir=None, on_done=None):
         """Sauvegarde immédiate à la demande (action explicite : un message de fin est affiché)."""
-        svc = self._backup_service()
+        svc = self._backup_service(backup_dir)
 
         def _done(path, error):
             def _show():
+                if on_done:
+                    on_done()
                 if error:
                     wx.MessageBox(f"La sauvegarde a échoué :\n{error}", "Sauvegarde", wx.OK | wx.ICON_ERROR)
                 else:
@@ -438,11 +441,8 @@ class SearchFrame(wx.Frame):
         m_new = file_menu.Append(wx.ID_NEW, "&Nouveau projet\tCtrl+N", "Créer un nouveau projet")
         m_open = file_menu.Append(wx.ID_OPEN, "&Ouvrir...\tCtrl+O", "Ouvrir un fichier .mwq")
         file_menu.AppendSeparator()
-        m_maintenance = file_menu.Append(wx.ID_ANY, "Maintenance de la base...", "Ouvrir les outils de maintenance")
-        m_series_root = file_menu.Append(wx.ID_ANY, "Dossier racine PROJET SERIE...",
-                                         "Définir la racine réseau des dossiers projet")
-        m_backup_now = file_menu.Append(wx.ID_ANY, "Sauvegarder maintenant (base + projets)",
-                                        "Sauvegarde complète immédiate ; une sauvegarde automatique a lieu chaque semaine")
+        m_settings = file_menu.Append(wx.ID_PREFERENCES, "&Réglages...\tCtrl+,",
+                                      "Dossiers, sauvegarde : tous les paramètres de l'application")
         file_menu.AppendSeparator()
         m_exit = file_menu.Append(wx.ID_EXIT, "Quitter", "Quitter l'application")
 
@@ -453,30 +453,50 @@ class SearchFrame(wx.Frame):
 
         self.Bind(wx.EVT_MENU, self._on_new_quote, m_new)
         self.Bind(wx.EVT_MENU, self._on_open_file, m_open)
-        self.Bind(wx.EVT_MENU, self._on_maintenance, m_maintenance)
-        self.Bind(wx.EVT_MENU, self._on_set_series_root, m_series_root)
-        self.Bind(wx.EVT_MENU, self._on_backup_now, m_backup_now)
+        self.Bind(wx.EVT_MENU, self._on_settings, m_settings)
         self.Bind(wx.EVT_MENU, self._on_open_business_dashboard, m_business_dashboard)
         self.Bind(wx.EVT_MENU, lambda e: self.Close(), m_exit)
+
+    def _on_settings(self, event):
+        """Fenêtre Réglages : point d'entrée unique des paramètres (dossiers, sauvegarde)."""
+        from ui.dialogs.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self, self.config, self._backup_service,
+                             on_backup_now=self._on_backup_now,
+                             on_restore=self._on_restore_database)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            values = dlg.get_values()
+        finally:
+            dlg.Destroy()
+
+        cfg = self.config
+        if values["series_dir"] and values["series_dir"] != cfg.get_series_root_folder():
+            cfg.set_series_root_folder(values["series_dir"])
+        if values["template_name"] != cfg.get_empty_project_name():
+            cfg.set_empty_project_name(values["template_name"])
+        if values["backup_dir"] != cfg.get_backup_folder():
+            cfg.set_backup_folder(values["backup_dir"])
+        if values["projects_dir"] and values["projects_dir"] != (cfg.get_quotes_root_folder() or ""):
+            self._apply_projects_root(values["projects_dir"])
+
+    def _apply_projects_root(self, new_folder: str):
+        """Nouveau dossier des projets : propose de migrer les fichiers existants, sinon scanne le dossier."""
+        old_folder = self.config.get_quotes_root_folder()
+        self.config.set_quotes_root_folder(new_folder)
+        if old_folder and old_folder != new_folder and os.path.exists(old_folder):
+            msg = (f"Ancien dossier : {old_folder}\n"
+                   f"Nouveau dossier : {new_folder}\n\n"
+                   "Migrer les fichiers existants vers le nouveau dossier ?\n\n"
+                   "Les fichiers seront copiés, renommés avec un UUID si nécessaire, et l'index mis à jour.")
+            if wx.MessageBox(msg, "Migration des fichiers", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
+                self._do_auto_migrate(old_folder, new_folder)
+                return
+        self._do_index(new_folder, migrate=False)
 
     def _on_open_business_dashboard(self, event):
         frame = BusinessDashboardFrame(self, self.analytics_service)
         frame.Show()
-
-    def _on_set_series_root(self, event):
-        """Définir la racine réseau des dossiers projet série (paramètre global)."""
-        current = self.config.get_series_root_folder()
-        default_path = current if os.path.isdir(current) else ""
-        with wx.DirDialog(self, "Choisir la racine des dossiers PROJET SERIE",
-                          defaultPath=default_path, style=wx.DD_DEFAULT_STYLE) as dlg:
-            if dlg.ShowModal() != wx.ID_OK:
-                return
-            new_root = dlg.GetPath()
-        self.config.set_series_root_folder(new_root)
-        wx.MessageBox(
-            f"Racine des projets série définie :\n{new_root}",
-            "Dossier racine PROJET SERIE", wx.OK | wx.ICON_INFORMATION
-        )
 
     def _on_new_quote(self, event):
         """Créer une nouvelle quote et ouvrir l'éditeur (modal)"""
@@ -921,216 +941,12 @@ class SearchFrame(wx.Frame):
         wx.MessageBox(msg, "Suppression en masse", wx.OK | wx.ICON_INFORMATION)
 
 
-    def _on_index_and_migrate(self, event):
-        """Index directory AND migrate legacy JSON files to ZIP format."""
-        with wx.DirDialog(self, "Choisir le dossier à scanner et migrer",
-                          style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST) as dirDialog:
-            if dirDialog.ShowModal() == wx.ID_CANCEL:
-                return
-
-            path = dirDialog.GetPath()
-
-            # Confirmation
-            if wx.MessageBox(f"Cette opération va :\n"
-                            f"1. Scanner tous les fichiers .mwq dans {path}\n"
-                            f"2. Convertir les anciens fichiers JSON vers le format ZIP\n"
-                            f"3. Mettre à jour l'index\n\n"
-                            f"Continuer ?",
-                            "Migration vers ZIP", wx.YES_NO | wx.ICON_QUESTION) != wx.YES:
-                return
-
-            self.SetStatusText(f"Migration et indexation de {path}...")
-
-            def progress(msg):
-                wx.CallAfter(self.SetStatusText, msg)
-
-            def complete(count):
-                wx.CallAfter(self._on_index_complete, count, None)
-
-            self.indexer.index_directory(path, progress_callback=progress,
-                                        completion_callback=complete, migrate_to_zip=True)
-
     def _on_index_complete(self, count, btn=None):
         self.SetStatusText(f"Indexation terminée. {count} projets indexés.")
         if btn:
             btn.Enable()
         self._refresh_list()
         wx.MessageBox(f"Indexation terminée.\n{count} projets trouvés.", "Succès", wx.OK | wx.ICON_INFORMATION)
-
-    def _on_maintenance(self, event):
-        """Show maintenance dialog with debugging and cleaning tools"""
-        stats = self.db.get_stats()
-        db_path = self.db.get_db_path()
-        root_folder = self.config.get_quotes_root_folder()
-
-        missing_info = f"\n- Projets manquants : {stats['missing_projects']}" if stats.get('missing_projects', 0) > 0 else ""
-        root_info = root_folder if root_folder else "(non défini)"
-        msg = (f"Maintenance & Debug - MWQuote\n\n"
-               f"Base : {db_path}\n"
-               f"Taille : {stats['db_size_kb']:.1f} KB\n"
-               f"Dossier racine : {root_info}\n\n"
-               f"Statistiques :\n"
-               f"- Projets indexés : {stats['total_projects']}{missing_info}\n"
-               f"- Clients uniques : {stats['total_clients']}\n"
-               f"\n"
-               "Actions disponibles :")
-
-        # Build choices dynamically based on whether root folder is set
-        choices = []
-        if root_folder and os.path.exists(root_folder):
-            choices.append(f"Re-scanner le dossier racine")
-            choices.append(f"Re-scanner + Migrer vers ZIP")
-            choices.append(f"Migrer noms legacy vers UUID")
-        choices.extend([
-            "Définir/Changer le dossier racine...",
-            "Relocaliser les fichiers vers un nouveau dossier...",
-            "Réconcilier fichiers déplacés",
-            "Vérifier l'intégrité de la base",
-            "Générer templates depuis export IA...",
-            "Exporter dataset IA anonymisé (clients masqués)",
-            "Supprimer liens vers fichiers inexistants",
-            "📦 BACKUP DATABASE",
-            "📦 RESTORE FROM BACKUP",
-            "NETTOYAGE COMPLET (RAZ de l'index)"
-        ])
-
-        dlg = wx.SingleChoiceDialog(self, msg, "Outils de Maintenance", choices)
-
-        if dlg.ShowModal() == wx.ID_OK:
-            selected = dlg.GetStringSelection()
-
-            if selected == "Re-scanner le dossier racine":
-                self._do_index(root_folder, migrate=False)
-            elif selected == "Re-scanner + Migrer vers ZIP":
-                self._do_index(root_folder, migrate=True)
-            elif selected == "Migrer noms legacy vers UUID":
-                self._do_migrate_legacy_filenames(root_folder)
-            elif selected == "Définir/Changer le dossier racine...":
-                self._on_set_root_folder()
-            elif selected == "Relocaliser les fichiers vers un nouveau dossier...":
-                self._on_relocate_files()
-            elif selected == "Réconcilier fichiers déplacés":
-                rec_stats = self.indexer.reconcile()
-                self._refresh_list()
-                wx.MessageBox(f"Réconciliation terminée.\n\n"
-                             f"Fichiers vérifiés: {rec_stats['checked']}\n"
-                             f"Nouveaux manquants: {rec_stats['missing']}\n"
-                             f"Retrouvés: {rec_stats['found']}",
-                             "Réconciliation", wx.OK | wx.ICON_INFORMATION)
-            elif selected == "Vérifier l'intégrité de la base":
-                ok = self.db.check_integrity()
-                if ok:
-                    wx.MessageBox("La base de données est saine (Integrity OK).", "Vérification", wx.OK | wx.ICON_INFORMATION)
-                else:
-                    wx.MessageBox("ERREUR : La base de données est corrompue !", "Alerte", wx.OK | wx.ICON_ERROR)
-            elif selected == "Générer templates depuis export IA...":
-                self._on_generate_templates_from_ai_export()
-            elif selected == "Exporter dataset IA anonymisé (clients masqués)":
-                self._on_export_ai_dataset()
-            elif selected == "Supprimer liens vers fichiers inexistants":
-                removed = self.db.delete_missing_files()
-                self._refresh_list()
-                wx.MessageBox(f"{removed} entrées obsolètes supprimées.", "Nettoyage fini", wx.OK | wx.ICON_INFORMATION)
-            elif selected == "📦 BACKUP DATABASE":
-                self._on_backup_database()
-            elif selected == "📦 RESTORE FROM BACKUP":
-                self._on_restore_database()
-            elif selected == "NETTOYAGE COMPLET (RAZ de l'index)":
-                if wx.MessageBox("Voulez-vous vraiment TOUT EFFACER ? L'index devra être reconstruit.",
-                                 "Confirmation RAZ", wx.YES_NO | wx.ICON_WARNING) == wx.YES:
-                    self.db.clear_all()
-                    self._refresh_list()
-                    wx.MessageBox("Base de données réinitialisée (VACUUM OK).", "Succès", wx.OK | wx.ICON_INFORMATION)
-
-    def _on_export_ai_dataset(self):
-        """Export anonymized project dataset for AI analysis (business + software usage)."""
-        rows = self.db.search_projects(include_missing=False, sort_by="last_modified", sort_order="DESC")
-        if not rows:
-            wx.MessageBox("Aucun projet indexé à exporter.", "Information", wx.OK | wx.ICON_INFORMATION)
-            return
-
-        default_name = f"mwquote_ai_dataset_{date.today().strftime('%Y%m%d')}.json"
-        with wx.FileDialog(
-            self,
-            "Exporter dataset IA anonymisé",
-            wildcard="Fichier JSON (*.json)|*.json",
-            defaultFile=default_name,
-            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
-        ) as dlg:
-            if dlg.ShowModal() != wx.ID_OK:
-                return
-            output_path = dlg.GetPath()
-
-        # Stable pseudonymization labels by client value ordering.
-        unique_clients = sorted({(r.get("client") or "").strip() for r in rows})
-        client_map = {}
-        for idx, client_name in enumerate(unique_clients, 1):
-            client_map[client_name] = f"CLIENT_{idx:04d}" if client_name else "CLIENT_0000"
-
-        exported = []
-        skipped = []
-
-        for row in rows:
-            filepath = row.get("filepath")
-            try:
-                project = PersistenceService.load_project(filepath)
-            except Exception as e:
-                skipped.append({"filepath": filepath, "error": str(e)})
-                continue
-
-            anon_client = client_map.get((row.get("client") or "").strip(), "CLIENT_0000")
-            record = self._build_ai_project_record(project, row, anon_client)
-            exported.append(record)
-
-        payload = {
-            "schema_version": "1.0",
-            "generated_on": date.today().isoformat(),
-            "description": (
-                "Dataset MWQuote anonymise pour analyses IA: comprehension usage logiciel, "
-                "analyse metier des couts, recommandations evolutions produit."
-            ),
-            "anonymization": {
-                "clients_masked": True,
-                "project_uuid_preserved": True,
-                "note": "Le champ client est pseudonymise; les UUID projet sont conserves."
-            },
-            "stats": {
-                "indexed_projects": len(rows),
-                "exported_projects": len(exported),
-                "skipped_projects": len(skipped),
-                "unique_clients_anonymized": len(unique_clients),
-            },
-            "projects": exported,
-            "skipped": skipped,
-        }
-
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-
-        logger.info(f"AI dataset exported: {output_path} | exported={len(exported)} skipped={len(skipped)}")
-        msg = (
-            f"Export IA terminé.\n\n"
-            f"Fichier : {output_path}\n"
-            f"Projets exportés : {len(exported)}\n"
-            f"Projets ignorés : {len(skipped)}"
-        )
-        wx.MessageBox(msg, "Export IA anonymisé", wx.OK | wx.ICON_INFORMATION)
-
-    def _on_generate_templates_from_ai_export(self):
-        with wx.FileDialog(
-            self,
-            "Sélectionner un export IA JSON",
-            wildcard="Fichier JSON (*.json)|*.json",
-            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST
-        ) as dlg:
-            if dlg.ShowModal() != wx.ID_OK:
-                return
-            path = dlg.GetPath()
-        try:
-            created = self.template_manager.create_initial_templates_from_ai_dataset(path)
-            wx.MessageBox(f"Templates générés: {created}", "Templates IA", wx.OK | wx.ICON_INFORMATION)
-        except Exception as e:
-            wx.MessageBox(f"Erreur génération templates IA:\n{e}", "Erreur", wx.OK | wx.ICON_ERROR)
 
     def _build_ai_project_record(self, project, db_row, anon_client):
         """Create one anonymized project payload with usage + cost structure."""
@@ -1230,46 +1046,6 @@ class SearchFrame(wx.Frame):
         self.indexer.index_directory(folder, progress_callback=progress,
                                     completion_callback=complete, migrate_to_zip=migrate)
 
-    def _on_set_root_folder(self):
-        """Set or change the root folder for quotes."""
-        current = self.config.get_quotes_root_folder() or ""
-        with wx.DirDialog(self, "Définir le dossier racine des projets",
-                          defaultPath=current,
-                          style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST) as dlg:
-            if dlg.ShowModal() == wx.ID_OK:
-                new_folder = dlg.GetPath()
-                old_folder = self.config.get_quotes_root_folder()
-                
-                # Update configuration
-                self.config.set_quotes_root_folder(new_folder)
-                
-                # Offer automatic migration if there's an old folder and it's different
-                if old_folder and old_folder != new_folder and os.path.exists(old_folder):
-                    msg = (f"Ancien dossier : {old_folder}\n"
-                           f"Nouveau dossier : {new_folder}\n\n"
-                           f"Voulez-vous migrer automatiquement les fichiers existants "
-                           f"vers le nouveau dossier ?\n\n"
-                           f"Les fichiers seront :\n"
-                           f"- Copiés au nouveau dossier\n"
-                           f"- Renommés avec UUID si nécessaire\n"
-                           f"- L'index sera mis à jour")
-                    
-                    if wx.MessageBox(msg, "Migration des fichiers", 
-                                    wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
-                        self._do_auto_migrate(old_folder, new_folder)
-                    else:
-                        wx.MessageBox(f"Dossier racine défini :\n{new_folder}\n\n"
-                                    "Vous pouvez migrer les fichiers manuellement "
-                                    "via Maintenance > Relocaliser les fichiers",
-                                    "Dossier racine", wx.OK | wx.ICON_INFORMATION)
-                else:
-                    wx.MessageBox(f"Dossier racine défini :\n{new_folder}\n\n"
-                                 f"Voulez-vous scanner ce dossier maintenant ?",
-                                 "Dossier racine", wx.YES_NO | wx.ICON_QUESTION)
-                    if wx.MessageBox(f"Scanner le dossier maintenant ?",
-                                    "Scanner", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
-                        self._do_index(new_folder, migrate=False)
-
     def _do_auto_migrate(self, old_folder: str, new_folder: str):
         """Perform automatic migration when root folder changes."""
         progress_dlg = wx.ProgressDialog(
@@ -1297,126 +1073,6 @@ class SearchFrame(wx.Frame):
             
             self.migration_service.migrate_on_root_folder_change(
                 old_folder, new_folder, on_progress, on_complete
-            )
-        except Exception as e:
-            progress_dlg.Destroy()
-            wx.MessageBox(f"Erreur lors de la migration : {e}", "Erreur", wx.OK | wx.ICON_ERROR)
-
-    def _on_relocate_files(self):
-        """Relocate all indexed files to a new folder."""
-        # Get list of current files
-        projects = self.db.search_projects(include_missing=False)
-        if not projects:
-            wx.MessageBox("Aucun projet à relocaliser.", "Information", wx.OK | wx.ICON_INFORMATION)
-            return
-
-        with wx.DirDialog(self, "Choisir le nouveau dossier de destination",
-                          style=wx.DD_DEFAULT_STYLE) as dlg:
-            if dlg.ShowModal() != wx.ID_OK:
-                return
-
-            new_folder = dlg.GetPath()
-
-            # Confirmation
-            if wx.MessageBox(f"Cette opération va :\n"
-                            f"1. Copier {len(projects)} fichiers .mwq vers :\n   {new_folder}\n"
-                            f"2. Mettre à jour les chemins dans la base\n"
-                            f"3. Définir ce dossier comme nouveau dossier racine\n\n"
-                            f"Les fichiers originaux ne seront PAS supprimés.\n\n"
-                            f"Continuer ?",
-                            "Relocalisation", wx.YES_NO | wx.ICON_QUESTION) != wx.YES:
-                return
-
-            # Progress dialog
-            progress_dlg = wx.ProgressDialog("Relocalisation en cours",
-                                            "Copie des fichiers...",
-                                            maximum=len(projects),
-                                            parent=self,
-                                            style=wx.PD_AUTO_HIDE | wx.PD_APP_MODAL)
-            copied = 0
-            errors = []
-
-            try:
-                for i, p in enumerate(projects):
-                    old_path = p['filepath']
-                    filename = os.path.basename(old_path)
-                    new_path = os.path.join(new_folder, filename)
-
-                    # Handle duplicates
-                    if os.path.exists(new_path) and new_path != old_path:
-                        base, ext = os.path.splitext(filename)
-                        counter = 1
-                        while os.path.exists(new_path):
-                            new_path = os.path.join(new_folder, f"{base}_{counter}{ext}")
-                            counter += 1
-
-                    progress_dlg.Update(i, f"Copie de {filename}...")
-
-                    try:
-                        if os.path.exists(old_path):
-                            shutil.copy2(old_path, new_path)
-                            # Update DB with new path
-                            self.db.update_filepath(p['id'], new_path)
-                            copied += 1
-                    except Exception as e:
-                        errors.append(f"{filename}: {e}")
-
-                # Update root folder config
-                self.config.set_quotes_root_folder(new_folder)
-
-            finally:
-                progress_dlg.Destroy()
-
-            self._refresh_list()
-
-            msg = f"Relocalisation terminée.\n\n{copied} fichiers copiés."
-            if errors:
-                msg += f"\n\n{len(errors)} erreurs :\n" + "\n".join(errors[:5])
-                if len(errors) > 5:
-                    msg += f"\n... et {len(errors) - 5} autres"
-            wx.MessageBox(msg, "Relocalisation", wx.OK | wx.ICON_INFORMATION)
-
-    def _do_migrate_legacy_filenames(self, root_folder: str):
-        """Migrate legacy-named files to UUID-based naming."""
-        if wx.MessageBox(
-            f"Cette opération va :\n\n"
-            f"1. Scanner {root_folder}\n"
-            f"2. Identifier les fichiers avec noms legacy\n"
-            f"3. Les renommer avec UUID automatique\n"
-            f"4. Mettre à jour la base de données\n\n"
-            f"Les fichiers originaux seront déplacés.\n\n"
-            f"Continuer ?",
-            "Migration legacy vers UUID", 
-            wx.YES_NO | wx.ICON_QUESTION
-        ) != wx.YES:
-            return
-        
-        progress_dlg = wx.ProgressDialog(
-            "Migration legacy vers UUID",
-            "Scan en cours...",
-            style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE
-        )
-        
-        try:
-            def on_progress(msg):
-                wx.CallAfter(progress_dlg.Pulse, msg)
-            
-            def on_complete(stats):
-                wx.CallAfter(progress_dlg.Destroy)
-                
-                msg = (f"Migration terminée !\n\n"
-                       f"Fichiers scannés : {stats.get('scanned', 0)}\n"
-                       f"Déjà en UUID : {stats.get('already_uuid', 0)}\n"
-                       f"Renommés : {stats.get('migrated', 0)}")
-                
-                if stats.get('errors'):
-                    msg += f"\n\nErreurs : {len(stats['errors'])}"
-                
-                wx.MessageBox(msg, "Migration", wx.OK | wx.ICON_INFORMATION)
-                self._refresh_list()
-            
-            self.migration_service.auto_migrate_legacy_files(
-                root_folder, on_progress, on_complete
             )
         except Exception as e:
             progress_dlg.Destroy()
@@ -1830,83 +1486,16 @@ class SearchFrame(wx.Frame):
                 wx.OK | wx.ICON_ERROR
             )
 
-    def _on_backup_database(self):
-        """Créer un backup complet: DB + dossier des projets en ZIP"""
-        root_folder = self.config.get_quotes_root_folder()
-        
-        if not root_folder:
-            wx.MessageBox(
-                "Le dossier racine des projets n'est pas défini.\n"
-                "Veuillez d'abord définir le dossier racine dans Maintenance > Définir/Changer le dossier racine.",
-                "Dossier racine manquant",
-                wx.OK | wx.ICON_WARNING
-            )
-            return
-        
-        # Proposer un nom par défaut avec date
-        from datetime import datetime
-        default_name = f"MWQuote_Backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-        
-        with wx.FileDialog(
-            self,
-            "Sauvegarder le backup complet",
-            defaultFile=default_name,
-            wildcard="Fichiers ZIP (*.zip)|*.zip",
-            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
-        ) as fileDialog:
-            if fileDialog.ShowModal() == wx.ID_CANCEL:
-                return
-            
-            backup_path = fileDialog.GetPath()
-        
-        # Progress dialog
-        progress = wx.ProgressDialog(
-            "Création du backup",
-            "Compression de la base de données et des projets...",
-            maximum=100,
-            parent=self,
-            style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE
-        )
-        
-        try:
-            wx.BeginBusyCursor()
-            progress.Update(25, "Préparation...")
-            
-            self.db.backup_database_with_projects(backup_path, root_folder)
-            
-            progress.Update(100, "Backup terminé!")
-            wx.EndBusyCursor()
-            progress.Destroy()
-            
-            file_size_mb = os.path.getsize(backup_path) / (1024 * 1024)
-            
-            msg = (
-                f"✓ Backup créé avec succès!\n\n"
-                f"Fichier: {os.path.basename(backup_path)}\n"
-                f"Taille: {file_size_mb:.2f} MB\n"
-                f"Chemin: {backup_path}"
-            )
-            wx.MessageBox(msg, "Backup terminé", wx.OK | wx.ICON_INFORMATION)
-            logger.info(f"Backup créé: {backup_path}")
-            
-        except Exception as e:
-            wx.EndBusyCursor()
-            progress.Destroy()
-            logger.error(f"Erreur backup: {e}", exc_info=True)
-            wx.MessageBox(
-                f"Erreur lors du backup:\n{str(e)}",
-                "Erreur",
-                wx.OK | wx.ICON_ERROR
-            )
-
-    def _on_restore_database(self):
+    def _on_restore_database(self, backup_dir=None):
         """Restaurer la base de données et les projets depuis un backup ZIP"""
         root_folder = self.config.get_quotes_root_folder()
         
-        # Proposer de sélectionner le fichier backup
+        # Proposer de sélectionner le fichier backup (par défaut dans le dossier des sauvegardes)
+        start_dir = backup_dir or self.config.get_backup_folder()
         with wx.FileDialog(
             self,
             "Sélectionner le fichier backup à restaurer",
+            defaultDir=start_dir if start_dir and os.path.isdir(start_dir) else "",
             wildcard="Fichiers ZIP (*.zip)|*.zip",
             style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST
         ) as fileDialog:

@@ -127,7 +127,16 @@ class ConfigurationService:
         return os.path.join(app_data, "MWQuote", "backups", "hebdo")
 
     def set_backup_folder(self, folder: str):
-        self.config["backup_folder"] = folder
+        """Dossier des sauvegardes ; vide = retour au dossier par défaut."""
+        if folder:
+            self.config["backup_folder"] = folder
+        else:
+            self.config.pop("backup_folder", None)
+        self.save()
+
+    def set_empty_project_name(self, name: str):
+        """Nom du dossier modèle copié pour créer un dossier projet ; vide = nom par défaut."""
+        self.config["series_empty_project_name"] = name or self.DEFAULT_EMPTY_PROJECT_NAME
         self.save()
 
     def get_series_root_folder(self) -> str:

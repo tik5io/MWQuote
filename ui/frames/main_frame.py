@@ -26,6 +26,61 @@ from infrastructure.template_manager import TemplateManager
 
 
 
+class _CollapseRail(wx.Panel):
+    """Rail étroit sur le bord gauche : replie / déplie le panneau Projet d'un clic.
+
+    Toujours visible ; replié, il affiche le titre du panneau à la verticale. La couleur
+    est celle du métier du panneau (voir ui.components.trades).
+    """
+    WIDTH = 24
+
+    def __init__(self, parent, trade, caption, on_toggle):
+        super().__init__(parent, size=(self.WIDTH, -1))
+        self.SetMinSize((self.WIDTH, -1))
+        self._trade, self._caption, self._on_toggle = trade, caption, on_toggle
+        self._collapsed = False
+        self._hover = False
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+        self.Bind(wx.EVT_PAINT, self._on_paint)
+        self.Bind(wx.EVT_LEFT_UP, lambda e: self._on_toggle())
+        self.Bind(wx.EVT_ENTER_WINDOW, lambda e: self._set_hover(True))
+        self.Bind(wx.EVT_LEAVE_WINDOW, lambda e: self._set_hover(False))
+        self._update_tooltip()
+
+    def set_collapsed(self, collapsed: bool):
+        self._collapsed = bool(collapsed)
+        self._update_tooltip()
+        self.Refresh()
+
+    def _update_tooltip(self):
+        self.SetToolTip("Déplier le panneau Projet (Ctrl+B)" if self._collapsed
+                        else "Replier le panneau Projet pour gagner de la place (Ctrl+B)")
+
+    def _set_hover(self, hover):
+        self._hover = hover
+        self.Refresh()
+
+    def _on_paint(self, event):
+        dc = wx.AutoBufferedPaintDC(self)
+        w, h = self.GetClientSize()
+        dc.SetBackground(wx.Brush(self._trade.tint if not self._hover else trades._mix(self._trade.colour, wx.WHITE, 0.8)))
+        dc.Clear()
+        dc.SetPen(wx.TRANSPARENT_PEN)
+        dc.SetBrush(wx.Brush(self._trade.colour))
+        dc.DrawRectangle(0, 0, 3, h)
+        dc.SetTextForeground(self._trade.text)
+        dc.SetFont(wx.Font(wx.FontInfo(10).FaceName("Segoe UI").Bold()))
+        glyph = "▶" if self._collapsed else "◀"
+        gw, gh = dc.GetTextExtent(glyph)
+        dc.DrawText(glyph, (w - gw) // 2 + 1, 10)
+        if self._collapsed:
+            dc.SetFont(wx.Font(wx.FontInfo(9).FaceName("Segoe UI").Bold()))
+            text = self._caption.upper()
+            tw, th = dc.GetTextExtent(text)
+            dc.DrawRotatedText(text, (w - th) // 2 + 1, 44 + tw, 90)   # lu de bas en haut
+
+
 class MainFrame(wx.Frame):
     """Fenêtre principale : fiche projet (amont, méthode, qualité, chiffrage)."""
 
@@ -118,7 +173,9 @@ class MainFrame(wx.Frame):
 
     def _build_ui(self):
         """Construit l'interface utilisateur"""
-        splitter = wx.SplitterWindow(self, style=wx.SP_3D | wx.SP_LIVE_UPDATE)
+        # Conteneur : rail de repli (bord gauche) + séparateur Projet | éditeur
+        body = wx.Panel(self)
+        splitter = wx.SplitterWindow(body, style=wx.SP_3D | wx.SP_LIVE_UPDATE)
 
         # Left column: Project information and preview
         left_panel = wx.Panel(splitter)
@@ -186,9 +243,42 @@ class MainFrame(wx.Frame):
         right_sizer.Add(self.notebook, 1, wx.EXPAND | wx.ALL, 5)
         right_panel.SetSizer(right_sizer)
 
+        self.splitter, self._left_panel, self._right_panel = splitter, left_panel, right_panel
+        self._left_width = 400
         splitter.SplitVertically(left_panel, right_panel)
-        splitter.SetSashPosition(400)
+        splitter.SetSashPosition(self._left_width)
         splitter.SetMinimumPaneSize(250)
+
+        self._rail = _CollapseRail(body, trades.PROJET, "Projet · Contexte et plans", self._toggle_project_panel)
+        body_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        body_sizer.Add(self._rail, 0, wx.EXPAND)
+        body_sizer.Add(splitter, 1, wx.EXPAND)
+        body.SetSizer(body_sizer)
+
+        # Ctrl+B : replier / déplier ; l'état est mémorisé d'une session à l'autre
+        toggle_id = wx.NewIdRef()
+        self.Bind(wx.EVT_MENU, lambda e: self._toggle_project_panel(), id=toggle_id)
+        self.SetAcceleratorTable(wx.AcceleratorTable([(wx.ACCEL_CTRL, ord("B"), toggle_id)]))
+        if self.config.config.get("ui_project_panel_collapsed"):
+            self._set_project_panel_collapsed(True, save=False)
+
+    def _toggle_project_panel(self):
+        self._set_project_panel_collapsed(self.splitter.IsSplit())
+
+    def _set_project_panel_collapsed(self, collapsed: bool, save: bool = True):
+        """Replie le panneau Projet sur le bord gauche (collapsed=True) ou le rétablit à sa largeur."""
+        splitter = self.splitter
+        if collapsed and splitter.IsSplit():
+            self._left_width = max(splitter.GetSashPosition(), 250)   # mémorisée pour le retour
+            splitter.Unsplit(self._left_panel)
+        elif not collapsed and not splitter.IsSplit():
+            self._left_panel.Show()
+            splitter.SplitVertically(self._left_panel, self._right_panel, self._left_width)
+        self._rail.set_collapsed(collapsed)
+        if save:
+            self.config.config["ui_project_panel_collapsed"] = bool(collapsed)
+            self.config.save()
+        self.Layout()
 
     def _connect_events(self):
         """Connecte les événements entre les panels"""
