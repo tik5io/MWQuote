@@ -27,6 +27,7 @@ class SalesPricingPanel(wx.Panel):
         self.on_select_version = None   # callback(version_index)
         self.on_open_revision = None    # callback(entry) → ouvre le XLSX
         self.on_export_quality = None   # callback → MainFrame : export XLSX méthode / qualité
+        self.on_new_revision = None     # callback(devis_ref) → MainFrame : crée un nouvel indice (ajuste les coefficients)
         self.on_comment_changed = None  # callback → MainFrame : commentaire d'offre modifié (projet à enregistrer)
         self._building_tree = False
         self._offer_mode = "new"
@@ -52,7 +53,7 @@ class SalesPricingPanel(wx.Panel):
         ribbon_sizer = wx.BoxSizer(wx.VERTICAL)
         ribbon_sizer.Add(trades.stripe(ribbon, trades.CHIFFRAGE), 0, wx.EXPAND)
         ribbon_sizer.Add(trades.caption(ribbon, trades.CHIFFRAGE, "Offres"), 0, wx.LEFT | wx.TOP, 10)
-        btns = wx.BoxSizer(wx.HORIZONTAL)
+        btns = wx.WrapSizer(wx.HORIZONTAL)   # le 3e bouton passe à la ligne si le panneau est étroit
         self.btn_preview = RibbonButton(ribbon, "👁", "Aperçu", accent=trades.CHIFFRAGE.colour, big=True, size=(100, 78))
         self.btn_preview.SetToolTip(
             "Ouvre l'offre XLSX en brouillon (BROUILLON / DRAFT) depuis un dossier temporaire.\n"
@@ -67,9 +68,16 @@ class SalesPricingPanel(wx.Panel):
             "Exporte le XLSX méthode / qualité de ce scénario (gamme, temps, commentaires), "
             "avec les commentaires projet de l'offre.")
         self.btn_quality.Bind(wx.EVT_BUTTON, lambda e: self.on_export_quality() if callable(self.on_export_quality) else None)
-        for b in (self.btn_preview, self.btn_new_offer, self.btn_quality):
-            btns.Add(b, 0, wx.RIGHT, 8)
-        ribbon_sizer.Add(btns, 0, wx.ALL, 10)
+        # 3e bouton d'une offre archivée : nouvel indice (ajustement des coefficients puis génération)
+        self.btn_new_revision = RibbonButton(ribbon, "➕", "Créer un nouvel indice", accent=trades.CHIFFRAGE.colour,
+                                             big=True, size=(170, 78))
+        self.btn_new_revision.SetToolTip(
+            "Ajuste les coefficients de vente à partir de l'indice sélectionné et génère l'offre sous l'indice "
+            "suivant. Les indices déjà émis restent inchangés.")
+        self.btn_new_revision.Bind(wx.EVT_BUTTON, self._on_new_revision)
+        for b in (self.btn_preview, self.btn_new_offer, self.btn_quality, self.btn_new_revision):
+            btns.Add(b, 0, wx.RIGHT | wx.BOTTOM, 8)
+        ribbon_sizer.Add(btns, 0, wx.ALL | wx.EXPAND, 10)
         ribbon.SetSizer(ribbon_sizer)
         offers_sizer.Add(ribbon, 0, wx.EXPAND)
         offers_sizer.Add(wx.StaticLine(self.offers_panel), 0, wx.EXPAND)
@@ -208,6 +216,11 @@ class SalesPricingPanel(wx.Panel):
         if callable(self.on_generate_offer):
             self.on_generate_offer()
 
+    def _on_new_revision(self, event):
+        key = self._current_offer_key()
+        if key and callable(self.on_new_revision):
+            self.on_new_revision(key[1])
+
     def _on_preview_offer(self, event):
         if self._offer_mode == "open":
             entry = self._entry_to_open()
@@ -282,24 +295,18 @@ class SalesPricingPanel(wx.Panel):
         return self.offer_tree.GetItemData(item) if item.IsOk() else None
 
     def _update_offer_buttons(self):
-        """Boutons selon l'état de la version.
+        """Boutons selon l'état du scénario.
 
         Sans offre : « Aperçu » + « Convertir en offre » (indice A, gamme figée).
-        Offre convertie, coefficients inchangés : seulement « Ouvrir l'offre ».
-        Coefficients modifiés après conversion : l'indice suivant s'enregistre (B, C…) ; le
-        changement d'indice est automatique, l'utilisateur n'en déclare jamais.
+        Offre archivée : « Ouvrir l'offre », « Méthode / Qualité » et « Créer un nouvel indice ».
+        Les coefficients d'une offre archivée ne se modifient plus directement : le nouvel indice
+        se crée explicitement par le 3e bouton, qui ouvre leur ajustement puis génère l'offre.
         """
-        mode, ref, next_rev = "new", None, ""
+        mode, ref = "new", None
         if self.project:
-            idx = self.project.current_version_index
-            ref = offers.latest_offer_ref(self.project.export_history, idx)
+            ref = offers.latest_offer_ref(self.project.export_history, self.project.current_version_index)
             if ref:
                 mode = "open"
-                last = [e for e in self.project.export_history
-                        if e.get("devis_ref") == ref and e.get("version_index", 1) == idx][-1]
-                coeffs = last.get("coeffs")
-                if coeffs and not offers.same_coefficients(coeffs, offers.snapshot_coefficients(self.project.current_version)):
-                    mode, next_rev = "revise", offers.next_revision(self.project.export_history, ref)
         self._offer_mode = mode
         if mode == "open":
             self.btn_preview.set_label("Ouvrir l'offre")
@@ -311,17 +318,13 @@ class SalesPricingPanel(wx.Panel):
                 "Ouvre l'offre XLSX en brouillon (BROUILLON / DRAFT) depuis un dossier temporaire.\n"
                 "Aucun numéro de devis n'est consommé et rien n'est enregistré dans le projet.")
             self.btn_new_offer.Show()
-            if mode == "revise":
-                self.btn_new_offer.set_label(f"Enregistrer l'indice {next_rev}")
-                self.btn_new_offer.SetToolTip(
-                    f"Les coefficients ont changé : enregistre l'indice {next_rev} de l'offre {ref}.")
-            else:
-                self.btn_new_offer.set_label("Convertir en offre")
-                self.btn_new_offer.SetToolTip(
-                    "Convertit ce scénario en offre (indice A) : nouveau numéro de devis, fichier XLSX choisi.\n"
-                    "La gamme est alors figée : toute modification de gamme créera un nouveau scénario, "
-                    "toute modification de coefficients un nouvel indice.")
+            self.btn_new_offer.set_label("Convertir en offre")
+            self.btn_new_offer.SetToolTip(
+                "Convertit ce scénario en offre (indice A) : nouveau numéro de devis, fichier XLSX choisi.\n"
+                "La gamme est alors figée : toute modification de gamme créera un nouveau scénario, "
+                "et les coefficients ne se changent plus qu'en créant un nouvel indice.")
         self.btn_quality.Show(bool(ref))
+        self.btn_new_revision.Show(bool(ref))
         self._refresh_comment()
         self.offers_panel.Layout()
         self.btn_preview.GetParent().Layout()
@@ -551,6 +554,7 @@ class SalesPricingPanel(wx.Panel):
         for i, q in enumerate(qtys):
             rate = self.project.volume_margin_rates.get(q, 1.0)
             self.grid.SetCellValue(margin_row, 2 + i, f"{rate:.4f}")
+            self.grid.SetReadOnly(margin_row, 2 + i, self._coefficients_locked())
             self.grid.SetCellBackgroundColour(margin_row, 2 + i, wx.Colour(255, 250, 240))
             self.grid.SetCellTextColour(margin_row, 2 + i, wx.Colour(200, 100, 0))
             self.grid.SetCellFont(margin_row, 2 + i, wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
@@ -581,6 +585,7 @@ class SalesPricingPanel(wx.Panel):
         for i, q in enumerate(qtys):
             self.grid.SetCellBackgroundColour(fixed_row, 2 + i, wx.Colour(255, 250, 240))
             self.grid.SetCellTextColour(fixed_row, 2 + i, wx.Colour(200, 100, 0))
+            self.grid.SetReadOnly(fixed_row, 2 + i, self._coefficients_locked())
 
         self.grid.AutoSizeColumns()
         self.grid.EndBatch()
@@ -744,9 +749,17 @@ class SalesPricingPanel(wx.Panel):
         if self.on_operation_updated:
             self.on_operation_updated(None)
 
+    def _coefficients_locked(self) -> bool:
+        """Une offre archivée fige les coefficients : on ne les ajuste qu'en créant un nouvel indice."""
+        return bool(self.project) and self.project.is_version_frozen()
+
     def _on_grid_cell_changed(self, event):
         row = event.GetRow()
         col = event.GetCol()
+        if self._coefficients_locked():
+            self.refresh_data()            # garde-fou : une saisie ne doit pas modifier une offre archivée
+            event.Skip()
+            return
         if getattr(self, 'fixed_row_idx', -1) == row and col >= 2:
             try:
                 target = float(self.grid.GetCellValue(row, col).replace(',', '.').replace(' ', '')) / self._fx

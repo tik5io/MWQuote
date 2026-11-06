@@ -295,6 +295,7 @@ class MainFrame(wx.Frame):
         self.sales_panel.on_select_version = self._on_offer_version_selected
         self.sales_panel.on_open_revision = self._open_offer_xlsx
         self.sales_panel.on_export_quality = self._on_export_fabrication_quality
+        self.sales_panel.on_new_revision = self._on_create_revision
         self.sales_panel.on_comment_changed = self._mark_dirty
         self.editor_panel.on_request_new_version = lambda: self._on_add_version(None)
         self.serie_panel.on_request_new_version = lambda: self._on_add_version(None)
@@ -379,31 +380,86 @@ class MainFrame(wx.Frame):
         self.serie_panel.set_locked(frozen and self.project.current_phase.is_serie, self.project.version_frozen_by() or "")
 
     def _on_new_offer(self):
-        """Ruban « Convertir en offre ».
+        """Ruban « Convertir en offre » : scénario sans offre → nouvelle offre (indice A, gamme figée).
 
-        Version sans offre : nouvelle offre (nouveau numéro de devis, indice A), la gamme est figée.
-        Version déjà convertie : l'indice suivant est créé automatiquement, à condition que les
-        coefficients aient changé depuis le dernier indice (l'utilisateur ne déclare jamais d'indice).
+        Un scénario déjà converti ne se re-convertit pas : un nouvel indice se crée par
+        « Créer un nouvel indice » (ajustement explicite des coefficients).
         """
         from domain import offers
         if not self.project:
             return
-        serie = self.project.current_phase.is_serie
         ref = offers.latest_offer_ref(self.project.export_history, self.project.current_version_index)
+        if ref:
+            self._on_create_revision(ref)
+            return
+        self._on_export_xlsx(serie_offer=self.project.current_phase.is_serie)
+
+    def _on_create_revision(self, devis_ref=None):
+        """« Créer un nouvel indice » d'une offre archivée : ajuste les coefficients puis génère l'offre.
+
+        Les coefficients de départ sont ceux de l'indice sélectionné. Ils ne sont appliqués au
+        scénario qu'avec la génération de l'offre : si l'export est annulé ou échoue, on revient
+        aux coefficients d'origine (un coefficient modifié sans indice n'a pas de raison d'être).
+        """
+        from domain import offers
+        from ui.dialogs.new_revision_dialog import NewRevisionDialog
+        if not self.project:
+            return
+        version = self.project.current_version
+        idx = version.version_index
+        history = self.project.export_history
+        ref = devis_ref or offers.latest_offer_ref(history, idx)
         if not ref:
-            self._on_export_xlsx(serie_offer=serie)
             return
-        history = [e for e in self.project.export_history
-                   if e.get("devis_ref") == ref and e.get("version_index") == self.project.current_version_index]
-        last = sorted(history, key=lambda e: offers.revision_of(e))[-1]
-        if last.get("coeffs") and offers.same_coefficients(
-                last.get("coeffs"), offers.snapshot_coefficients(self.project.current_version)):
-            wx.MessageBox(
-                f"Les coefficients n'ont pas changé depuis l'indice {offers.revision_of(last)} de l'offre {ref}.\n"
-                "Modifiez les coefficients (ou le prix fixé) pour créer un nouvel indice.",
-                "Aucun changement", wx.OK | wx.ICON_INFORMATION)
-            return
-        self._on_export_xlsx(serie_offer=serie, revise_ref=ref)
+        next_rev = offers.next_revision(history, ref)
+        entries = [e for e in history if e.get("devis_ref") == ref and e.get("version_index", 1) == idx]
+        selected = self.sales_panel._selected_data()
+        if selected and selected.get("type") == "revision" and selected.get("devis_ref") == ref:
+            from_rev = offers.revision_of(selected["entry"])
+        else:
+            from_rev = offers.revision_of(entries[-1]) if entries else None
+
+        before = offers.snapshot_coefficients(version)
+        lot_base, serie_fn = {}, None
+        if version.is_serie:
+            sd = self.project.serie_data
+
+            def serie_fn(margin, sd=sd):
+                previous = sd.global_commercial_margin
+                sd.global_commercial_margin = margin
+                try:
+                    return sd.selling_price_per_piece()
+                finally:
+                    sd.global_commercial_margin = previous
+        else:
+            # Prix pièce à coefficient 1 : de quoi lier coefficient et prix dans la fenêtre
+            rates = self.project.volume_margin_rates
+            saved = dict(rates)
+            try:
+                for q in self.project.sale_quantities:
+                    rates[q] = 1.0
+                lot_base = {q: self.project.total_price(q) for q in self.project.sale_quantities}
+            finally:
+                rates.clear()
+                rates.update(saved)
+
+        dlg = NewRevisionDialog(self, ref, next_rev, before, from_revision=from_rev, lot_base_prices=lot_base,
+                                serie_price_fn=serie_fn, fx=self.sales_panel._fx, symbol=self.sales_panel._sym)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            after = dlg.get_coefficients()
+        finally:
+            dlg.Destroy()
+
+        offers.apply_snapshot(version, after)
+        self._reload_keeping_selection()
+        issued_before = len(self.project.export_history)
+        self._on_export_xlsx(serie_offer=version.is_serie, revise_ref=ref)
+        if len(self.project.export_history) == issued_before:
+            # Export annulé ou en échec : pas d'indice créé, on rétablit les coefficients d'origine
+            offers.apply_snapshot(self.project.current_version, before)
+            self._reload_keeping_selection()
 
     def _on_preview_current(self):
         if self.project:
