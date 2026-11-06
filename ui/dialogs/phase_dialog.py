@@ -1,6 +1,7 @@
 # ui/dialogs/phase_dialog.py
 import wx
 
+from domain.client import PROTOTYPE_LABEL
 from domain.phase import Phase, PhaseKind, ToolingBilling, default_tooling_billing
 
 DEFAULT_QUANTITIES = [1, 10, 50, 100]
@@ -29,12 +30,14 @@ class PhaseDialog(wx.Dialog):
     phase    : configuration à modifier (mode édition)
     template : configuration servant de valeurs initiales à une nouvelle version
     label    : nom de la version (peut rester vide : « V2 »…)
+    prototype: statut prototype du scénario (propre à chaque scénario, pas au projet)
 
     ShowModal() renvoie wx.ID_OK ou wx.ID_CANCEL.
     """
 
     def __init__(self, parent, phase: Phase = None, title: str = None, label: str = None,
-                 template: Phase = None, bases: list = None, default_base: int = None):
+                 template: Phase = None, bases: list = None, default_base: int = None,
+                 prototype: bool = False):
         title = title or ("Modifier le scénario" if phase else "Nouveau scénario")
         super().__init__(parent, title=title, style=wx.DEFAULT_DIALOG_STYLE)
         self._editing = phase is not None
@@ -50,6 +53,14 @@ class PhaseDialog(wx.Dialog):
         initial_label = label if label is not None else ""
         self.label_ctrl = wx.TextCtrl(self, value=initial_label, size=(220, -1))
         grid.Add(self.label_ctrl, 1, wx.EXPAND)
+
+        # Statut prototype : propre au scénario (un même projet peut avoir un scénario prototype
+        # et un scénario série) ; ajoute les mentions « pièce prototype » aux offres de ce scénario
+        grid.Add(wx.StaticText(self, label=""), 0)
+        self.prototype_chk = wx.CheckBox(self, label="Prototype")
+        self.prototype_chk.SetValue(bool(prototype))
+        self.prototype_chk.SetToolTip(PROTOTYPE_LABEL)
+        grid.Add(self.prototype_chk, 0, wx.ALIGN_CENTER_VERTICAL)
 
         grid.Add(wx.StaticText(self, label="Type de calcul :"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.kind_ctrl = wx.Choice(self, choices=[
@@ -234,6 +245,10 @@ class PhaseDialog(wx.Dialog):
     def get_label(self) -> str:
         """Nom de la version tel que saisi (vide = « V<n> »)."""
         return self.label_ctrl.GetValue().strip()
+
+    def get_prototype(self) -> bool:
+        """Statut prototype du scénario."""
+        return self.prototype_chk.GetValue()
 
     def get_phase_label(self) -> str:
         return self.get_label() or self.get_kind().calc_label

@@ -30,6 +30,7 @@ class ConfigurationService:
         
         self.config_path = config_path
         self.config = self._load_config()
+        self._migrate_clients()
 
     def _load_config(self) -> dict:
         defaults = {
@@ -153,37 +154,57 @@ class ConfigurationService:
         """Nom du dossier modèle (arborescence copiée pour un nouveau projet)."""
         return self.config.get("series_empty_project_name") or self.DEFAULT_EMPTY_PROJECT_NAME
 
+    def _migrate_clients(self):
+        """Un client n'a plus que son nom : le secteur passe au niveau du projet.
+
+        Les secteurs déjà saisis sont conservés à part (`legacy_client_sectors`, par nom) pour
+        migrer les anciens projets sans changer les mentions de leurs offres ; ils ne servent
+        qu'à la lecture d'un ancien fichier (voir PersistenceService).
+        """
+        clients = self.config.get("clients", [])
+        if not any(isinstance(c, dict) and "sector" in c for c in clients):
+            return
+        legacy = dict(self.config.get("legacy_client_sectors", {}))
+        for c in clients:
+            if isinstance(c, dict) and c.get("name") and c.get("sector"):
+                legacy.setdefault(c["name"].strip().lower(), c["sector"])
+        self.config["legacy_client_sectors"] = legacy
+        self.config["clients"] = [{"name": c["name"]} for c in clients if isinstance(c, dict) and c.get("name")]
+        self.save()
+
+    def get_legacy_client_sector(self, name: str) -> Optional[str]:
+        """Secteur qu'avait ce client avant le passage au niveau projet (migration des anciens fichiers)."""
+        return (self.config.get("legacy_client_sectors") or {}).get((name or "").strip().lower())
+
     def get_clients(self) -> List[dict]:
-        """Liste des clients [{'name', 'sector'}], triée par nom."""
+        """Liste des clients [{'name'}], triée par nom."""
         clients = [c for c in self.config.get("clients", []) if isinstance(c, dict) and c.get("name")]
         return sorted(clients, key=lambda c: c["name"].lower())
 
-    def get_client_sector(self, name: str) -> Optional[str]:
-        for c in self.get_clients():
-            if c["name"].strip().lower() == (name or "").strip().lower():
-                return c.get("sector")
-        return None
+    def has_client(self, name: str) -> bool:
+        key = (name or "").strip().lower()
+        return any(c["name"].strip().lower() == key for c in self.get_clients())
 
-    def add_client(self, name: str, sector: str):
-        """Ajoute ou met à jour (même nom, casse ignorée) un client."""
+    def add_client(self, name: str):
+        """Ajoute un client (même nom, casse ignorée : remplace)."""
         name = (name or "").strip()
         if not name:
             return
         clients = [c for c in self.config.get("clients", [])
                    if isinstance(c, dict) and c.get("name", "").strip().lower() != name.lower()]
-        clients.append({"name": name, "sector": sector})
+        clients.append({"name": name})
         self.config["clients"] = clients
         self.save()
 
-    def update_client(self, old_name: str, new_name: str, sector: str):
-        """Renomme et/ou change le secteur d'un client."""
+    def update_client(self, old_name: str, new_name: str):
+        """Renomme un client."""
         new_name = (new_name or "").strip()
         if not new_name:
             return
         clients = [c for c in self.config.get("clients", [])
                    if isinstance(c, dict) and c.get("name", "").strip().lower() not in
                    (old_name.strip().lower(), new_name.lower())]
-        clients.append({"name": new_name, "sector": sector})
+        clients.append({"name": new_name})
         self.config["clients"] = clients
         self.save()
 

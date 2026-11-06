@@ -556,10 +556,8 @@ class ExportService:
 
         lines = op_lines + tooling_comments
 
-        # Le secteur est hérité du client (base clients) ; la copie portée par le projet
-        # ne sert que de repli si le client n'y figure plus.
-        sector = ConfigurationService.get_instance().get_client_sector(getattr(project, "client", ""))
-        lines.extend(traceability_mentions(sector or getattr(project, "client_sector", "")))
+        # Domaines d'application cochés sur le projet (Médical / Aéronautique, ou aucun)
+        lines.extend(traceability_mentions(getattr(project, "sectors", [])))
 
         if getattr(project, "is_prototype", False):
             lines.extend(PROTOTYPE_LINES)

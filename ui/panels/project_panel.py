@@ -12,21 +12,20 @@ from ui.components.document_list_panel import DocumentListPanel
 from ui.components import trades
 from infrastructure.project_folder_service import ProjectFolderService
 from infrastructure.configuration import ConfigurationService
-from domain.client import SECTORS, SECTOR_OTHER, PROTOTYPE_LABEL, normalize_sector
+from domain.client import SECTORS, normalize_sectors
 
 
 class ClientManagerDialog(wx.Dialog):
     """Édition de la base clients : renommer, changer le secteur, supprimer."""
 
     def __init__(self, parent):
-        super().__init__(parent, title="Gérer les clients", size=(460, 380),
+        super().__init__(parent, title="Gérer les clients", size=(380, 380),
                          style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         self.cfg = ConfigurationService.get_instance()
-        self.changes = {}   # ancien nom -> (nouveau nom, secteur) pour les clients modifiés
+        self.changes = {}   # ancien nom -> nouveau nom pour les clients renommés
         sizer = wx.BoxSizer(wx.VERTICAL)
         self.list_ctrl = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
-        self.list_ctrl.InsertColumn(0, "Nom", width=250)
-        self.list_ctrl.InsertColumn(1, "Secteur", width=150)
+        self.list_ctrl.InsertColumn(0, "Nom", width=320)
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_ACTIVATED, lambda e: self._on_edit(e))
         sizer.Add(self.list_ctrl, 1, wx.EXPAND | wx.ALL, 10)
         btns = wx.BoxSizer(wx.HORIZONTAL)
@@ -45,50 +44,53 @@ class ClientManagerDialog(wx.Dialog):
     def _fill(self):
         self.list_ctrl.DeleteAllItems()
         for c in self.cfg.get_clients():
-            idx = self.list_ctrl.InsertItem(self.list_ctrl.GetItemCount(), c["name"])
-            self.list_ctrl.SetItem(idx, 1, normalize_sector(c.get("sector")))
+            self.list_ctrl.InsertItem(self.list_ctrl.GetItemCount(), c["name"])
 
     def _selected(self):
         idx = self.list_ctrl.GetFirstSelected()
         if idx < 0:
             return None
-        return self.list_ctrl.GetItemText(idx, 0), self.list_ctrl.GetItemText(idx, 1)
+        return self.list_ctrl.GetItemText(idx, 0)
 
     def _on_edit(self, event):
         sel = self._selected()
         if not sel:
             return
-        old_name, sector = sel
-        dlg = NewClientDialog(self, name=old_name, sector=sector, title="Modifier le client")
+        old_name = sel
+        dlg = NewClientDialog(self, name=old_name, title="Modifier le client")
         try:
             if dlg.ShowModal() != wx.ID_OK:
                 return
-            new_name, new_sector = dlg.get_client()
+            new_name = dlg.get_client()
         finally:
             dlg.Destroy()
         if not new_name:
             return
-        self.cfg.update_client(old_name, new_name, new_sector)
-        # Chaîne les modifications successives d'un même client
-        origin = next((o for o, (n, _) in self.changes.items() if n == old_name), old_name)
-        self.changes[origin] = (new_name, new_sector)
+        self.cfg.update_client(old_name, new_name)
+        # Chaîne les renommages successifs d'un même client
+        origin = next((o for o, n in self.changes.items() if n == old_name), old_name)
+        self.changes[origin] = new_name
         self._fill()
 
     def _on_delete(self, event):
         sel = self._selected()
         if not sel:
             return
-        if wx.MessageBox(f"Supprimer le client « {sel[0]} » de la liste ?\n"
+        if wx.MessageBox(f"Supprimer le client « {sel} » de la liste ?\n"
                          "Les projets existants conservent leur client.",
                          "Supprimer", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
-            self.cfg.remove_client(sel[0])
+            self.cfg.remove_client(sel)
             self._fill()
 
 
 class NewClientDialog(wx.Dialog):
-    """Saisie d'un client : nom (à saisir, ou à choisir parmi les clients existants) + secteur."""
+    """Saisie d'un client : son nom (à saisir, ou à choisir parmi les clients existants).
 
-    def __init__(self, parent, name="", sector=SECTOR_OTHER, title="Nouveau client", intro=""):
+    Un client n'a que son nom ; les domaines d'application (médical, aéronautique) se cochent
+    sur chaque projet.
+    """
+
+    def __init__(self, parent, name="", title="Nouveau client", intro=""):
         super().__init__(parent, title=title)
         self._clients = ConfigurationService.get_instance().get_clients()
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -99,25 +101,13 @@ class NewClientDialog(wx.Dialog):
         grid.Add(wx.StaticText(self, label="Nom :"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.name_ctrl = wx.ComboBox(self, value=name, choices=[c["name"] for c in self._clients],
                                      size=(260, -1))
-        self.name_ctrl.Bind(wx.EVT_COMBOBOX, self._on_pick_existing)
         grid.Add(self.name_ctrl, 1, wx.EXPAND)
-        grid.Add(wx.StaticText(self, label="Secteur d'activité :"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.sector_ctrl = wx.Choice(self, choices=SECTORS)
-        self.sector_ctrl.SetSelection(SECTORS.index(normalize_sector(sector)))
-        grid.Add(self.sector_ctrl, 1, wx.EXPAND)
         sizer.Add(grid, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
         sizer.Add(self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL), 0, wx.EXPAND | wx.ALL, 8)
         self.SetSizerAndFit(sizer)
 
-    def _on_pick_existing(self, event):
-        picked = self.name_ctrl.GetStringSelection()
-        for c in self._clients:
-            if c["name"] == picked:
-                self.sector_ctrl.SetSelection(SECTORS.index(normalize_sector(c.get("sector"))))
-                break
-
-    def get_client(self):
-        return self.name_ctrl.GetValue().strip(), SECTORS[self.sector_ctrl.GetSelection()]
+    def get_client(self) -> str:
+        return self.name_ctrl.GetValue().strip()
 
 
 class OverwriteSelectionDialog(wx.Dialog):
@@ -320,20 +310,24 @@ class ProjectPanel(wx.ScrolledWindow):
         client_btns.Add(self.manage_client_btn, 0, wx.LEFT, 6)
         grid.Add(client_btns, 0)
 
-        grid.Add(wx.StaticText(self, label="Secteur:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.sector_label = wx.StaticText(self, label="—")
-        grid.Add(self.sector_label, 1, wx.EXPAND)
+        # Domaines d'application du PROJET (cumulables, ou aucun) : pilotent les mentions de traçabilité
+        grid.Add(wx.StaticText(self, label="Domaine:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        sector_row = wx.BoxSizer(wx.HORIZONTAL)
+        self.sector_chks = {}
+        for sector in SECTORS:
+            chk = wx.CheckBox(self, label=sector)
+            chk.SetToolTip("Domaine(s) d'application de ce projet, cumulables. Détermine les mentions de "
+                           "traçabilité des offres : une norme non cochée (ISO 13485 médical, ISO 9100 "
+                           "aéronautique) est indiquée « Non applicable ».")
+            chk.Bind(wx.EVT_CHECKBOX, lambda e: self.save_project())
+            sector_row.Add(chk, 0, wx.RIGHT, 12)
+            self.sector_chks[sector] = chk
+        grid.Add(sector_row, 1, wx.EXPAND)
 
         grid.Add(wx.StaticText(self, label="Date:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.date_ctrl = wx.adv.DatePickerCtrl(self, style=wx.adv.DP_DROPDOWN | wx.adv.DP_SHOWCENTURY | wx.adv.DP_ALLOWNONE)
         self.date_ctrl.Bind(wx.adv.EVT_DATE_CHANGED, lambda e: self.save_project())
         grid.Add(self.date_ctrl, 0)
-
-        grid.Add(wx.StaticText(self, label=""), 0)
-        self.prototype_chk = wx.CheckBox(self, label="Prototype")
-        self.prototype_chk.SetToolTip(PROTOTYPE_LABEL)
-        self.prototype_chk.Bind(wx.EVT_CHECKBOX, lambda e: self.save_project())
-        grid.Add(self.prototype_chk, 0, wx.ALIGN_CENTER_VERTICAL)
 
         main_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
 
@@ -419,9 +413,8 @@ class ProjectPanel(wx.ScrolledWindow):
                 except (ValueError, AttributeError):
                     pass  # Invalid date format, leave empty
             
-            # Le statut prototype est propre à la version affichée
-            self.prototype_chk.SetLabel(f"Prototype (S{project.current_version_index})")
-            self.prototype_chk.SetValue(bool(project.is_prototype))
+            for sector, chk in self.sector_chks.items():
+                chk.SetValue(sector in project.sectors)
             self.doc_list.load_documents(project.documents)
             self._set_preview_bitmap(getattr(project, 'preview_image', None))
         finally:
@@ -434,7 +427,7 @@ class ProjectPanel(wx.ScrolledWindow):
             
         if self.project:
             self.project.reference = self.ref_ctrl.GetValue()
-            self.project.is_prototype = self.prototype_chk.GetValue()
+            self.project.sectors = normalize_sectors(s for s, chk in self.sector_chks.items() if chk.GetValue())
 
             # Save project date in ISO format
             dt = self.date_ctrl.GetValue()
@@ -463,51 +456,38 @@ class ProjectPanel(wx.ScrolledWindow):
         la fenêtre de création, pré-remplie avec le nom existant."""
         cfg = ConfigurationService.get_instance()
         name = (project.client or "").strip()
-        known = cfg.get_client_sector(name) if name else None
-        if known is not None:
-            project.client_sector = known   # la base clients fait foi
         self._refresh_client_choices(name)
-        self._update_sector_label(project.client_sector if name else "")
-        if name and known is None:
+        if name and not cfg.has_client(name):
             wx.CallAfter(self._prompt_unknown_client, project, name)
 
     def _prompt_unknown_client(self, project, name):
         if project is not self.project:
             return  # un autre projet a été ouvert entre-temps
         dlg = NewClientDialog(
-            self, name=name, sector=project.client_sector or SECTOR_OTHER,
-            title="Client non référencé",
+            self, name=name, title="Client non référencé",
             intro=f"Le client « {name} » n'est pas dans la liste.\n"
                   "Validez pour le créer, ou choisissez un client existant.",
         )
         try:
             if dlg.ShowModal() != wx.ID_OK:
                 return
-            new_name, sector = dlg.get_client()
+            new_name = dlg.get_client()
         finally:
             dlg.Destroy()
         if new_name:
-            ConfigurationService.get_instance().add_client(new_name, sector)
+            ConfigurationService.get_instance().add_client(new_name)
             self._refresh_client_choices(new_name)
-            self._apply_client(new_name, sector)
+            self._apply_client(new_name)
 
-    def _update_sector_label(self, sector):
-        self.sector_label.SetLabel(normalize_sector(sector) if sector else "—")
-        self.sector_label.GetParent().Layout()
-
-    def _apply_client(self, name, sector):
+    def _apply_client(self, name):
         self.project.client = name
-        self.project.client_sector = sector
-        self._update_sector_label(sector)
         if getattr(self, "on_project_changed", None):
             self.on_project_changed()
 
     def _on_client_selected(self, event):
         if getattr(self, "_is_loading", False) or not self.project:
             return
-        name = self.client_ctrl.GetStringSelection()
-        sector = ConfigurationService.get_instance().get_client_sector(name) or SECTOR_OTHER
-        self._apply_client(name, sector)
+        self._apply_client(self.client_ctrl.GetStringSelection())
 
     def _on_manage_clients(self, event):
         dlg = ClientManagerDialog(self)
@@ -518,15 +498,10 @@ class ProjectPanel(wx.ScrolledWindow):
             dlg.Destroy()
         current = (self.project.client or "").strip() if self.project else ""
         if current in changes:
-            name, sector = changes[current]
-            self._refresh_client_choices(name)
-            self._apply_client(name, sector)
+            self._refresh_client_choices(changes[current])
+            self._apply_client(changes[current])
         else:
             self._refresh_client_choices(current)
-            if current:
-                sector = ConfigurationService.get_instance().get_client_sector(current)
-                if sector is not None and sector != self.project.client_sector:
-                    self._apply_client(current, sector)
 
     def _on_new_client(self, event):
         if not self.project:
@@ -535,14 +510,14 @@ class ProjectPanel(wx.ScrolledWindow):
         try:
             if dlg.ShowModal() != wx.ID_OK:
                 return
-            name, sector = dlg.get_client()
+            name = dlg.get_client()
         finally:
             dlg.Destroy()
         if not name:
             return
-        ConfigurationService.get_instance().add_client(name, sector)
+        ConfigurationService.get_instance().add_client(name)
         self._refresh_client_choices(name)
-        self._apply_client(name, sector)
+        self._apply_client(name)
 
     # ------------------------------------------------------------------ #
     # Dossier projet (réseau)                                              #

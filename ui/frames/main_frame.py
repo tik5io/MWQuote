@@ -622,7 +622,8 @@ class MainFrame(wx.Frame):
             shown = [f"{q:,}".replace(",", " ") for q in qtys[:3]]
             detail = (" / ".join(shown) + (" …" if len(qtys) > 3 else "") + " pc") if qtys else "—"
         lock = " 🔒" if self.project and self.project.is_version_frozen(version.version_index) else ""
-        return f"{name} · {version.display_mode} · {detail}{lock}"
+        proto = " · Proto" if version.is_prototype else ""
+        return f"{name} · {version.display_mode} · {detail}{proto}{lock}"
 
     def _refresh_phase_warnings(self):
         """Indicateur des incohérences de la version (prix manquant au-delà des pièces fournies…)."""
@@ -665,11 +666,13 @@ class MainFrame(wx.Frame):
         if version is None:
             return
         phase = version.phase
-        dlg = PhaseDialog(self, phase, title=f"Modifier le scénario S{version_index}", label=version.label)
+        dlg = PhaseDialog(self, phase, title=f"Modifier le scénario S{version_index}", label=version.label,
+                          prototype=version.is_prototype)
         try:
             if dlg.ShowModal() != wx.ID_OK:
                 return
             version.label = dlg.get_label()
+            version.is_prototype = dlg.get_prototype()
             phase.label = version.label or phase.label
             phase.tooling_billing = dlg.get_tooling_billing()
             if version.is_serie:
@@ -749,7 +752,7 @@ class MainFrame(wx.Frame):
         cur = self.project.current_version
         default_base = cur.version_index if not cur.is_serie else (bases[0][0] if bases else None)
         dlg = PhaseDialog(self, title="Nouveau scénario", template=self.project.current_phase,
-                          bases=bases, default_base=default_base)
+                          bases=bases, default_base=default_base, prototype=cur.is_prototype)
         try:
             if dlg.ShowModal() != wx.ID_OK:
                 return
@@ -760,6 +763,7 @@ class MainFrame(wx.Frame):
             volume = dlg.get_annual_volume()
             billing = dlg.get_tooling_billing()
             base_version = dlg.get_base_version()
+            prototype = dlg.get_prototype()
         finally:
             dlg.Destroy()
 
@@ -771,6 +775,7 @@ class MainFrame(wx.Frame):
                                                         base_version_index=base_version)
         new_version.phase.label = phase_label
         new_version.phase.tooling_billing = billing
+        new_version.is_prototype = prototype
         self.project.switch_to_version(new_version.version_index)
         self._rebuild_version_bar()
         # La nouvelle version est une copie : conserver la sélection courante + l'onglet
@@ -1222,11 +1227,13 @@ class MainFrame(wx.Frame):
             qtys = dlg.get_quantities()
             volume = dlg.get_annual_volume()
             billing = dlg.get_tooling_billing()
+            prototype = dlg.get_prototype()
         finally:
             dlg.Destroy()
 
         version = project.current_version
         version.configure(kind, sale_quantities=qtys, annual_volume=volume)
+        version.is_prototype = prototype
         version.label = label
         version.phase.label = phase_label
         version.phase.tooling_billing = billing

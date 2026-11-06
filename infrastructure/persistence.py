@@ -210,7 +210,7 @@ class PersistenceService:
                 'name': project.name,
                 'reference': project.reference,
                 'client': project.client,
-                'client_sector': getattr(project, 'client_sector', ""),
+                'sectors': list(getattr(project, 'sectors', None) or []),
                 'mwq_uuid': project.mwq_uuid,
                 'project_date': project.project_date,
                 'project_folder': getattr(project, 'project_folder', ""),
@@ -362,7 +362,7 @@ class PersistenceService:
                     name=data['name'],
                     reference=data.get('reference', ""),
                     client=data.get('client', ""),
-                    client_sector=data.get('client_sector', ""),
+                    sectors=PersistenceService._load_sectors(data),
                     mwq_uuid=data.get('mwq_uuid', ""),
                     project_date=data.get('project_date'),
                     project_folder=data.get('project_folder', ""),
@@ -601,6 +601,24 @@ class PersistenceService:
     def _opt_float(value):
         """None reste None (valeur héritée) ; sinon float."""
         return None if value is None else float(value)
+
+    @staticmethod
+    def _load_sectors(data: dict):
+        """Domaines d'application du projet.
+
+        Format courant : clé `sectors`. Ancien format : un secteur hérité du CLIENT (`client_sector`,
+        et la base clients d'alors faisait foi) : on le convertit, sans changer les mentions de
+        traçabilité des offres déjà émises. Une fois le projet réenregistré, seule `sectors` reste.
+        """
+        if 'sectors' in data:
+            return list(data.get('sectors') or [])
+        legacy = ""
+        try:
+            from infrastructure.configuration import ConfigurationService
+            legacy = ConfigurationService.get_instance().get_legacy_client_sector(data.get('client', "")) or ""
+        except Exception:
+            pass
+        return [legacy or data.get('client_sector', "")]
 
     @staticmethod
     def _load_phase_ids(value):
