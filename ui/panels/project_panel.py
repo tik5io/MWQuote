@@ -9,6 +9,7 @@ import tempfile
 from domain.document import Document
 
 from ui.components.document_list_panel import DocumentListPanel
+from ui.components.notes_editor import NotesEditor
 from ui.components import trades
 from infrastructure.project_folder_service import ProjectFolderService
 from infrastructure.configuration import ConfigurationService
@@ -271,7 +272,11 @@ class ProjectPanel(wx.ScrolledWindow):
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.SetScrollRate(10, 10)   # barres de défilement seulement si le contenu dépasse
+        self.SetScrollRate(0, 10)    # défilement vertical seulement : le contenu s'adapte à la largeur
+        self.ShowScrollbars(wx.SHOW_SB_NEVER, wx.SHOW_SB_DEFAULT)
+        self._preview_source = None   # image d'aperçu (wx.Image d'origine), redimensionnée à la largeur du panneau
+        self._preview_width = 0
+        self.Bind(wx.EVT_SIZE, self._on_size)
         self.project = None
         self.on_export_fabrication = None
         self.folder_service = ProjectFolderService()
@@ -283,6 +288,20 @@ class ProjectPanel(wx.ScrolledWindow):
         # En-tête métier : tout ce panneau (client, plans, dossier réseau) est l'amont projet
         main_sizer.Add(trades.stripe(self, trades.PROJET), 0, wx.EXPAND)
         main_sizer.Add(trades.caption(self, trades.PROJET, "Contexte et plans"), 0, wx.LEFT | wx.TOP, 10)
+
+        # Aperçu du projet : l'image seule (sans cadre) et deux petits boutons
+        self.preview_bitmap = wx.StaticBitmap(self, bitmap=self._placeholder_bitmap(self.PREVIEW_WIDTH))
+        main_sizer.Add(self.preview_bitmap, 0, wx.ALIGN_CENTER | wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        button_bar = wx.BoxSizer(wx.HORIZONTAL)
+        self.collect_preview_btn = wx.Button(self, label="Coller", size=(60, 22))
+        self.collect_preview_btn.SetToolTip("Coller l'image du presse-papiers (capture d'écran) comme aperçu du projet")
+        self.collect_preview_btn.Bind(wx.EVT_BUTTON, self._on_collect_preview)
+        button_bar.Add(self.collect_preview_btn, 0)
+        self.clear_preview_btn = wx.Button(self, label="Supprimer", size=(75, 22))
+        self.clear_preview_btn.SetToolTip("Supprimer l'aperçu du projet")
+        self.clear_preview_btn.Bind(wx.EVT_BUTTON, self._on_clear_preview)
+        button_bar.Add(self.clear_preview_btn, 0, wx.LEFT, 4)
+        main_sizer.Add(button_bar, 0, wx.ALIGN_CENTER | wx.TOP, 4)
 
         # Infos projet : libellé + champ, une ligne par info (le panneau gauche est étroit)
         grid = wx.FlexGridSizer(cols=2, hgap=8, vgap=8)
@@ -301,7 +320,7 @@ class ProjectPanel(wx.ScrolledWindow):
         grid.Add(wx.StaticText(self, label=""), 0)
         client_btns = wx.BoxSizer(wx.HORIZONTAL)
         self.new_client_btn = wx.Button(self, label="Nouveau…")
-        self.new_client_btn.SetToolTip("Créer un nouveau client (nom + secteur d'activité)")
+        self.new_client_btn.SetToolTip("Créer un nouveau client")
         self.new_client_btn.Bind(wx.EVT_BUTTON, self._on_new_client)
         client_btns.Add(self.new_client_btn, 0)
         self.manage_client_btn = wx.Button(self, label="Gérer…")
@@ -358,34 +377,10 @@ class ProjectPanel(wx.ScrolledWindow):
         self.doc_list.on_changed = self.save_project
         main_sizer.Add(self.doc_list, 0, wx.EXPAND | wx.ALL, 10)
 
-        # Project preview image (clipboard import), collapsible to save vertical space
-        self.preview_pane = wx.CollapsiblePane(self, label="Preview du projet")
-        self.preview_pane.Bind(wx.EVT_COLLAPSIBLEPANE_CHANGED, self._on_preview_pane_toggled)
-        preview_parent = self.preview_pane.GetPane()
-
-        preview_box = wx.StaticBoxSizer(wx.VERTICAL, preview_parent, "Image de Preview (Miniature)")
-        self.preview_bitmap = wx.StaticBitmap(preview_parent, bitmap=wx.Bitmap(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT))
-        self.preview_bitmap.SetMinSize((self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT))
-        self.preview_bitmap.SetBitmap(self._build_blank_preview_bitmap())
-        preview_box.Add(self.preview_bitmap, 0, wx.ALIGN_CENTER | wx.ALL, 5)
-
-        button_bar = wx.BoxSizer(wx.HORIZONTAL)
-        self.collect_preview_btn = wx.Button(preview_parent, label="Coller depuis presse-papiers")
-        self.collect_preview_btn.Bind(wx.EVT_BUTTON, self._on_collect_preview)
-        button_bar.Add(self.collect_preview_btn, 0, wx.ALL, 2)
-
-        self.clear_preview_btn = wx.Button(preview_parent, label="Supprimer la preview")
-        self.clear_preview_btn.Bind(wx.EVT_BUTTON, self._on_clear_preview)
-        button_bar.Add(self.clear_preview_btn, 0, wx.ALL, 2)
-
-        preview_box.Add(button_bar, 0, wx.ALIGN_CENTER | wx.ALL, 5)
-
-        preview_sizer = wx.BoxSizer(wx.VERTICAL)
-        preview_sizer.Add(preview_box, 0, wx.EXPAND | wx.ALL, 5)
-        preview_parent.SetSizer(preview_sizer)
-
-        main_sizer.Add(self.preview_pane, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
-        self.preview_pane.Collapse(False)
+        # Bloc-notes du projet : texte mis en forme, enregistré avec le projet
+        main_sizer.Add(trades.caption(self, trades.PROJET, "Bloc-notes"), 0, wx.LEFT | wx.TOP, 10)
+        self.notes = NotesEditor(self, on_changed=self._on_notes_changed)
+        main_sizer.Add(self.notes, 0, wx.EXPAND | wx.ALL, 10)
 
         # (Les quantités de vente se gèrent désormais dans chaque phase.)
 
@@ -417,6 +412,7 @@ class ProjectPanel(wx.ScrolledWindow):
                 chk.SetValue(sector in project.sectors)
             self.doc_list.load_documents(project.documents)
             self._set_preview_bitmap(getattr(project, 'preview_image', None))
+            self.notes.set_xml(getattr(project, 'notes', "") or "")
         finally:
             self._is_loading = False
 
@@ -549,83 +545,85 @@ class ProjectPanel(wx.ScrolledWindow):
         self._update_folder_status()
         self.save_project()
 
-    def _on_preview_pane_toggled(self, event):
-        self.Layout()
-        top = self.GetTopLevelParent()
-        if top:
-            top.Layout()
-        event.Skip()
+    # ------------------------------------------------------------------ #
+    # Aperçu du projet                                                     #
+    # ------------------------------------------------------------------ #
 
-    def _build_blank_preview_bitmap(self):
-        blank = wx.Bitmap(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT)
-        dc = wx.MemoryDC(blank)
+    def _placeholder_bitmap(self, width):
+        """Zone grise « Aucune image » quand le projet n'a pas d'aperçu."""
+        bmp = wx.Bitmap(max(int(width), 80), 64)
+        dc = wx.MemoryDC(bmp)
         dc.SetBackground(wx.Brush(wx.Colour(240, 240, 240)))
         dc.Clear()
+        dc.SetTextForeground(wx.Colour(150, 150, 150))
+        text = "Aucune image"
+        tw, th = dc.GetTextExtent(text)
+        dc.DrawText(text, (bmp.GetWidth() - tw) // 2, (bmp.GetHeight() - th) // 2)
         dc.SelectObject(wx.NullBitmap)
-        return blank
+        return bmp
 
-    def _bitmap_from_preview_data(self, preview_data_b64):
+    @staticmethod
+    def _wx_image_from_pil(pil_image):
+        rgba = pil_image.convert("RGBA")
+        image = wx.Image(rgba.size[0], rgba.size[1])
+        image.SetData(rgba.convert("RGB").tobytes())
+        image.SetAlpha(rgba.getchannel("A").tobytes())
+        return image
+
+    def _image_from_preview_data(self, preview_data_b64):
         raw = base64.b64decode(preview_data_b64)
         try:
-            stream = wx.MemoryInputStream(raw)
-            image = wx.Image(stream, wx.BITMAP_TYPE_ANY)
-            if not image.IsOk():
-                raise ValueError("wx image invalid")
-            return self._bitmap_from_wx_image(image)
-        except Exception as wx_exc:
-            try:
-                from PIL import Image
-                with Image.open(io.BytesIO(raw)) as pil_image:
-                    return self._bitmap_from_pil_image(pil_image.copy())
-            except Exception as pil_exc:
-                raise ValueError(f"Impossible de decoder la preview (wx: {wx_exc}, PIL: {pil_exc})")
+            image = wx.Image(io.BytesIO(raw), wx.BITMAP_TYPE_ANY)
+            if image.IsOk():
+                return image
+        except Exception:
+            pass        # wx ne sait pas lire ce format : repli sur Pillow
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(raw)) as pil_image:
+                return self._wx_image_from_pil(pil_image.copy())
+        except Exception as exc:
+            raise ValueError(f"Impossible de décoder l'aperçu ({exc})")
 
-    def _bitmap_from_wx_image(self, image):
-        src_w = max(1, image.GetWidth())
-        src_h = max(1, image.GetHeight())
-        ratio = min(self.PREVIEW_WIDTH / src_w, self.PREVIEW_HEIGHT / src_h)
-        dst_w = max(1, int(src_w * ratio))
-        dst_h = max(1, int(src_h * ratio))
-        scaled = image.Scale(dst_w, dst_h, wx.IMAGE_QUALITY_HIGH)
+    def _available_preview_width(self):
+        return max(min(self.PREVIEW_WIDTH, self.GetClientSize().width - 28), 120)
 
-        canvas = self._build_blank_preview_bitmap()
-        dc = wx.MemoryDC(canvas)
-        x = (self.PREVIEW_WIDTH - dst_w) // 2
-        y = (self.PREVIEW_HEIGHT - dst_h) // 2
-        dc.DrawBitmap(wx.Bitmap(scaled), x, y, True)
-        dc.SelectObject(wx.NullBitmap)
-        return canvas
+    def _render_preview(self):
+        """Affiche l'aperçu (ou « Aucune image ») à la largeur disponible du panneau."""
+        max_w, max_h = self._available_preview_width(), self.PREVIEW_HEIGHT
+        src = self._preview_source
+        if src is not None and src.IsOk():
+            w, h = max(1, src.GetWidth()), max(1, src.GetHeight())
+            ratio = min(max_w / w, max_h / h)
+            bmp = wx.Bitmap(src.Scale(max(1, int(w * ratio)), max(1, int(h * ratio)), wx.IMAGE_QUALITY_HIGH))
+        else:
+            bmp = self._placeholder_bitmap(max_w)
+        self._preview_width = max_w
+        self.preview_bitmap.SetBitmap(bmp)
+        self.Layout()
+        self.FitInside()
 
-    def _bitmap_from_pil_image(self, pil_image):
-        if pil_image.mode != "RGBA":
-            pil_image = pil_image.convert("RGBA")
-        src_w, src_h = pil_image.size
-        src_w = max(1, src_w)
-        src_h = max(1, src_h)
-        ratio = min(self.PREVIEW_WIDTH / src_w, self.PREVIEW_HEIGHT / src_h)
-        dst_w = max(1, int(src_w * ratio))
-        dst_h = max(1, int(src_h * ratio))
-        resized = pil_image.resize((dst_w, dst_h))
+    def _on_size(self, event):
+        event.Skip()
+        # L'aperçu suit la largeur du panneau (replié / élargi) ; hors de l'événement pour éviter les rebonds
+        wx.CallAfter(self._on_resized)
 
-        from PIL import Image
-        canvas = Image.new("RGBA", (self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT), (240, 240, 240, 255))
-        x = (self.PREVIEW_WIDTH - dst_w) // 2
-        y = (self.PREVIEW_HEIGHT - dst_h) // 2
-        canvas.alpha_composite(resized, (x, y))
-
-        return wx.Bitmap.FromBufferRGBA(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT, bytes(canvas.tobytes()))
+    def _on_resized(self):
+        try:
+            if self._available_preview_width() != self._preview_width:
+                self._render_preview()
+        except RuntimeError:
+            pass        # panneau détruit entre-temps
 
     def _set_preview_bitmap(self, preview_doc):
-        """Set a small preview image in the UI."""
+        """Affiche l'aperçu enregistré dans le projet (rien si absent ou illisible)."""
+        self._preview_source = None
         if preview_doc and getattr(preview_doc, 'data', None):
             try:
-                self.preview_bitmap.SetBitmap(self._bitmap_from_preview_data(preview_doc.data))
+                self._preview_source = self._image_from_preview_data(preview_doc.data)
             except Exception as exc:
-                self.preview_bitmap.SetBitmap(self._build_blank_preview_bitmap())
                 wx.MessageBox(f"Erreur rendu preview: {exc}", "Preview", wx.OK | wx.ICON_WARNING)
-        else:
-            self.preview_bitmap.SetBitmap(self._build_blank_preview_bitmap())
-        self.preview_bitmap.Refresh()
+        self._render_preview()
 
     @staticmethod
     def _pil_image_to_png_bytes(pil_image):
@@ -669,12 +667,6 @@ class ProjectPanel(wx.ScrolledWindow):
             return
 
         try:
-            self.preview_bitmap.SetBitmap(self._bitmap_from_pil_image(img))
-            self.preview_bitmap.Refresh()
-        except Exception as exc:
-            wx.MessageBox(f"Image collée mais affichage impossible: {exc}", "Preview", wx.OK | wx.ICON_WARNING)
-
-        try:
             raw_bytes = self._pil_image_to_png_bytes(img)
         except Exception as exc:
             wx.MessageBox(f"Impossible de convertir l'image: {exc}", "Erreur", wx.OK | wx.ICON_ERROR)
@@ -694,6 +686,18 @@ class ProjectPanel(wx.ScrolledWindow):
         self._set_preview_bitmap(None)
         self.save_project()
 
+
+    def _on_notes_changed(self, xml):
+        """Bloc-notes modifié (signalé avec un léger délai) : le projet est à enregistrer."""
+        if getattr(self, "_is_loading", False) or not self.project:
+            return
+        self.project.notes = xml
+        if getattr(self, "on_project_changed", None):
+            self.on_project_changed()
+
+    def flush(self):
+        """Envoie tout de suite le bloc-notes au projet (avant un enregistrement)."""
+        self.notes.flush()
 
     def _get_project_name(self):
         if self.project:

@@ -32,12 +32,12 @@ class DocumentListPanel(wx.Panel):
     def _build_ui(self, label):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         
-        header_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        header_sizer = wx.WrapSizer(wx.HORIZONTAL)
         lbl = wx.StaticText(self, label=label)
         lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        header_sizer.Add(lbl, 1, wx.ALIGN_CENTER_VERTICAL)
+        header_sizer.Add(lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
         
-        self.add_btn = RibbonButton(self, "📎", "Ajouter un PDF", accent=ACCENT, size=(170, 40))
+        self.add_btn = RibbonButton(self, "📎", "Ajouter un PDF", accent=ACCENT, size=(150, 36))
         self.add_btn.SetToolTip("Joindre un ou plusieurs fichiers PDF")
         self.add_btn.Bind(wx.EVT_BUTTON, self._on_add)
         self.add_btn.Enable(not self._locked)
@@ -85,21 +85,26 @@ class DocumentListPanel(wx.Panel):
             self.list_sizer.Add(empty_lbl, 0, wx.ALL, 5)
         else:
             for idx, doc in enumerate(self.documents):
+                # Un document = deux lignes : le nom (abrégé AU MILIEU pour garder l'extension, nom
+                # complet en infobulle) puis ses boutons. Un long nom ne pousse donc plus les boutons
+                # hors du panneau.
+                item = wx.BoxSizer(wx.VERTICAL)
+                name_lbl = wx.StaticText(self.list_panel, label=f"📄 {doc.filename}", style=wx.ST_ELLIPSIZE_MIDDLE)
+                name_lbl.SetMinSize((10, -1))
+                name_lbl.SetToolTip(doc.filename)
+                item.Add(name_lbl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 2)
+
                 doc_row = wx.BoxSizer(wx.HORIZONTAL)
-                
-                # File icon/name
-                name_lbl = wx.StaticText(self.list_panel, label=f"📄 {doc.filename}")
-                doc_row.Add(name_lbl, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 2)
-                
-                # View button
+                item.AddSpacer(3)
+                item.Add(doc_row, 0, wx.LEFT, 20)
+
                 view_btn = wx.Button(self.list_panel, label="Voir", size=(50, 22))
                 view_btn.Bind(wx.EVT_BUTTON, lambda e, d=doc: self._on_view(d))
-                doc_row.Add(view_btn, 0, wx.LEFT, 5)
+                doc_row.Add(view_btn, 0)
 
-                # Export button
                 exp_btn = wx.Button(self.list_panel, label="Exporter", size=(70, 22))
                 exp_btn.Bind(wx.EVT_BUTTON, lambda e, d=doc: self._on_export(d))
-                doc_row.Add(exp_btn, 0, wx.LEFT, 2)
+                doc_row.Add(exp_btn, 0, wx.LEFT, 4)
 
                 # Delete button (absent en lecture seule : gamme figée, consultation uniquement ;
                 # désactivé si la version est figée)
@@ -109,9 +114,9 @@ class DocumentListPanel(wx.Panel):
                     del_btn.Bind(wx.EVT_BUTTON, lambda e, i=idx: self._on_delete(i))
                     del_btn.Enable(not self._locked)
                     self._delete_btns.append(del_btn)
-                    doc_row.Add(del_btn, 0, wx.LEFT, 2)
-                
-                self.list_sizer.Add(doc_row, 0, wx.EXPAND | wx.BOTTOM, 2)
+                    doc_row.Add(del_btn, 0, wx.LEFT, 4)
+
+                self.list_sizer.Add(item, 0, wx.EXPAND | wx.BOTTOM, 6)
         
         self.list_panel.Layout()
         self.Layout()

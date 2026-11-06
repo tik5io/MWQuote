@@ -40,6 +40,7 @@ class Project:
         serie_data: Optional[SerieData] = None,
         is_prototype: bool = False,
         sectors: List[str] = None,
+        notes: str = "",
         client_sector: str = "",
         # Champs obsolètes — acceptés en lecture pour compatibilité fichiers anciens
         export_history: List[dict] = None,
@@ -54,6 +55,8 @@ class Project:
         # Domaines d'application (Médical, Aéronautique : cumulables, ou aucun). Anciens fichiers /
         # appelants : `client_sector` (un seul secteur, hérité du client) est converti.
         self.sectors: List[str] = normalize_sectors(sectors if sectors is not None else client_sector)
+        # Bloc-notes du projet : texte mis en forme (XML wx.richtext), vide si aucune note
+        self.notes: str = notes or ""
         self.mwq_uuid = mwq_uuid
         self.project_date = project_date
         self.project_folder = project_folder or ""
@@ -177,6 +180,7 @@ class Project:
             reference=self.reference,
             client=self.client,
             sectors=list(self.sectors),
+            notes=self.notes,
             mwq_uuid=str(uuid.uuid4()),
             project_date=self.project_date,
             project_folder=self.project_folder,

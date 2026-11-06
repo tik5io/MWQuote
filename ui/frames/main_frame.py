@@ -986,6 +986,7 @@ class MainFrame(wx.Frame):
         """
         if not self.project:
             return
+        self.project_panel.flush()          # bloc-notes : l'export enregistre le projet, notes comprises
 
         # Vérifier le template
         template_path = str(get_template_path())
@@ -1289,6 +1290,7 @@ class MainFrame(wx.Frame):
 
     def _on_close(self, event):
         """Appelé à la fermeture de la fenêtre principale"""
+        self.project_panel.flush()          # bloc-notes : une saisie récente doit compter comme modification
         # Cleanup temporary files created during document viewing
         if hasattr(self.project_panel, 'doc_list') and hasattr(self.project_panel.doc_list, 'cleanup_temp_files'):
             self.project_panel.doc_list.cleanup_temp_files()
@@ -1321,6 +1323,7 @@ class MainFrame(wx.Frame):
         Returns True si on peut continuer (sauvegardé ou abandonné),
         False si l'utilisateur annule.
         """
+        self.project_panel.flush()          # bloc-notes : saisie récente pas encore signalée
         if not self._dirty:
             return True
         res = wx.MessageBox(
@@ -1348,6 +1351,7 @@ class MainFrame(wx.Frame):
         """
         if not self.project:
             return False
+        self.project_panel.flush()          # bloc-notes : la dernière saisie part avec le projet
 
         if not self.current_path:
             # Tenter de déduire le chemin depuis le dossier racine configuré
