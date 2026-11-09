@@ -13,20 +13,24 @@ from infrastructure.persistence import PersistenceService
 
 NA_13485 = "Traçabilité et suivi ISO 13485 Non applicable"
 NA_9100 = "Traçabilité et suivi ISO 9100 Non applicable"
+OK_13485 = "Traçabilité et suivi ISO 13485 Applicable"
+OK_9100 = "Traçabilité et suivi ISO 9100 Applicable"
 
 
 # --------------------------------------------------------------------------- domaines (au niveau projet)
 
 def test_mentions_medical():
-    assert traceability_mentions([SECTOR_MEDICAL]) == [NA_9100]
+    # la norme suivie est affirmée, celle qui ne l'est pas est dite non applicable
+    assert traceability_mentions([SECTOR_MEDICAL]) == [OK_13485, NA_9100]
 
 
 def test_mentions_aero():
-    assert traceability_mentions([SECTOR_AERO]) == [NA_13485]
+    assert traceability_mentions([SECTOR_AERO]) == [NA_13485, OK_9100]
 
 
-def test_mentions_both_sectors_have_no_non_applicable_mention():
-    assert traceability_mentions([SECTOR_MEDICAL, SECTOR_AERO]) == []
+def test_mentions_both_norms_followed_are_both_stated():
+    assert traceability_mentions([SECTOR_MEDICAL, SECTOR_AERO]) == [OK_13485, OK_9100]
+    assert "Non applicable" not in " ".join(traceability_mentions(SECTORS))
 
 
 def test_mentions_no_sector_means_both_non_applicable():
@@ -86,6 +90,7 @@ def test_global_comment_uses_project_sectors():
     both = Project(name="p", reference="R", client="C", sectors=SECTORS)
     text = ExportService()._build_global_comment(both)
     assert "Non applicable" not in text
+    assert OK_13485 in text and OK_9100 in text                      # les deux normes suivies sont affirmées
 
     none = Project(name="p", reference="R", client="C")
     text = ExportService()._build_global_comment(none)
@@ -95,7 +100,8 @@ def test_global_comment_uses_project_sectors():
 def test_global_comment_includes_mentions_and_prototype():
     project = Project(name="p", reference="R", client="C", sectors=[SECTOR_MEDICAL], is_prototype=True)
     text = ExportService()._build_global_comment(project)
-    assert NA_9100 in text and NA_13485 not in text
+    assert OK_13485 in text and NA_9100 in text                      # suivie : affirmée ; non suivie : citée aussi
+    assert NA_13485 not in text and OK_9100 not in text
     for line in PROTOTYPE_LINES:
         assert line in text
 
@@ -130,6 +136,9 @@ def test_no_sector_survives_save_and_load(tmp_path):
 def _legacy(client_sector):
     def mutate(d):
         d.pop("sectors", None)
+        for v in d["versions"]:                      # ancien format : le secteur n'existait pas par version
+            v.pop("sectors", None)
+            v.pop("offer_comments", None)
         d["client_sector"] = client_sector
         return d
     return mutate
@@ -219,3 +228,149 @@ def test_phase_dialog_prototype_checkbox():
         assert dlg.get_prototype() is False                       # par défaut : pas prototype
     finally:
         dlg.Destroy()
+
+
+# --------------------------------------------------------------------------- secteur et commentaires par VERSION
+
+def test_sector_and_offer_comments_are_per_version(tmp_path):
+    p = Project(name="p", reference="R", client="C")
+    v2 = p.add_version("v2")
+    p.get_version(1).sectors = [SECTOR_MEDICAL]
+    v2.sectors = [SECTOR_AERO]
+    v2.offer_comments = False
+    q = _roundtrip(p, tmp_path)
+    assert [v.sectors for v in q.versions] == [[SECTOR_MEDICAL], [SECTOR_AERO]]
+    assert [v.offer_comments for v in q.versions] == [True, False]
+    q.switch_to_version(2)
+    assert q.sectors == [SECTOR_AERO] and q.offer_comments is False      # le projet suit la version courante
+
+
+def test_new_version_starts_from_the_base_version_settings():
+    p = Project(name="p", reference="R", client="C", sectors=[SECTOR_MEDICAL])
+    p.get_version(1).offer_comments = False
+    v2 = p.add_version("v2")
+    assert v2.sectors == [SECTOR_MEDICAL] and v2.offer_comments is False
+    v2.sectors = []                                                      # puis se règle indépendamment
+    assert p.get_version(1).sectors == [SECTOR_MEDICAL]
+
+
+def test_previous_format_project_level_sectors_apply_to_every_version(tmp_path):
+    p = Project(name="p", reference="R", client="C")
+    p.add_version("v2")
+
+    def previous(d):
+        d["sectors"] = [SECTOR_AERO]                 # format précédent : un secteur pour tout le projet
+        for v in d["versions"]:
+            v.pop("sectors", None)
+            v.pop("offer_comments", None)
+        return d
+
+    q = _roundtrip(p, tmp_path, previous)
+    assert all(v.sectors == [SECTOR_AERO] for v in q.versions)
+    assert all(v.offer_comments is True for v in q.versions)             # défaut : commentaires générés
+
+
+def test_offer_comments_option_controls_generated_mentions_only():
+    p = Project(name="p", reference="R", client="C", sectors=[SECTOR_MEDICAL], is_prototype=True)
+    on = ExportService()._build_global_comment(p)
+    assert OK_13485 in on and NA_9100 in on and all(line in on for line in PROTOTYPE_LINES)
+    p.offer_comments = False
+    off = ExportService()._build_global_comment(p)
+    assert "Non applicable" not in off and "Applicable" not in off     # aucune mention générée
+    assert not any(line in off for line in PROTOTYPE_LINES)
+
+
+def test_each_scenario_offer_uses_its_own_sector():
+    p = Project(name="p", reference="R", client="C")
+    p.add_version("aéro")
+    p.get_version(1).sectors = [SECTOR_MEDICAL]
+    p.get_version(2).sectors = [SECTOR_AERO]
+    p.switch_to_version(1)
+    assert NA_9100 in ExportService()._build_global_comment(p)
+    p.switch_to_version(2)
+    text = ExportService()._build_global_comment(p)
+    assert NA_13485 in text and NA_9100 not in text
+
+
+def test_phase_dialog_sector_and_offer_comments():
+    import wx
+    from ui.dialogs.phase_dialog import PhaseDialog
+    app = wx.App(False)                                           # noqa: F841
+    dlg = PhaseDialog(None, sectors=[SECTOR_AERO], offer_comments=False)
+    try:
+        assert dlg.get_sectors() == [SECTOR_AERO] and dlg.get_offer_comments() is False
+        dlg.sector_chks[SECTOR_MEDICAL].SetValue(True)
+        assert dlg.get_sectors() == SECTORS                       # cumulables
+        dlg.sector_chks[SECTOR_AERO].SetValue(False)
+        dlg.sector_chks[SECTOR_MEDICAL].SetValue(False)
+        assert dlg.get_sectors() == []                            # aucun = Autre
+    finally:
+        dlg.Destroy()
+    dlg = PhaseDialog(None)
+    try:
+        assert dlg.get_sectors() == [] and dlg.get_offer_comments() is True   # défauts
+    finally:
+        dlg.Destroy()
+
+
+def test_status_pills_describe_the_selected_scenario():
+    import types
+    import wx
+    from ui.frames.main_frame import MainFrame
+    app = wx.App(False)                                           # noqa: F841
+    p = Project(name="p", reference="R", client="C", sectors=SECTORS, is_prototype=True)
+    p.get_version(1).offer_comments = False
+    shown = []
+    stub = types.SimpleNamespace(project=p, version_tags=types.SimpleNamespace(set_tags=shown.append),
+                                 _TAG_GREY=wx.Colour(1, 2, 3), _TAG_SLATE=wx.Colour(4, 5, 6))
+    MainFrame._refresh_version_tags(stub)
+    texts = [t[0] for t in shown[-1]]
+    assert texts[0] == "Taux horaire"                              # mode de calcul d'abord
+    assert "Prototype" in texts and "ISO 13485" in texts and "ISO 9100" in texts      # les normes suivies
+    assert "Brouillon" in texts and "Sans commentaires auto" in texts
+    p.export_history.append({"devis_ref": "OD261109_001", "version_index": 1, "revision": "A"})
+    p.get_version(1).sectors = []
+    p.get_version(1).is_prototype = False
+    MainFrame._refresh_version_tags(stub)
+    texts = [t[0] for t in shown[-1]]
+    assert "Autre" in texts and "Prototype" not in texts           # aucun secteur = Autre
+    assert "Offre émise · OD261109_001" in texts and "Brouillon" not in texts
+
+
+def test_status_pills_wrap_and_expose_tooltips():
+    import wx
+    from ui.components.status_pills import StatusPills
+    app = wx.App(False)                                           # noqa: F841
+    frame = wx.Frame(None)
+    pills = StatusPills(frame)
+    pills.SetSize((200, 30))
+    pills.set_tags([("Taux horaire", wx.Colour(217, 119, 6), "mode"), ("Prototype", wx.Colour(124, 58, 237)),
+                    ("Médical", wx.Colour(22, 163, 74)), ("Aéronautique", wx.Colour(37, 99, 235), "secteur")])
+    ys = {box[1] for box in pills._boxes}
+    assert len(ys) > 1                                            # trop étroit pour une ligne : retour à la ligne
+    assert pills.GetMinSize().height > pills._row_height()        # la hauteur suit le nombre de lignes
+    assert [t[0] for t in pills.tags][0] == "Taux horaire" and pills.tags[0][2] == "mode"
+    frame.Destroy()
+
+
+def test_dialog_checkboxes_are_the_iso_norms(tmp_path):
+    import wx
+    from domain.client import SECTOR_NORMS
+    from ui.dialogs.phase_dialog import PhaseDialog
+    app = wx.App(False)                                           # noqa: F841
+    dlg = PhaseDialog(None, sectors=[SECTOR_MEDICAL])
+    try:
+        assert [c.GetLabel() for c in dlg.sector_chks.values()] == ["ISO 13485", "ISO 9100"]
+        assert SECTOR_NORMS == {SECTOR_MEDICAL: "ISO 13485", SECTOR_AERO: "ISO 9100"}
+        assert dlg.sector_chks[SECTOR_MEDICAL].GetValue() and not dlg.sector_chks[SECTOR_AERO].GetValue()
+        # chaque case explique ce que l'offre dira dans les deux cas
+        tip = dlg.sector_chks[SECTOR_AERO].GetToolTipText()
+        assert "ISO 9100 Applicable" in tip and "ISO 9100 Non applicable" in tip
+    finally:
+        dlg.Destroy()
+
+
+def test_offer_comment_for_a_scenario_without_any_norm_cites_both_as_not_applicable():
+    p = Project(name="p", reference="R", client="C")
+    text = ExportService()._build_global_comment(p)
+    assert NA_13485 in text and NA_9100 in text and "Applicable" not in text.replace("Non applicable", "")

@@ -59,6 +59,11 @@ class ProjectVersion:
     phase: Phase = field(default_factory=build_lot_phase)
     # Pièce prototype (pas de traçabilité ISO, pas de qualification) : propre à la version
     is_prototype: bool = False
+    # Secteur de la version : Médical et/ou Aéronautique (cumulables) ; aucun = « Autre ».
+    # Détermine les mentions de traçabilité des offres de cette version.
+    sectors: List[str] = field(default_factory=list)
+    # Génère les commentaires d'offre (mentions de traçabilité selon le secteur, mentions prototype)
+    offer_comments: bool = True
 
     # ------------------------------------------------------- compat « phases »
 

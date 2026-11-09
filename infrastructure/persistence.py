@@ -12,6 +12,7 @@ from domain.project import Project
 from domain.project_version import ProjectVersion, build_lot_phase, build_serie_phase
 from domain.phase import Phase, PhaseKind, ToolingBilling
 from domain.operation import Operation, merge_family_into_label
+from domain.client import normalize_sectors
 from domain.operation import TOOLING_TYPOLOGY
 from domain.cost import CostItem, CostType, PricingType, PricingStructure, PricingTier, ConversionType, ToolingLine
 from domain.document import Document
@@ -194,6 +195,8 @@ class PersistenceService:
                     'created_at': version.created_at,
                     'created_from_version': version.created_from_version,
                     'is_prototype': version.is_prototype,
+                    'sectors': list(version.sectors or []),
+                    'offer_comments': bool(version.offer_comments),
                     'operations': ops_data,
                     'documents': version_doc_paths,
                     # Miroir v3.0 (lecture par les postes non mis à jour)
@@ -210,7 +213,6 @@ class PersistenceService:
                 'name': project.name,
                 'reference': project.reference,
                 'client': project.client,
-                'sectors': list(getattr(project, 'sectors', None) or []),
                 'notes': getattr(project, 'notes', "") or "",
                 'mwq_uuid': project.mwq_uuid,
                 'project_date': project.project_date,
@@ -353,8 +355,13 @@ class PersistenceService:
                     built = PersistenceService._load_version(zf, v_data, v_prefix)
                     # Ancien fichier : le statut prototype était porté par le projet
                     proto = bool(v_data.get('is_prototype', data.get('is_prototype', False)))
+                    # Ancien fichier : le secteur était porté par le projet (ou hérité du client)
+                    sectors = normalize_sectors(
+                        v_data['sectors'] if 'sectors' in v_data else PersistenceService._load_sectors(data))
                     for b in built:
                         b.is_prototype = proto
+                        b.sectors = list(sectors)
+                        b.offer_comments = bool(v_data.get('offer_comments', True))
                     versions.append(built[0])
                     extras.extend(built[1:])
                 PersistenceService._attach_split_versions(versions, extras, export_history)
@@ -363,7 +370,6 @@ class PersistenceService:
                     name=data['name'],
                     reference=data.get('reference', ""),
                     client=data.get('client', ""),
-                    sectors=PersistenceService._load_sectors(data),
                     notes=data.get('notes', "") or "",
                     mwq_uuid=data.get('mwq_uuid', ""),
                     project_date=data.get('project_date'),
@@ -608,9 +614,11 @@ class PersistenceService:
     def _load_sectors(data: dict):
         """Domaines d'application du projet.
 
-        Format courant : clé `sectors`. Ancien format : un secteur hérité du CLIENT (`client_sector`,
-        et la base clients d'alors faisait foi) : on le convertit, sans changer les mentions de
-        traçabilité des offres déjà émises. Une fois le projet réenregistré, seule `sectors` reste.
+        Format courant : clé `sectors` sur chaque version (cette fonction ne sert alors pas). Anciens
+        fichiers : `sectors` au niveau du projet, ou un secteur hérité du CLIENT (`client_sector`, et la
+        base clients d'alors faisait foi) : on le convertit, sans changer les mentions de traçabilité
+        des offres déjà émises. Le résultat est recopié sur chaque version ; une fois le projet
+        réenregistré, chaque version porte son propre secteur.
         """
         if 'sectors' in data:
             return list(data.get('sectors') or [])

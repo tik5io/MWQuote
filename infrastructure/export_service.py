@@ -556,11 +556,13 @@ class ExportService:
 
         lines = op_lines + tooling_comments
 
-        # Domaines d'application cochés sur le projet (Médical / Aéronautique, ou aucun)
-        lines.extend(traceability_mentions(getattr(project, "sectors", [])))
-
-        if getattr(project, "is_prototype", False):
-            lines.extend(PROTOTYPE_LINES)
+        # Commentaires d'offre générés par la version : pour chaque norme (ISO 13485, ISO 9100), la
+        # mention « Applicable » si elle est suivie, « Non applicable » sinon ; puis les mentions
+        # prototype. Désactivables par version.
+        if getattr(project, "offer_comments", True):
+            lines.extend(traceability_mentions(getattr(project, "sectors", [])))
+            if getattr(project, "is_prototype", False):
+                lines.extend(PROTOTYPE_LINES)
 
         text = "\n".join(lines) if lines else "-"
         logger.info(f"Global comment lines: {len(lines)}")

@@ -13,7 +13,6 @@ from ui.components.notes_editor import NotesEditor
 from ui.components import trades
 from infrastructure.project_folder_service import ProjectFolderService
 from infrastructure.configuration import ConfigurationService
-from domain.client import SECTORS, normalize_sectors
 
 
 class ClientManagerDialog(wx.Dialog):
@@ -329,20 +328,6 @@ class ProjectPanel(wx.ScrolledWindow):
         client_btns.Add(self.manage_client_btn, 0, wx.LEFT, 6)
         grid.Add(client_btns, 0)
 
-        # Domaines d'application du PROJET (cumulables, ou aucun) : pilotent les mentions de traçabilité
-        grid.Add(wx.StaticText(self, label="Domaine:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        sector_row = wx.BoxSizer(wx.HORIZONTAL)
-        self.sector_chks = {}
-        for sector in SECTORS:
-            chk = wx.CheckBox(self, label=sector)
-            chk.SetToolTip("Domaine(s) d'application de ce projet, cumulables. Détermine les mentions de "
-                           "traçabilité des offres : une norme non cochée (ISO 13485 médical, ISO 9100 "
-                           "aéronautique) est indiquée « Non applicable ».")
-            chk.Bind(wx.EVT_CHECKBOX, lambda e: self.save_project())
-            sector_row.Add(chk, 0, wx.RIGHT, 12)
-            self.sector_chks[sector] = chk
-        grid.Add(sector_row, 1, wx.EXPAND)
-
         grid.Add(wx.StaticText(self, label="Date:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.date_ctrl = wx.adv.DatePickerCtrl(self, style=wx.adv.DP_DROPDOWN | wx.adv.DP_SHOWCENTURY | wx.adv.DP_ALLOWNONE)
         self.date_ctrl.Bind(wx.adv.EVT_DATE_CHANGED, lambda e: self.save_project())
@@ -408,8 +393,6 @@ class ProjectPanel(wx.ScrolledWindow):
                 except (ValueError, AttributeError):
                     pass  # Invalid date format, leave empty
             
-            for sector, chk in self.sector_chks.items():
-                chk.SetValue(sector in project.sectors)
             self.doc_list.load_documents(project.documents)
             self._set_preview_bitmap(getattr(project, 'preview_image', None))
             self.notes.set_xml(getattr(project, 'notes', "") or "")
@@ -423,7 +406,6 @@ class ProjectPanel(wx.ScrolledWindow):
             
         if self.project:
             self.project.reference = self.ref_ctrl.GetValue()
-            self.project.sectors = normalize_sectors(s for s, chk in self.sector_chks.items() if chk.GetValue())
 
             # Save project date in ISO format
             dt = self.date_ctrl.GetValue()

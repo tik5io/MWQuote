@@ -11,6 +11,11 @@ from typing import Iterable, List, Union
 SECTOR_MEDICAL = "Médical"
 SECTOR_AERO = "Aéronautique"
 SECTORS = [SECTOR_MEDICAL, SECTOR_AERO]
+# Norme de traçabilité associée à chaque secteur : c'est ce que l'on coche (« suit-on cette norme ? »)
+SECTOR_NORMS = {SECTOR_MEDICAL: "ISO 13485", SECTOR_AERO: "ISO 9100"}
+
+MENTION_FOLLOWED = "Traçabilité et suivi {norm} Applicable"
+MENTION_NOT_FOLLOWED = "Traçabilité et suivi {norm} Non applicable"
 
 PROTOTYPE_LABEL = ("Pièce prototype, pas de traçabilité selon ISO 13485 ou 9100 / "
                    "Pas de qualification réalisée sur ce lot")
@@ -40,11 +45,11 @@ def normalize_sectors(sectors: Union[None, str, Iterable[str]]) -> List[str]:
 
 
 def traceability_mentions(sectors: Union[None, str, Iterable[str]]) -> List[str]:
-    """Mentions « Non applicable » selon les domaines du projet : une norme absente est non applicable."""
+    """Une mention par norme : « Applicable » pour celles que l'on suit, « Non applicable » pour les autres.
+
+    Les deux cas sont dits explicitement (une norme suivie est affirmée, pas seulement sous-entendue).
+    Ordre fixe : ISO 13485 puis ISO 9100.
+    """
     sectors = normalize_sectors(sectors)
-    lines = []
-    if SECTOR_MEDICAL not in sectors:
-        lines.append("Traçabilité et suivi ISO 13485 Non applicable")
-    if SECTOR_AERO not in sectors:
-        lines.append("Traçabilité et suivi ISO 9100 Non applicable")
-    return lines
+    return [(MENTION_FOLLOWED if sector in sectors else MENTION_NOT_FOLLOWED).format(norm=SECTOR_NORMS[sector])
+            for sector in SECTORS]

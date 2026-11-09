@@ -1,7 +1,7 @@
 # ui/dialogs/phase_dialog.py
 import wx
 
-from domain.client import PROTOTYPE_LABEL
+from domain.client import PROTOTYPE_LABEL, SECTORS, SECTOR_NORMS, normalize_sectors
 from domain.phase import Phase, PhaseKind, ToolingBilling, default_tooling_billing
 
 DEFAULT_QUANTITIES = [1, 10, 50, 100]
@@ -31,13 +31,16 @@ class PhaseDialog(wx.Dialog):
     template : configuration servant de valeurs initiales à une nouvelle version
     label    : nom de la version (peut rester vide : « V2 »…)
     prototype: statut prototype du scénario (propre à chaque scénario, pas au projet)
+    sectors  : normes suivies par le scénario (ISO 13485 = Médical, ISO 9100 = Aéronautique,
+               cumulables ; aucune = Autre)
+    offer_comments : génère les commentaires d'offre (mentions de traçabilité et prototype)
 
     ShowModal() renvoie wx.ID_OK ou wx.ID_CANCEL.
     """
 
     def __init__(self, parent, phase: Phase = None, title: str = None, label: str = None,
                  template: Phase = None, bases: list = None, default_base: int = None,
-                 prototype: bool = False):
+                 prototype: bool = False, sectors=None, offer_comments: bool = True):
         title = title or ("Modifier le scénario" if phase else "Nouveau scénario")
         super().__init__(parent, title=title, style=wx.DEFAULT_DIALOG_STYLE)
         self._editing = phase is not None
@@ -61,6 +64,36 @@ class PhaseDialog(wx.Dialog):
         self.prototype_chk.SetValue(bool(prototype))
         self.prototype_chk.SetToolTip(PROTOTYPE_LABEL)
         grid.Add(self.prototype_chk, 0, wx.ALIGN_CENTER_VERTICAL)
+
+        # Normes suivies par le scénario : ISO 13485 (médical) et/ou ISO 9100 (aéronautique), cumulables,
+        # aucune = Autre. L'offre le dit explicitement pour chacune : « Applicable » si cochée,
+        # « Non applicable » sinon.
+        grid.Add(wx.StaticText(self, label="Normes suivies :"), 0, wx.ALIGN_CENTER_VERTICAL)
+        sector_row = wx.BoxSizer(wx.HORIZONTAL)
+        self.sector_chks = {}
+        chosen = set(normalize_sectors(sectors))
+        for sector in SECTORS:
+            norm = SECTOR_NORMS[sector]
+            chk = wx.CheckBox(self, label=norm)
+            chk.SetValue(sector in chosen)
+            chk.SetToolTip(f"Cochée : l'offre indique « Traçabilité et suivi {norm} Applicable ».\n"
+                           f"Non cochée : l'offre indique « Traçabilité et suivi {norm} Non applicable ».")
+            sector_row.Add(chk, 0, wx.RIGHT, 12)
+            self.sector_chks[sector] = chk
+        other = wx.StaticText(self, label="(aucune = Autre)")
+        other.SetForegroundColour(wx.Colour(110, 110, 110))
+        sector_row.Add(other, 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(sector_row, 0, wx.ALIGN_CENTER_VERTICAL)
+
+        grid.Add(wx.StaticText(self, label=""), 0)
+        self.comments_chk = wx.CheckBox(self, label="Générer les commentaires d'offre")
+        self.comments_chk.SetValue(bool(offer_comments))
+        self.comments_chk.SetToolTip(
+            "Coché : les offres de ce scénario reçoivent automatiquement, pour chaque norme, la mention "
+            "« Applicable » ou « Non applicable » (selon les normes suivies) et, pour un prototype, les "
+            "mentions prototype.\n"
+            "Décoché : seuls les commentaires saisis dans la gamme figurent sur l'offre.")
+        grid.Add(self.comments_chk, 0, wx.ALIGN_CENTER_VERTICAL)
 
         grid.Add(wx.StaticText(self, label="Type de calcul :"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.kind_ctrl = wx.Choice(self, choices=[
@@ -245,6 +278,14 @@ class PhaseDialog(wx.Dialog):
     def get_label(self) -> str:
         """Nom de la version tel que saisi (vide = « V<n> »)."""
         return self.label_ctrl.GetValue().strip()
+
+    def get_sectors(self):
+        """Normes suivies, sous forme de secteurs (Médical = ISO 13485, Aéronautique = ISO 9100) ; vide = Autre."""
+        return normalize_sectors(s for s, chk in self.sector_chks.items() if chk.GetValue())
+
+    def get_offer_comments(self) -> bool:
+        """Les offres du scénario génèrent-elles les commentaires automatiques ?"""
+        return self.comments_chk.GetValue()
 
     def get_prototype(self) -> bool:
         """Statut prototype du scénario."""

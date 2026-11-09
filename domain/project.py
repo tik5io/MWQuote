@@ -52,9 +52,10 @@ class Project:
         self.name = name
         self.reference = reference
         self.client = client
-        # Domaines d'application (Médical, Aéronautique : cumulables, ou aucun). Anciens fichiers /
-        # appelants : `client_sector` (un seul secteur, hérité du client) est converti.
-        self.sectors: List[str] = normalize_sectors(sectors if sectors is not None else client_sector)
+        # Secteur : porté par chaque VERSION (voir ProjectVersion.sectors). Les arguments `sectors` /
+        # `client_sector` (ancien format : un secteur hérité du client) ne servent qu'à initialiser
+        # les versions créées ici ; ils sont ignorés si `versions` est fourni (chargement de fichier).
+        initial_sectors = normalize_sectors(sectors if sectors is not None else client_sector)
         # Bloc-notes du projet : texte mis en forme (XML wx.richtext), vide si aucune note
         self.notes: str = notes or ""
         self.mwq_uuid = mwq_uuid
@@ -89,6 +90,7 @@ class Project:
             # prototype appartient à la version, pas au projet.
             for v in self._versions:
                 v.is_prototype = bool(is_prototype)
+                v.sectors = list(initial_sectors)
 
     # ------------------------------------------------------------------ #
     # Version management                                                    #
@@ -179,7 +181,6 @@ class Project:
             name=self.name,
             reference=self.reference,
             client=self.client,
-            sectors=list(self.sectors),
             notes=self.notes,
             mwq_uuid=str(uuid.uuid4()),
             project_date=self.project_date,
@@ -295,6 +296,24 @@ class Project:
             raise ValueError("Une version Taux horaire n'a pas de données Décomposé : "
                              "créer une version Décomposé (add_version_variant).")
         version.phase.serie_data = value
+
+    @property
+    def sectors(self) -> List[str]:
+        """Secteur (Médical / Aéronautique, cumulables) de la version courante."""
+        return self.current_version.sectors
+
+    @sectors.setter
+    def sectors(self, value):
+        self.current_version.sectors = normalize_sectors(value)
+
+    @property
+    def offer_comments(self) -> bool:
+        """La version courante génère-t-elle les commentaires d'offre (mentions de traçabilité, prototype) ?"""
+        return bool(self.current_version.offer_comments)
+
+    @offer_comments.setter
+    def offer_comments(self, value: bool):
+        self.current_version.offer_comments = bool(value)
 
     @property
     def is_prototype(self) -> bool:

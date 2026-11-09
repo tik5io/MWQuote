@@ -11,6 +11,8 @@ from ui.panels.operation_cost_editor_panel import OperationCostEditorPanel
 from ui.panels.sales_pricing_panel import SalesPricingPanel
 from ui.panels.serie_pricing_panel import SeriePricingPanel
 from ui.components import trades
+from ui.components.status_pills import StatusPills
+from domain.client import SECTOR_MEDICAL, SECTOR_NORMS, PROTOTYPE_LABEL
 from infrastructure.persistence import PersistenceService
 from infrastructure.logging_service import clear_logs_directory
 from infrastructure.export_service import ExportService
@@ -221,6 +223,10 @@ class MainFrame(wx.Frame):
 
         self.version_bar.SetSizer(self._version_bar_sizer)
         right_sizer.Add(self.version_bar, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 5)
+
+        # Bulles de statut du scénario sélectionné : mode de calcul, prototype, secteur, état de l'offre
+        self.version_tags = StatusPills(right_panel)
+        right_sizer.Add(self.version_tags, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
 
         # --- Notebook for editing tabs ---
         self.notebook = wx.Notebook(right_panel)
@@ -586,8 +592,43 @@ class MainFrame(wx.Frame):
 
         self._refresh_phase_warnings()
         self._update_version_nav()
+        self._refresh_version_tags()
         self.version_bar.Layout()
         self.version_bar.GetParent().Layout()
+
+    # Couleurs des bulles de statut (hors métiers) : repères neutres
+    _TAG_GREY = wx.Colour(100, 116, 139)
+    _TAG_SLATE = wx.Colour(51, 65, 85)
+
+    def _refresh_version_tags(self):
+        """Bulles du scénario sélectionné : mode de calcul, statut (prototype, offre émise), secteur."""
+        if not self.project or not hasattr(self, "version_tags"):
+            return
+        version = self.project.current_version
+        tags = [(version.display_mode, trades.CHIFFRAGE.colour,
+                 "Mode de calcul de ce scénario (Taux horaire : quantités commandées ; Décomposé : volume annuel).")]
+        if version.is_prototype:
+            tags.append(("Prototype", trades.PROJET.colour, PROTOTYPE_LABEL))
+        if version.sectors:
+            for sector in version.sectors:
+                norm = SECTOR_NORMS[sector]
+                colour = trades.QUALITE.colour if sector == SECTOR_MEDICAL else trades.METHODE.colour
+                tags.append((norm, colour, f"Norme suivie : {norm} (secteur {sector.lower()}). "
+                                           "Traçabilité et suivi applicables, mentionnés sur l'offre."))
+        else:
+            tags.append(("Autre", self._TAG_GREY,
+                         "Secteur « Autre » : aucune norme ISO 13485 ou ISO 9100 suivie "
+                         "(traçabilité et suivi non applicables)."))
+        frozen_by = self.project.version_frozen_by(version.version_index)
+        if frozen_by:
+            tags.append((f"Offre émise · {frozen_by}", self._TAG_SLATE,
+                         "Une offre a été émise : la gamme est figée (créer un nouveau scénario pour la modifier)."))
+        else:
+            tags.append(("Brouillon", wx.Colour(148, 163, 184), "Aucune offre émise sur ce scénario."))
+        if not version.offer_comments:
+            tags.append(("Sans commentaires auto", self._TAG_GREY,
+                         "Les mentions de traçabilité et de prototype ne sont pas ajoutées aux offres de ce scénario."))
+        self.version_tags.set_tags(tags)
 
     def _version_order(self):
         return [v.version_index for v in sorted(self.project.versions, key=lambda v: v.version_index)] if self.project else []
@@ -667,12 +708,15 @@ class MainFrame(wx.Frame):
             return
         phase = version.phase
         dlg = PhaseDialog(self, phase, title=f"Modifier le scénario S{version_index}", label=version.label,
-                          prototype=version.is_prototype)
+                          prototype=version.is_prototype, sectors=version.sectors,
+                          offer_comments=version.offer_comments)
         try:
             if dlg.ShowModal() != wx.ID_OK:
                 return
             version.label = dlg.get_label()
             version.is_prototype = dlg.get_prototype()
+            version.sectors = dlg.get_sectors()
+            version.offer_comments = dlg.get_offer_comments()
             phase.label = version.label or phase.label
             phase.tooling_billing = dlg.get_tooling_billing()
             if version.is_serie:
@@ -752,7 +796,8 @@ class MainFrame(wx.Frame):
         cur = self.project.current_version
         default_base = cur.version_index if not cur.is_serie else (bases[0][0] if bases else None)
         dlg = PhaseDialog(self, title="Nouveau scénario", template=self.project.current_phase,
-                          bases=bases, default_base=default_base, prototype=cur.is_prototype)
+                          bases=bases, default_base=default_base, prototype=cur.is_prototype,
+                          sectors=cur.sectors, offer_comments=cur.offer_comments)
         try:
             if dlg.ShowModal() != wx.ID_OK:
                 return
@@ -764,6 +809,8 @@ class MainFrame(wx.Frame):
             billing = dlg.get_tooling_billing()
             base_version = dlg.get_base_version()
             prototype = dlg.get_prototype()
+            sectors = dlg.get_sectors()
+            offer_comments = dlg.get_offer_comments()
         finally:
             dlg.Destroy()
 
@@ -776,6 +823,8 @@ class MainFrame(wx.Frame):
         new_version.phase.label = phase_label
         new_version.phase.tooling_billing = billing
         new_version.is_prototype = prototype
+        new_version.sectors = sectors
+        new_version.offer_comments = offer_comments
         self.project.switch_to_version(new_version.version_index)
         self._rebuild_version_bar()
         # La nouvelle version est une copie : conserver la sélection courante + l'onglet
@@ -1229,12 +1278,16 @@ class MainFrame(wx.Frame):
             volume = dlg.get_annual_volume()
             billing = dlg.get_tooling_billing()
             prototype = dlg.get_prototype()
+            sectors = dlg.get_sectors()
+            offer_comments = dlg.get_offer_comments()
         finally:
             dlg.Destroy()
 
         version = project.current_version
         version.configure(kind, sale_quantities=qtys, annual_volume=volume)
         version.is_prototype = prototype
+        version.sectors = sectors
+        version.offer_comments = offer_comments
         version.label = label
         version.phase.label = phase_label
         version.phase.tooling_billing = billing
