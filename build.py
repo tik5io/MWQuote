@@ -19,6 +19,9 @@ from datetime import datetime
 from core.app_icon import ensure_icon_file, get_icon_path
 
 
+HIDDEN_IMPORTS = ["wx._xml", "wx.xml", "wx._richtext", "wx.richtext"]
+
+
 def run(cmd):
     print(" ".join(cmd))
     subprocess.check_call(cmd)
@@ -91,6 +94,8 @@ def main():
         args.name,
         "--add-data",
         "assets;assets",
+        # wx.richtext (bloc-notes) charge wx._xml, non détecté automatiquement
+        *[arg for mod in HIDDEN_IMPORTS for arg in ("--hidden-import", mod)],
         "--icon",
         str(icon_path),
         str(entry),
