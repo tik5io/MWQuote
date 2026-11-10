@@ -12,6 +12,7 @@ from ui.panels.sales_pricing_panel import SalesPricingPanel
 from ui.panels.serie_pricing_panel import SeriePricingPanel
 from ui.components import trades
 from ui.components.status_pills import StatusPills
+from ui.components import theme
 from domain.client import SECTOR_MEDICAL, SECTOR_NORMS, PROTOTYPE_LABEL
 from infrastructure.persistence import PersistenceService
 from infrastructure.logging_service import clear_logs_directory
@@ -176,7 +177,23 @@ class MainFrame(wx.Frame):
     def _build_ui(self):
         """Construit l'interface utilisateur"""
         # Conteneur : rail de repli (bord gauche) + séparateur Projet | éditeur
-        body = wx.Panel(self)
+        root = wx.Panel(self)
+        root_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        # Bandeau bleu nuit (charte commune avec la liste des offres) : projet, état, enregistrement
+        self._header, h_sizer, self._header_title, self._header_sub = theme.build_header(root, "MWQuote")
+        self._save_state_lbl = wx.StaticText(self._header, label="")
+        self._save_state_lbl.SetFont(theme.font(9, bold=True))
+        h_sizer.Add(self._save_state_lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 16)
+        self._save_btn = theme.FlatButton(self._header, "Enregistrer", kind="primary")
+        self._save_btn.SetToolTip("Enregistrer le projet (Ctrl+S)")
+        self._save_btn.Bind(wx.EVT_BUTTON, self._on_save)
+        h_sizer.Add(self._save_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
+        root_sizer.Add(self._header, 0, wx.EXPAND)
+
+        body = wx.Panel(root)
+        root_sizer.Add(body, 1, wx.EXPAND)
+        root.SetSizer(root_sizer)
         splitter = wx.SplitterWindow(body, style=wx.SP_3D | wx.SP_LIVE_UPDATE)
 
         # Left column: Project information and preview
@@ -191,8 +208,8 @@ class MainFrame(wx.Frame):
         right_sizer = wx.BoxSizer(wx.VERTICAL)
 
         # --- Version bar ---
-        self.version_bar = wx.Panel(right_panel, style=wx.BORDER_SIMPLE)
-        self.version_bar.SetBackgroundColour(wx.Colour(230, 235, 245))
+        self.version_bar = wx.Panel(right_panel, style=wx.BORDER_NONE)
+        self.version_bar.SetBackgroundColour(wx.Colour(236, 240, 247))
         self._version_bar_sizer = wx.WrapSizer(wx.HORIZONTAL)  # les versions passent à la ligne si besoin
         self._version_bar_sizer.Add(
             wx.StaticText(self.version_bar, label="  Scénarios :"),
@@ -1225,6 +1242,23 @@ class MainFrame(wx.Frame):
         phase = self.project.current_phase.display_label
         dirty_marker = " ●" if self._dirty else ""
         self.SetTitle(f"MWQuote - {display_name}  [S{v_idx} · {phase}]{dirty_marker}")
+        self._update_header(display_name, v_idx, phase)
+
+    def _update_header(self, display_name, v_idx, phase):
+        """Bandeau : nom du projet, client · scénario courant, état d'enregistrement."""
+        if not hasattr(self, "_header"):
+            return
+        client = (getattr(self.project, "client", "") or "").strip()
+        sub = "  ·  ".join(x for x in (client, f"Scénario S{v_idx}", phase) if x)
+        self._header_title.SetLabel(display_name or "Nouveau projet")
+        self._header_sub.SetLabel(sub)
+        if self._dirty:
+            self._save_state_lbl.SetLabel("● Modifications non enregistrées")
+            self._save_state_lbl.SetForegroundColour(wx.Colour(251, 191, 36))
+        else:
+            self._save_state_lbl.SetLabel("✓ Enregistré")
+            self._save_state_lbl.SetForegroundColour(theme.UI_NAVY_MUTED)
+        self._header.Layout()
 
     def _on_operation_updated(self, operation, reload_header=False):
         """Appelé quand une opération est modifiée.
