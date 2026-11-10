@@ -13,6 +13,40 @@ import sys
 import os
 import traceback
 
+_crash_file = None
+
+
+def _install_crash_trace():
+    """Trace des plantages dans %LOCALAPPDATA%\\MWQuote\\crash.log (jamais effacé par la fermeture normale).
+
+    - faulthandler : les plantages natifs (wxWidgets) laissent au moins la pile Python au moment de l'accident ;
+    - excepthook : les exceptions non rattrapées dans un gestionnaire d'événement y sont aussi écrites.
+    """
+    global _crash_file
+    try:
+        import faulthandler
+        import datetime
+        folder = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "MWQuote")
+        os.makedirs(folder, exist_ok=True)
+        _crash_file = open(os.path.join(folder, "crash.log"), "a", encoding="utf-8")
+        _crash_file.write(f"\n--- session {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ---\n")
+        _crash_file.flush()
+        faulthandler.enable(file=_crash_file, all_threads=True)
+
+        previous = sys.excepthook
+
+        def hook(exc_type, exc, tb):
+            try:
+                traceback.print_exception(exc_type, exc, tb, file=_crash_file)
+                _crash_file.flush()
+            finally:
+                previous(exc_type, exc, tb)
+
+        sys.excepthook = hook
+    except Exception:
+        pass                                    # la trace est un confort : jamais bloquante
+
+
 def main():
     """Point d'entrée principal de l'application"""
     try:
@@ -29,7 +63,8 @@ def main():
 
         # 3. Initialize components
         initialize_app()
-        
+        _install_crash_trace()
+
         from ui.frames.search_frame import SearchFrame
 
         # 4. Run application
