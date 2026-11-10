@@ -100,10 +100,10 @@ def test_global_comment_uses_project_sectors():
 def test_global_comment_includes_mentions_and_prototype():
     project = Project(name="p", reference="R", client="C", sectors=[SECTOR_MEDICAL], is_prototype=True)
     text = ExportService()._build_global_comment(project)
-    assert OK_13485 in text and NA_9100 in text                      # suivie : affirmée ; non suivie : citée aussi
-    assert NA_13485 not in text and OK_9100 not in text
     for line in PROTOTYPE_LINES:
         assert line in text
+    # un prototype n'est pas tracé : aucune mention de norme, quel que soit le secteur
+    assert "Applicable" not in text and "applicable" not in text
 
 
 # --------------------------------------------------------------------------- persistance et migration
@@ -273,7 +273,7 @@ def test_previous_format_project_level_sectors_apply_to_every_version(tmp_path):
 def test_offer_comments_option_controls_generated_mentions_only():
     p = Project(name="p", reference="R", client="C", sectors=[SECTOR_MEDICAL], is_prototype=True)
     on = ExportService()._build_global_comment(p)
-    assert OK_13485 in on and NA_9100 in on and all(line in on for line in PROTOTYPE_LINES)
+    assert all(line in on for line in PROTOTYPE_LINES) and OK_13485 not in on and NA_9100 not in on
     p.offer_comments = False
     off = ExportService()._build_global_comment(p)
     assert "Non applicable" not in off and "Applicable" not in off     # aucune mention générée
