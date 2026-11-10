@@ -397,7 +397,11 @@ class SalesPricingPanel(wx.Panel):
     def _on_offer_tree_activated(self, event):
         data = self.offer_tree.GetItemData(event.GetItem()) if event.GetItem().IsOk() else None
         if data and data["type"] == "revision" and callable(self.on_open_revision):
-            self.on_open_revision(data["entry"])
+            # Hors de l'événement de l'arbre : le lancement d'Excel fait tourner la boucle de messages
+            # (DDE), ce qui exécutait en plein milieu la bascule d'offre déjà en attente (CallAfter de la
+            # sélection) et reconstruisait l'arbre sous nos pieds. En file d'attente derrière elle, l'ouverture
+            # s'exécute une fois l'arbre stable.
+            wx.CallAfter(self.on_open_revision, data["entry"])
 
     def _on_offer_tree_right_click(self, event):
         item = event.GetItem()

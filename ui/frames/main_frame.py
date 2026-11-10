@@ -208,6 +208,7 @@ class MainFrame(wx.Frame):
         self._version_bar_sizer.Add(self.btn_prev_version, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
         self._version_bar_sizer.Add(self.btn_next_version, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 2)
         self._version_btns = []  # list of (version_index, ToggleButton)
+        self._switching_offer = False   # bascule d'offre/version en cours (garde contre la ré-entrance)
 
         # Alertes de cohérence de la version (prix manquant au-delà des pièces fournies…)
         self.phase_warn_lbl = wx.StaticText(self.version_bar, label="")
@@ -478,11 +479,26 @@ class MainFrame(wx.Frame):
 
     def _on_offer_version_selected(self, version_index: int):
         """Clic sur une version dans l'arbre d'offres : on bascule dessus."""
+        if self._switching_offer:
+            return
         if self.project and version_index != self.project.current_version_index:
-            self._on_version_selected(version_index)
+            self._switching_offer = True
+            try:
+                self._on_version_selected(version_index)
+            finally:
+                self._switching_offer = False
 
     def _on_offer_revision_selected(self, entry: dict):
         """Clic sur un indice : bascule sur sa version et recharge ses paramètres de vente."""
+        if self._switching_offer:       # ré-entrance (boucle de messages imbriquée) : ne pas reconstruire deux fois
+            return
+        self._switching_offer = True
+        try:
+            self._switch_to_revision(entry)
+        finally:
+            self._switching_offer = False
+
+    def _switch_to_revision(self, entry: dict):
         from domain import offers
         if not self.project:
             return
