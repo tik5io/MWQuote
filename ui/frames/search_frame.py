@@ -31,14 +31,165 @@ MONTHS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
 DAYS_FR = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
 
 
+# --------------------------------------------------------------------------- #
+# Style commun de la fenêtre principale                                         #
+# --------------------------------------------------------------------------- #
+UI_NAVY = wx.Colour(22, 34, 56)
+UI_NAVY_MUTED = wx.Colour(148, 163, 184)
+UI_ACCENT = wx.Colour(37, 99, 235)
+UI_ACCENT_HOVER = wx.Colour(29, 78, 216)
+UI_BG = wx.Colour(244, 246, 250)
+UI_BORDER = wx.Colour(222, 227, 235)
+UI_TEXT = wx.Colour(30, 41, 59)
+UI_MUTED = wx.Colour(100, 116, 139)
+UI_ROW_ALT = wx.Colour(247, 249, 252)
+UI_ROW_SERIE = wx.Colour(236, 248, 241)
+UI_ROW_PROTO = wx.Colour(255, 246, 232)
+
+
+def _font(size, bold=False):
+    return wx.Font(size, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL,
+                   wx.FONTWEIGHT_BOLD if bold else wx.FONTWEIGHT_NORMAL, faceName="Segoe UI")
+
+
+def _fmt_datetime(ts):
+    s = str(ts or "")
+    try:
+        return datetime.fromisoformat(s[:19]).strftime("%d/%m/%Y  %H:%M")
+    except Exception:
+        return s[:16]
+
+
+def _fmt_date(ts):
+    s = str(ts or "")
+    try:
+        return datetime.fromisoformat(s[:10]).strftime("%d/%m/%Y")
+    except Exception:
+        return s
+
+
+class FlatButton(wx.Control):
+    """Bouton plat à coins arrondis (primaire / secondaire / pastille de filtre)."""
+
+    def __init__(self, parent, label, kind="secondary"):
+        super().__init__(parent, style=wx.BORDER_NONE)
+        self._label = label
+        self._kind = kind
+        self._active = False
+        self._hover = False
+        self._down = False
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.SetFont(_font(10, bold=(kind == "primary")))
+        self.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+        self.Bind(wx.EVT_PAINT, self._on_paint)
+        self.Bind(wx.EVT_ENTER_WINDOW, lambda e: self._set_hover(True))
+        self.Bind(wx.EVT_LEAVE_WINDOW, lambda e: self._set_hover(False))
+        self.Bind(wx.EVT_LEFT_DOWN, self._on_down)
+        self.Bind(wx.EVT_LEFT_UP, self._on_up)
+        self.Bind(wx.EVT_LEFT_DCLICK, self._on_down)
+        self.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
+        self.InvalidateBestSize()
+
+    # -- API --
+    def SetLabel(self, label):
+        self._label = label
+        self.InvalidateBestSize()
+        self.Refresh()
+        if self.GetContainingSizer():
+            self.GetContainingSizer().Layout()
+
+    def GetLabel(self):
+        return self._label
+
+    def SetActive(self, active):
+        self._active = bool(active)
+        self.Refresh()
+
+    def Enable(self, enable=True):
+        result = super().Enable(enable)
+        self.Refresh()
+        return result
+
+    def Disable(self):
+        return self.Enable(False)
+
+    def AcceptsFocus(self):
+        return False
+
+    # -- internes --
+    def DoGetBestSize(self):
+        dc = wx.ClientDC(self)
+        dc.SetFont(self.GetFont())
+        w, h = dc.GetTextExtent(self._label)
+        pad_x = 14 if self._kind == "chip" else 18
+        return wx.Size(w + 2 * pad_x, 32 if self._kind != "chip" else 28)
+
+    def _set_hover(self, value):
+        self._hover = value
+        if not value:
+            self._down = False
+        self.Refresh()
+
+    def _on_down(self, event):
+        if self.IsEnabled():
+            self._down = True
+            self.CaptureMouse() if not self.HasCapture() else None
+            self.Refresh()
+
+    def _on_up(self, event):
+        if self.HasCapture():
+            self.ReleaseMouse()
+        was_down = self._down
+        self._down = False
+        self.Refresh()
+        if was_down and self.IsEnabled() and self.GetClientRect().Contains(event.GetPosition()):
+            evt = wx.CommandEvent(wx.wxEVT_BUTTON, self.GetId())
+            evt.SetEventObject(self)
+            self.GetEventHandler().ProcessEvent(evt)
+
+    def _on_paint(self, event):
+        dc = wx.AutoBufferedPaintDC(self)
+        parent_bg = self.GetParent().GetBackgroundColour()
+        dc.SetBackground(wx.Brush(parent_bg))
+        dc.Clear()
+        gc = wx.GraphicsContext.Create(dc)
+        w, h = self.GetClientSize()
+        enabled = self.IsEnabled()
+
+        if self._kind == "primary":
+            fill = UI_ACCENT_HOVER if (self._hover or self._down) else UI_ACCENT
+            border, text = fill, wx.WHITE
+        elif self._kind == "chip":
+            if self._active:
+                fill, border, text = UI_NAVY, UI_NAVY, wx.WHITE
+            else:
+                fill = wx.Colour(232, 237, 245) if self._hover else wx.WHITE
+                border, text = UI_BORDER, UI_TEXT
+        else:
+            fill = wx.Colour(236, 241, 249) if (self._hover and enabled) else wx.WHITE
+            border, text = UI_BORDER, UI_TEXT
+        if not enabled:
+            fill, border, text = wx.Colour(240, 242, 246), UI_BORDER, wx.Colour(160, 170, 185)
+
+        radius = h / 2 if self._kind == "chip" else 6
+        gc.SetBrush(wx.Brush(fill))
+        gc.SetPen(wx.Pen(border, 1))
+        gc.DrawRoundedRectangle(0.5, 0.5, w - 1, h - 1, radius)
+
+        gc.SetFont(self.GetFont(), text)
+        tw, th = gc.GetTextExtent(self._label)[:2]
+        gc.DrawText(self._label, (w - tw) / 2, (h - th) / 2)
+
+
+
 class TimelinePanel(scrolled.ScrolledPanel):
     """Chronological timeline view of project activity."""
 
     EVENT_COLORS = {
-        "modified": wx.Colour(70, 130, 180),
+        "modified": UI_ACCENT,
     }
     EVENT_ICONS = {
-        "modified": "📝",
+        "modified": "●",
     }
     EVENT_LABELS = {
         "modified": "Modifié",
@@ -46,7 +197,7 @@ class TimelinePanel(scrolled.ScrolledPanel):
 
     def __init__(self, parent):
         super().__init__(parent, style=wx.BORDER_NONE)
-        self.SetBackgroundColour(wx.Colour(245, 245, 248))
+        self.SetBackgroundColour(UI_BG)
         self.on_item_selected = None
         self.on_item_activated = None
         self._selected_card = None
@@ -68,7 +219,7 @@ class TimelinePanel(scrolled.ScrolledPanel):
             if ts:
                 try:
                     ev_dt = datetime.fromisoformat(ts[:19])
-                    events.append({"datetime": ev_dt, "type": "modified", "project": p, "detail": ts[:16]})
+                    events.append({"datetime": ev_dt, "type": "modified", "project": p, "detail": ev_dt.strftime("%H:%M")})
                 except Exception:
                     pass
 
@@ -104,19 +255,19 @@ class TimelinePanel(scrolled.ScrolledPanel):
     def _add_day_section(self, day, events, today):
         # Day header
         header = wx.Panel(self)
-        header.SetBackgroundColour(wx.Colour(230, 230, 238))
+        header.SetBackgroundColour(UI_BG)
         h_sizer = wx.BoxSizer(wx.HORIZONTAL)
         label_text = self._format_day(day, today)
-        lbl = wx.StaticText(header, label=f"  {label_text}")
-        lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        lbl.SetForegroundColour(wx.Colour(60, 60, 90))
-        h_sizer.Add(lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.TOP | wx.BOTTOM, 4)
+        lbl = wx.StaticText(header, label=label_text.upper())
+        lbl.SetFont(_font(8, bold=True))
+        lbl.SetForegroundColour(UI_MUTED)
+        h_sizer.Add(lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.TOP | wx.BOTTOM, 6)
         header.SetSizer(h_sizer)
-        self._main_sizer.Add(header, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 8)
+        self._main_sizer.Add(header, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 14)
 
         for ev in events:
             card = self._make_card(ev)
-            self._main_sizer.Add(card, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 6)
+            self._main_sizer.Add(card, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 8)
 
         self._main_sizer.AddSpacer(4)
 
@@ -135,13 +286,13 @@ class TimelinePanel(scrolled.ScrolledPanel):
         label = self.EVENT_LABELS[ev_type]
         detail = ev["detail"]
 
-        card = wx.Panel(self, style=wx.BORDER_SIMPLE)
+        card = wx.Panel(self, style=wx.BORDER_NONE)
         card.SetBackgroundColour(wx.Colour(255, 255, 255))
 
         outer = wx.BoxSizer(wx.HORIZONTAL)
 
         # Left color stripe
-        stripe = wx.Panel(card, size=(5, -1))
+        stripe = wx.Panel(card, size=(4, -1))
         stripe.SetBackgroundColour(color)
         outer.Add(stripe, 0, wx.EXPAND)
 
@@ -152,7 +303,7 @@ class TimelinePanel(scrolled.ScrolledPanel):
         row1 = wx.BoxSizer(wx.HORIZONTAL)
 
         type_lbl = wx.StaticText(card, label=f"{icon} {label}")
-        type_lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        type_lbl.SetFont(_font(9, bold=True))
         type_lbl.SetForegroundColour(color)
         row1.Add(type_lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
 
@@ -162,17 +313,18 @@ class TimelinePanel(scrolled.ScrolledPanel):
 
         ref_text = f"{p.get('reference', '—')}   {p.get('client', '')}"
         ref_lbl = wx.StaticText(card, label=ref_text)
-        ref_lbl.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        ref_lbl.SetFont(_font(10))
+        ref_lbl.SetForegroundColour(UI_TEXT)
         row1.Add(ref_lbl, 1, wx.ALIGN_CENTER_VERTICAL)
 
-        content.Add(row1, 0, wx.EXPAND | wx.TOP, 4)
+        content.Add(row1, 0, wx.EXPAND | wx.TOP, 8)
 
         # Row 2: time detail (for modified and export)
         if ev_type in ("modified", "export") and detail:
             detail_lbl = wx.StaticText(card, label=f"        {detail}")
             detail_lbl.SetForegroundColour(wx.Colour(120, 120, 120))
-            detail_lbl.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
-            content.Add(detail_lbl, 0, wx.BOTTOM, 4)
+            detail_lbl.SetFont(_font(8))
+            content.Add(detail_lbl, 0, wx.BOTTOM, 8)
         else:
             content.AddSpacer(4)
 
@@ -205,13 +357,13 @@ class TimelinePanel(scrolled.ScrolledPanel):
             except Exception:
                 pass
         self._selected_card = card
-        card.SetBackgroundColour(wx.Colour(235, 242, 255))
+        card.SetBackgroundColour(wx.Colour(226, 236, 253))
         card.Refresh()
 
 
 class SearchFrame(wx.Frame):
     def __init__(self):
-        super().__init__(None, title="MWQuote - Projets", size=(1200, 800))
+        super().__init__(None, title="MWQuote - Projets", size=(1280, 820))
 
         self.db = Database()
         self.indexer = Indexer(self.db)
@@ -235,9 +387,17 @@ class SearchFrame(wx.Frame):
         
         self.Centre()
         self.Show()
+        wx.CallAfter(self._init_sash)
         
         self.Bind(wx.EVT_CLOSE, self._on_close)
         self.Bind(wx.EVT_ACTIVATE, self._on_activate)
+
+    def _init_sash(self):
+        """Position initiale du séparateur : ~58 % liste / 42 % détails (la taille réelle n'est connue qu'après affichage)."""
+        try:
+            self.splitter.SetSashPosition(int(self.splitter.GetSize().GetWidth() * 0.64))
+        except Exception:
+            pass
 
     def _set_app_icon(self):
         try:
@@ -297,87 +457,130 @@ class SearchFrame(wx.Frame):
         event.Skip()
 
     def _build_ui(self):
+        self._mode_filter = "all"
+        self._search_timer = None
+
         main_panel = wx.Panel(self)
+        main_panel.SetBackgroundColour(UI_BG)
         vbox = wx.BoxSizer(wx.VERTICAL)
-        
-        # --- Top Bar (Search & Indexing) ---
-        top_bar_container = wx.Panel(main_panel)
-        top_bar = wx.BoxSizer(wx.HORIZONTAL)
 
-        # New Quote Button
-        new_btn = wx.Button(top_bar_container, label="Nouveau projet")
-        new_btn.SetBackgroundColour(wx.Colour(70, 130, 180))
-        new_btn.SetForegroundColour(wx.WHITE)
+        # --- Bandeau d'en-tête : identité + indicateurs + action principale ---
+        header = wx.Panel(main_panel)
+        header.SetBackgroundColour(UI_NAVY)
+        h = wx.BoxSizer(wx.HORIZONTAL)
+
+        titles = wx.BoxSizer(wx.VERTICAL)
+        title = wx.StaticText(header, label="MWQuote")
+        title.SetFont(_font(18, bold=True))
+        title.SetForegroundColour(wx.WHITE)
+        subtitle = wx.StaticText(header, label="Offres et projets")
+        subtitle.SetFont(_font(9))
+        subtitle.SetForegroundColour(UI_NAVY_MUTED)
+        titles.Add(title, 0)
+        titles.Add(subtitle, 0, wx.TOP, 1)
+        h.Add(titles, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.TOP | wx.BOTTOM, 20)
+
+        h.AddStretchSpacer(1)
+
+        self.kpi_labels = {}
+        for key, caption in (("total", "PROJETS"), ("serie", "SÉRIE"), ("proto", "PROTOTYPE")):
+            box = wx.BoxSizer(wx.VERTICAL)
+            value = wx.StaticText(header, label="0", style=wx.ALIGN_CENTRE_HORIZONTAL)
+            value.SetFont(_font(17, bold=True))
+            value.SetForegroundColour(wx.WHITE)
+            cap = wx.StaticText(header, label=caption, style=wx.ALIGN_CENTRE_HORIZONTAL)
+            cap.SetFont(_font(7, bold=True))
+            cap.SetForegroundColour(UI_NAVY_MUTED)
+            box.Add(value, 0, wx.EXPAND)
+            box.Add(cap, 0, wx.EXPAND)
+            self.kpi_labels[key] = value
+            h.Add(box, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 28)
+
+        new_btn = FlatButton(header, "+  Nouveau projet", kind="primary")
         new_btn.Bind(wx.EVT_BUTTON, self._on_new_quote)
-        top_bar.Add(new_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        h.Add(new_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
+        header.SetSizer(h)
+        vbox.Add(header, 0, wx.EXPAND)
 
-        top_bar.Add(wx.StaticLine(top_bar_container, style=wx.LI_VERTICAL), 0, wx.EXPAND | wx.ALL, 5)
+        # --- Barre d'outils : recherche, filtres, export, vue ---
+        bar = wx.Panel(main_panel)
+        bar.SetBackgroundColour(UI_BG)
+        t = wx.BoxSizer(wx.HORIZONTAL)
 
-        # Unified Search Field
-        search_box = wx.BoxSizer(wx.HORIZONTAL)
-        search_box.Add(wx.StaticText(top_bar_container, label="Rechercher :"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        self.search_global = wx.TextCtrl(top_bar_container, style=wx.TE_PROCESS_ENTER)
-        self.search_global.SetHint("Réf, Client, Nom...")
-        search_box.Add(self.search_global, 1, wx.EXPAND)
+        self.search_global = wx.SearchCtrl(bar, size=(300, 30), style=wx.TE_PROCESS_ENTER)
+        self.search_global.SetHint("Référence, client, nom…")
+        self.search_global.ShowCancelButton(True)
+        self.search_global.SetFont(_font(10))
+        self.search_global.Bind(wx.EVT_TEXT, self._on_search_text)
+        self.search_global.Bind(wx.EVT_SEARCH_CANCEL, self._on_reset)
+        t.Add(self.search_global, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.TOP | wx.BOTTOM, 14)
 
-        search_btn = wx.Button(top_bar_container, label="Rechercher")
-        search_btn.Bind(wx.EVT_BUTTON, self._on_search)
+        self.chips = {}
+        for key, label in (("all", "Tous"), ("serie", "Série"), ("proto", "Prototype")):
+            chip = FlatButton(bar, label, kind="chip")
+            chip.SetActive(key == "all")
+            chip.Bind(wx.EVT_BUTTON, lambda e, k=key: self._set_mode_filter(k))
+            self.chips[key] = chip
+            t.Add(chip, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 16 if key == "all" else 6)
 
-        # Reset button
-        reset_btn = wx.Button(top_bar_container, label="X", size=(40, -1))
-        reset_btn.Bind(wx.EVT_BUTTON, self._on_reset)
-        reset_btn.SetToolTip("Effacer les filtres")
+        t.AddStretchSpacer(1)
 
-        top_bar.Add(search_box, 3, wx.ALL | wx.EXPAND, 5)
-        top_bar.Add(search_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-        top_bar.Add(reset_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-
-        top_bar.AddStretchSpacer(1)
-
-        # Master "select all" checkbox (acts on all displayed/filtered rows)
-        self.select_all_cb = wx.CheckBox(top_bar_container, label="Tout sélectionner")
+        self.select_all_cb = wx.CheckBox(bar, label="Tout sélectionner")
+        self.select_all_cb.SetFont(_font(9))
+        self.select_all_cb.SetForegroundColour(UI_MUTED)
         self.select_all_cb.SetToolTip("Cocher / décocher tous les projets affichés (filtre en cours)")
         self.select_all_cb.Bind(wx.EVT_CHECKBOX, self._on_master_check)
-        top_bar.Add(self.select_all_cb, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        t.Add(self.select_all_cb, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
 
-        # Export synthesis (single Excel with preview + gamme + prices for all checked offers)
-        self.synth_export_btn = wx.Button(top_bar_container, label="📊 Exporter synthèse Excel")
+        self.synth_export_btn = FlatButton(bar, "Exporter synthèse Excel", kind="secondary")
         self.synth_export_btn.SetToolTip("Générer un Excel unique de synthèse pour les projets cochés")
         self.synth_export_btn.Bind(wx.EVT_BUTTON, self._on_export_synthesis)
         self.synth_export_btn.Disable()
-        top_bar.Add(self.synth_export_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        t.Add(self.synth_export_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
 
-        top_bar.Add(wx.StaticLine(top_bar_container, style=wx.LI_VERTICAL), 0, wx.EXPAND | wx.ALL, 5)
-
-        # View toggle button
-        self.view_toggle_btn = wx.Button(top_bar_container, label="📅 Chronologie")
+        self.view_toggle_btn = FlatButton(bar, "Chronologie", kind="secondary")
         self.view_toggle_btn.SetToolTip("Basculer entre vue liste et vue chronologique")
         self.view_toggle_btn.Bind(wx.EVT_BUTTON, self._on_toggle_view)
-        top_bar.Add(self.view_toggle_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
-        
-        top_bar_container.SetSizer(top_bar)
-        vbox.Add(top_bar_container, 0, wx.EXPAND | wx.ALL, 5)
-        
-        # --- Splitter (List/Timeline & Details) ---
-        self.splitter = wx.SplitterWindow(main_panel)
-        self.splitter.SetSashGravity(0.5)
+        t.Add(self.view_toggle_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 14)
 
-        # Left: container for list_ctrl + timeline_panel (only one visible at a time)
+        bar.SetSizer(t)
+        vbox.Add(bar, 0, wx.EXPAND)
+
+        # --- Séparateur fin + zone principale (liste / détails) ---
+        sep = wx.Panel(main_panel, size=(-1, 1))
+        sep.SetBackgroundColour(UI_BORDER)
+        vbox.Add(sep, 0, wx.EXPAND)
+
+        self.splitter = wx.SplitterWindow(main_panel, style=wx.SP_LIVE_UPDATE | wx.SP_3DSASH)
+        self.splitter.SetSashGravity(0.5)
+        self.splitter.SetBackgroundColour(UI_BORDER)
+
         self.left_container = wx.Panel(self.splitter)
+        self.left_container.SetBackgroundColour(wx.WHITE)
         self.left_sizer = wx.BoxSizer(wx.VERTICAL)
 
-        # List view
-        self.list_ctrl = wx.ListCtrl(self.left_container, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
-        self.list_ctrl.InsertColumn(0, "Preview", width=70)
-        self.list_ctrl.InsertColumn(1, "Référence", width=120)
+        self.list_ctrl = wx.ListCtrl(self.left_container, style=wx.LC_REPORT | wx.BORDER_NONE)
+        self.list_ctrl.SetFont(_font(10))
+        self.list_ctrl.SetBackgroundColour(wx.WHITE)
+        self.list_ctrl.SetTextColour(UI_TEXT)
+        # Image list factice : impose une hauteur de ligne plus aérée.
+        row_il = wx.ImageList(1, 32)
+        spacer = wx.Bitmap(1, 32)
+        _dc = wx.MemoryDC(spacer)
+        _dc.SetBackground(wx.Brush(wx.WHITE))
+        _dc.Clear()
+        _dc.SelectObject(wx.NullBitmap)
+        row_il.Add(spacer)
+        self.list_ctrl.AssignImageList(row_il, wx.IMAGE_LIST_SMALL)
+        self.list_ctrl.InsertColumn(0, "Aperçu", width=56)
+        self.list_ctrl.InsertColumn(1, "Référence", width=135)
         self.list_ctrl.InsertColumn(2, "Client", width=120)
-        self.list_ctrl.InsertColumn(3, "Mode", width=110)
-        self.list_ctrl.InsertColumn(4, "Q. Min", width=60)
-        self.list_ctrl.InsertColumn(5, "Q. Max", width=60)
-        self.list_ctrl.InsertColumn(6, "Date Proj.", width=90)
-        self.list_ctrl.InsertColumn(7, "Modifié le", width=110)
+        self.list_ctrl.InsertColumn(3, "Mode", width=130)
+        self.list_ctrl.InsertColumn(4, "Q. Min", width=55)
+        self.list_ctrl.InsertColumn(5, "Q. Max", width=62)
+        self.list_ctrl.InsertColumn(6, "Date Proj.", width=80)
+        self.list_ctrl.InsertColumn(7, "Modifié le", width=135)
 
-        # Checkboxes for multi-selection export (wxPython >= 4.1)
         try:
             self.list_ctrl.EnableCheckBoxes(True)
             self.list_ctrl.Bind(wx.EVT_LIST_ITEM_CHECKED, self._on_item_checked)
@@ -391,47 +594,74 @@ class SearchFrame(wx.Frame):
         self.list_ctrl.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self._on_list_right_click)
         self.list_ctrl.Bind(wx.EVT_RIGHT_UP, self._on_list_right_click)
 
-        # Timeline view
         self.timeline_panel = TimelinePanel(self.left_container)
         self.timeline_panel.on_item_selected = self._on_timeline_item_selected
         self.timeline_panel.on_item_activated = self._on_timeline_item_activated
         self.timeline_panel.Hide()
 
+        # État vide (aucun résultat)
+        self.empty_label = wx.StaticText(
+            self.left_container, label="Aucun projet à afficher.\nModifiez la recherche ou le filtre.",
+            style=wx.ALIGN_CENTRE_HORIZONTAL)
+        self.empty_label.SetFont(_font(11))
+        self.empty_label.SetForegroundColour(UI_MUTED)
+        self.empty_label.Hide()
+
         self.left_sizer.Add(self.list_ctrl, 1, wx.EXPAND)
         self.left_sizer.Add(self.timeline_panel, 1, wx.EXPAND)
+        self.left_sizer.Add(self.empty_label, 0, wx.EXPAND | wx.ALL, 24)
         self.left_container.SetSizer(self.left_sizer)
 
-        # Right: Details / Comparison Container
         self.right_container = wx.Panel(self.splitter)
+        self.right_container.SetBackgroundColour(wx.WHITE)
         self.right_sizer = wx.BoxSizer(wx.VERTICAL)
-        
+
         self.details_panel = ProjectDetailsPanel(self.right_container)
         self.comparison_panel = ComparisonPanel(self.right_container)
-        
+
         self.right_sizer.Add(self.details_panel, 1, wx.EXPAND)
         self.right_sizer.Add(self.comparison_panel, 1, wx.EXPAND)
         self.comparison_panel.Hide()
-        
+
         self.right_container.SetSizer(self.right_sizer)
-        
-        self.splitter.SplitVertically(self.left_container, self.right_container, 600)
+
+        self.splitter.SplitVertically(self.left_container, self.right_container, 700)
         self.splitter.SetMinimumPaneSize(100)
-        
+
         vbox.Add(self.splitter, 1, wx.EXPAND)
-        
         main_panel.SetSizer(vbox)
-        
-        # Frame sizer to ensure panel fills frame
+
         frame_sizer = wx.BoxSizer(wx.VERTICAL)
         frame_sizer.Add(main_panel, 1, wx.EXPAND)
         self.SetSizer(frame_sizer)
-        
-        # Status Bar
+
         self.CreateStatusBar()
         self.SetStatusText("Prêt")
-        
-        # Bind search events (Enter key)
+
         self.search_global.Bind(wx.EVT_TEXT_ENTER, self._on_search)
+
+    # ------------------------------------------------------------------ #
+    # Recherche en direct + filtres de mode                                 #
+    # ------------------------------------------------------------------ #
+    def _on_search_text(self, event):
+        """Recherche au fil de la frappe (temporisée pour ne pas relancer la requête à chaque touche)."""
+        if self._search_timer is not None:
+            self._search_timer.Stop()
+        self._search_timer = wx.CallLater(250, self._on_search, None)
+        event.Skip()
+
+    def _set_mode_filter(self, key):
+        self._mode_filter = key
+        for k, chip in self.chips.items():
+            chip.SetActive(k == key)
+        self._refresh_list()
+
+    def _update_kpis(self, results):
+        n_serie = sum(1 for p in results if p.get('has_serie'))
+        n_proto = sum(1 for p in results if p.get('is_prototype'))
+        for key, val in (("total", len(results)), ("serie", n_serie), ("proto", n_proto)):
+            self.kpi_labels[key].SetLabel(str(val))
+        self.kpi_labels["total"].GetParent().Layout()
 
     def _build_menu(self):
         menubar = wx.MenuBar()
@@ -521,13 +751,18 @@ class SearchFrame(wx.Frame):
         if self._timeline_mode:
             self.list_ctrl.Hide()
             self.timeline_panel.Show()
-            self.view_toggle_btn.SetLabel("📋 Liste")
+            self.view_toggle_btn.SetLabel("Vue liste")
         else:
             self.timeline_panel.Hide()
             self.list_ctrl.Show()
-            self.view_toggle_btn.SetLabel("📅 Chronologie")
+            self.view_toggle_btn.SetLabel("Chronologie")
         self.left_container.Layout()
         self._refresh_list()
+
+    def _show_empty_state(self, empty):
+        """Message centré quand le filtre / la recherche ne renvoie aucun projet."""
+        self.empty_label.Show(bool(empty))
+        self.left_container.Layout()
 
     def _on_timeline_item_selected(self, p_data):
         """Show project details when a timeline card is clicked."""
@@ -561,7 +796,7 @@ class SearchFrame(wx.Frame):
     def _on_col_click(self, event):
         col_idx = event.GetColumn()
         col_name = self.list_ctrl.GetColumn(col_idx).GetText()
-        if col_name == "Preview":
+        if col_name == "Aperçu":
             return
         
         if self.sort_col == col_name:
@@ -586,15 +821,25 @@ class SearchFrame(wx.Frame):
         self.project_map = {}
 
         if self._timeline_mode:
+            self._update_kpis(results)
+            if self._mode_filter == "serie":
+                results = [p for p in results if p.get('has_serie')]
+            elif self._mode_filter == "proto":
+                results = [p for p in results if p.get('is_prototype')]
+            self._show_empty_state(False)
             self.timeline_panel.load_events(results)
-            self.SetStatusText(f"{len(results)} projets trouvés")
+            self.SetStatusText(f"{len(results)} projets affichés")
             self._update_checked_ui()
             return
 
         self.list_ctrl.DeleteAllItems()
 
-        SERIE_BG  = wx.Colour(210, 240, 220)   # soft green tint
-        PROTO_BG  = wx.Colour(255, 235, 205)   # soft orange tint
+        self._update_kpis(results)
+        if self._mode_filter == "serie":
+            results = [p for p in results if p.get('has_serie')]
+        elif self._mode_filter == "proto":
+            results = [p for p in results if p.get('is_prototype')]
+        self._show_empty_state(not results)
 
         for i, p in enumerate(results):
             has_preview = bool(p.get('preview_filename'))
@@ -602,32 +847,34 @@ class SearchFrame(wx.Frame):
             is_prototype = bool(p.get('is_prototype', 0))
 
             if is_prototype and has_serie:
-                mode_label = "PROTO + SÉRIE"
+                mode_label = "◆ ● Proto + Série"
             elif is_prototype:
-                mode_label = "PROTOTYPE"
+                mode_label = "◆ Prototype"
             elif has_serie:
-                mode_label = "SÉRIE"
+                mode_label = "● Série"
             else:
                 mode_label = "—"
 
-            idx = self.list_ctrl.InsertItem(i, "Oui" if has_preview else "")
+            idx = self.list_ctrl.InsertItem(i, "✓" if has_preview else "")
             self.list_ctrl.SetItem(idx, 1, str(p.get('reference') or ""))
             self.list_ctrl.SetItem(idx, 2, str(p.get('client') or ""))
             self.list_ctrl.SetItem(idx, 3, mode_label)
             self.list_ctrl.SetItem(idx, 4, str(p.get('min_qty', 0)))
             self.list_ctrl.SetItem(idx, 5, str(p.get('max_qty', 0)))
-            self.list_ctrl.SetItem(idx, 6, str(p.get('project_date') or ""))
-            ts = p.get('last_modified', "")
-            self.list_ctrl.SetItem(idx, 7, str(ts)[:16])
+            self.list_ctrl.SetItem(idx, 6, _fmt_date(p.get('project_date')))
+            self.list_ctrl.SetItem(idx, 7, _fmt_datetime(p.get('last_modified')))
 
             if is_prototype:
-                self.list_ctrl.SetItemBackgroundColour(idx, PROTO_BG)
+                self.list_ctrl.SetItemBackgroundColour(idx, UI_ROW_PROTO)
             elif has_serie:
-                self.list_ctrl.SetItemBackgroundColour(idx, SERIE_BG)
+                self.list_ctrl.SetItemBackgroundColour(idx, UI_ROW_SERIE)
+            elif i % 2:
+                self.list_ctrl.SetItemBackgroundColour(idx, UI_ROW_ALT)
 
             self.project_map[idx] = p
 
-        self.SetStatusText(f"{len(results)} projets trouvés")
+        n = len(results)
+        self.SetStatusText(f"{n} projet{'s' if n > 1 else ''} affiché{'s' if n > 1 else ''}")
         # New filtered set -> checkboxes are cleared; refresh master checkbox + button.
         self._update_checked_ui()
 
@@ -661,7 +908,7 @@ class SearchFrame(wx.Frame):
             self.select_all_cb.SetValue(False)
             self.select_all_cb.Disable()
             self.synth_export_btn.Disable()
-            self.synth_export_btn.SetLabel("📊 Exporter synthèse Excel")
+            self.synth_export_btn.SetLabel("Exporter synthèse Excel")
             return
 
         self.select_all_cb.Enable()
@@ -673,10 +920,10 @@ class SearchFrame(wx.Frame):
 
         if checked > 0:
             self.synth_export_btn.Enable()
-            self.synth_export_btn.SetLabel(f"📊 Exporter synthèse Excel ({checked})")
+            self.synth_export_btn.SetLabel(f"Exporter synthèse Excel ({checked})")
         else:
             self.synth_export_btn.Disable()
-            self.synth_export_btn.SetLabel("📊 Exporter synthèse Excel")
+            self.synth_export_btn.SetLabel("Exporter synthèse Excel")
 
     def _on_item_checked(self, event):
         self._update_checked_ui()
