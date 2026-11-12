@@ -189,6 +189,9 @@ class MainFrame(wx.Frame):
         self._save_btn.SetToolTip("Enregistrer le projet (Ctrl+S)")
         self._save_btn.Bind(wx.EVT_BUTTON, self._on_save)
         h_sizer.Add(self._save_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
+        # Bulles de statut du scénario sélectionné (mode de calcul, prototype, norme, état de l'offre)
+        self.version_tags = StatusPills(self._header)
+        self._header_sub.GetContainingSizer().Add(self.version_tags, 0, wx.EXPAND | wx.TOP, 6)
         root_sizer.Add(self._header, 0, wx.EXPAND)
 
         body = wx.Panel(root)
@@ -209,17 +212,17 @@ class MainFrame(wx.Frame):
 
         # --- Version bar ---
         self.version_bar = wx.Panel(right_panel, style=wx.BORDER_NONE)
-        self.version_bar.SetBackgroundColour(wx.Colour(236, 240, 247))
+        self.version_bar.SetBackgroundColour(theme.UI_BG)
         self._version_bar_sizer = wx.WrapSizer(wx.HORIZONTAL)  # les versions passent à la ligne si besoin
         self._version_bar_sizer.Add(
             wx.StaticText(self.version_bar, label="  Scénarios :"),
             0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4
         )
         # Navigation : version précédente / suivante
-        self.btn_prev_version = wx.Button(self.version_bar, label="◀", size=(30, 26))
+        self.btn_prev_version = theme.FlatButton(self.version_bar, "‹")
         self.btn_prev_version.SetToolTip("Scénario précédent")
         self.btn_prev_version.Bind(wx.EVT_BUTTON, lambda e: self._navigate_version(-1))
-        self.btn_next_version = wx.Button(self.version_bar, label="▶", size=(30, 26))
+        self.btn_next_version = theme.FlatButton(self.version_bar, "›")
         self.btn_next_version.SetToolTip("Scénario suivant")
         self.btn_next_version.Bind(wx.EVT_BUTTON, lambda e: self._navigate_version(+1))
         self._version_bar_sizer.Add(self.btn_prev_version, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
@@ -235,16 +238,9 @@ class MainFrame(wx.Frame):
         self._phase_warnings = []
         self._version_bar_sizer.Add(self.phase_warn_lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
 
-        # Légende du code couleur par métier (Projet / Méthode / Qualité / Chiffrage)
-        self._version_bar_sizer.Add(trades.legend(self.version_bar, self.version_bar.GetBackgroundColour()),
-                                    0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
-
         self.version_bar.SetSizer(self._version_bar_sizer)
-        right_sizer.Add(self.version_bar, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 5)
+        right_sizer.Add(self.version_bar, 0, wx.EXPAND | wx.ALL, 6)
 
-        # Bulles de statut du scénario sélectionné : mode de calcul, prototype, secteur, état de l'offre
-        self.version_tags = StatusPills(right_panel)
-        right_sizer.Add(self.version_tags, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
 
         # --- Notebook for editing tabs ---
         self.notebook = wx.Notebook(right_panel)
@@ -582,8 +578,9 @@ class MainFrame(wx.Frame):
         insert_pos = 3           # après le libellé et les deux boutons de navigation
         for version in sorted(self.project.versions, key=lambda v: v.version_index):
             v_idx = version.version_index
-            btn = wx.ToggleButton(self.version_bar, label=self._version_button_label(version), size=(-1, 26))
-            btn.SetValue(v_idx == current_idx)
+            title, detail = self._version_card_parts(version)
+            btn = theme.ScenarioTab(self.version_bar, title, detail, selected=(v_idx == current_idx),
+                                    locked=bool(self.project.is_version_frozen(v_idx)))
             btn.SetToolTip(
                 f"Scénario {v_idx}" + (f" — {version.label}" if version.label.strip() else "") +
                 f"\n{version.describe()}" +
@@ -598,12 +595,12 @@ class MainFrame(wx.Frame):
             btn.Bind(wx.EVT_TOGGLEBUTTON, lambda e, idx=v_idx_captured: self._on_version_selected(idx))
             btn.Bind(wx.EVT_LEFT_DCLICK, lambda e, idx=v_idx_captured: self._on_edit_version(idx))
             btn.Bind(wx.EVT_RIGHT_UP, lambda e, idx=v_idx_captured: self._on_version_context_menu(idx))
-            sizer.Insert(insert_pos, btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
+            sizer.Insert(insert_pos, btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.TOP | wx.BOTTOM, 4)
             self._version_btns.append((v_idx, btn))
             insert_pos += 1
 
         # "+" button to create a new version
-        add_btn = wx.Button(self.version_bar, label="+  Nouveau scénario", size=(-1, 26))
+        add_btn = theme.FlatButton(self.version_bar, "+  Nouveau scénario")
         add_btn.SetToolTip("Créer un nouveau scénario (copie de la gamme courante) : autres quantités, "
                            "autre mode de calcul (Taux horaire / Décomposé)")
         add_btn.Bind(wx.EVT_BUTTON, self._on_add_version)
@@ -611,12 +608,12 @@ class MainFrame(wx.Frame):
         self._version_btns.append((-1, add_btn))  # -1 = not a real version btn
 
         # Dupliquer / supprimer : agissent sur la version courante
-        dup_btn = wx.Button(self.version_bar, label="Dupliquer", size=(-1, 26))
+        dup_btn = theme.FlatButton(self.version_bar, "Dupliquer")
         dup_btn.SetToolTip("Dupliquer le scénario courant (copie modifiable, jamais figée)")
         dup_btn.Bind(wx.EVT_BUTTON, lambda e: self._on_duplicate_version())
         sizer.Insert(insert_pos + 1, dup_btn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
         self._version_btns.append((-1, dup_btn))
-        del_btn = wx.Button(self.version_bar, label="Supprimer", size=(-1, 26))
+        del_btn = theme.FlatButton(self.version_bar, "Supprimer")
         del_btn.SetToolTip("Supprimer le scénario courant (avertit si une offre l'a figé)")
         del_btn.Bind(wx.EVT_BUTTON, lambda e: self._on_delete_version())
         del_btn.Enable(len(self.project.versions) > 1)
@@ -631,7 +628,7 @@ class MainFrame(wx.Frame):
 
     # Couleurs des bulles de statut (hors métiers) : repères neutres
     _TAG_GREY = wx.Colour(100, 116, 139)
-    _TAG_SLATE = wx.Colour(51, 65, 85)
+    _TAG_SLATE = wx.Colour(13, 148, 136)      # « Offre émise » : lisible sur le bandeau bleu nuit
 
     def _refresh_version_tags(self):
         """Bulles du scénario sélectionné : mode de calcul, statut (prototype, offre émise), secteur."""
@@ -657,7 +654,7 @@ class MainFrame(wx.Frame):
             tags.append((f"Offre émise · {frozen_by}", self._TAG_SLATE,
                          "Une offre a été émise : la gamme est figée (créer un nouveau scénario pour la modifier)."))
         else:
-            tags.append(("Brouillon", wx.Colour(148, 163, 184), "Aucune offre émise sur ce scénario."))
+            tags.append(("Brouillon", wx.Colour(71, 85, 105), "Aucune offre émise sur ce scénario."))
         if not version.offer_comments:
             tags.append(("Sans commentaires auto", self._TAG_GREY,
                          "Les mentions de traçabilité et de prototype ne sont pas ajoutées aux offres de ce scénario."))
@@ -684,6 +681,20 @@ class MainFrame(wx.Frame):
     # ------------------------------------------------------------------ #
     # Configuration de vente de la version (mode de calcul, quantités)      #
     # ------------------------------------------------------------------ #
+
+    def _version_card_parts(self, version):
+        """(titre, détail) de la carte de scénario : « S1 · nom » puis « Taux horaire · 10 / 100 pc · Proto »."""
+        label = version.label.strip()
+        title = f"S{version.version_index}" + (f" · {label}" if label else "")
+        qtys = sorted(version.phase.sale_quantities or [])
+        if version.is_serie:
+            sd = version.phase.serie_data
+            detail = f"{int(sd.annual_volume):,} pc/an".replace(",", " ") if sd else "—"
+        else:
+            shown = [f"{q:,}".replace(",", " ") for q in qtys[:3]]
+            detail = (" / ".join(shown) + (" …" if len(qtys) > 3 else "") + " pc") if qtys else "—"
+        proto = " · Proto" if version.is_prototype else ""
+        return title, f"{version.display_mode} · {detail}{proto}"
 
     def _version_button_label(self, version) -> str:
         """« S1 · Taux horaire · 10 / 100 pc » — ou le nom donné au scénario ; 🔒 si figée."""

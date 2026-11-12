@@ -61,9 +61,11 @@ class StatusPills(wx.Panel):
         needed = y + row_h + ROW_GAP
         if self.GetMinSize().height != needed:
             self.SetMinSize((-1, needed))
-            parent = self.GetParent()
-            if parent:
+            # Remonte la hauteur jusqu'à la fenêtre (le panneau peut vivre dans un bandeau)
+            parent, top = self.GetParent(), self.GetTopLevelParent()
+            while parent and parent is not top:
                 parent.Layout()
+                parent = parent.GetParent()
 
     def _on_size(self, event):
         event.Skip()

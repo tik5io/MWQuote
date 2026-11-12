@@ -160,3 +160,106 @@ def build_header(parent, title, subtitle=""):
     h.Add(titles, 1, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.TOP | wx.BOTTOM, 20)
     header.SetSizer(h)
     return header, h, title_lbl, sub_lbl
+
+
+class ScenarioTab(wx.Control):
+    """Carte de scénario : titre (S1 + nom) et détail sur deux lignes ; pleine couleur quand elle est active.
+
+    Émet wxEVT_TOGGLEBUTTON au clic (comme l'ancien ToggleButton) ; double-clic et clic droit restent
+    des événements souris ordinaires que l'appelant peut lier.
+    """
+
+    def __init__(self, parent, title, detail, selected=False, locked=False):
+        super().__init__(parent, style=wx.BORDER_NONE)
+        self._title, self._detail = title, detail
+        self._selected, self._locked = bool(selected), bool(locked)
+        self._hover = False
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self._font_title = font(10, bold=True)
+        self._font_detail = font(8)
+        self.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+        self.Bind(wx.EVT_PAINT, self._on_paint)
+        self.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
+        self.Bind(wx.EVT_ENTER_WINDOW, lambda e: self._set_hover(True))
+        self.Bind(wx.EVT_LEAVE_WINDOW, lambda e: self._set_hover(False))
+        self.Bind(wx.EVT_LEFT_UP, self._on_up)
+        self.InvalidateBestSize()
+
+    def SetValue(self, selected):
+        self._selected = bool(selected)
+        self.Refresh()
+
+    def GetValue(self):
+        return self._selected
+
+    def AcceptsFocus(self):
+        return False
+
+    def _title_text(self):
+        return self._title
+
+    def DoGetBestSize(self):
+        dc = wx.ClientDC(self)
+        dc.SetFont(self._font_title)
+        w1 = dc.GetTextExtent(self._title_text())[0]
+        dc.SetFont(self._font_detail)
+        w2 = dc.GetTextExtent(self._detail)[0]
+        return wx.Size(max(w1 + (20 if self._locked else 0), w2) + 28, 46)
+
+    def _set_hover(self, value):
+        self._hover = value
+        self.Refresh()
+
+    def _on_up(self, event):
+        if self.GetClientRect().Contains(event.GetPosition()):
+            evt = wx.CommandEvent(wx.wxEVT_TOGGLEBUTTON, self.GetId())
+            evt.SetEventObject(self)
+            evt.SetInt(1)
+            wx.CallAfter(self._emit, evt)       # la barre est reconstruite par le gestionnaire : hors de notre événement souris
+        event.Skip()
+
+    def _emit(self, evt):
+        try:
+            self.GetEventHandler().ProcessEvent(evt)
+        except RuntimeError:
+            pass
+
+    @staticmethod
+    def _draw_lock(gc, x, y, colour):
+        """Petit cadenas vectoriel (les emojis ne s'affichent pas dans le dessin graphique)."""
+        import math
+        gc.SetPen(wx.Pen(colour, 2))
+        gc.SetBrush(wx.TRANSPARENT_BRUSH)
+        shackle = gc.CreatePath()
+        shackle.AddArc(x + 5, y + 4, 3.2, math.pi, 2 * math.pi, True)
+        shackle.MoveToPoint(x + 1.8, y + 4)
+        shackle.AddLineToPoint(x + 1.8, y + 7)
+        shackle.MoveToPoint(x + 8.2, y + 4)
+        shackle.AddLineToPoint(x + 8.2, y + 7)
+        gc.StrokePath(shackle)
+        gc.SetPen(wx.TRANSPARENT_PEN)
+        gc.SetBrush(wx.Brush(colour))
+        gc.DrawRoundedRectangle(x, y + 7, 10, 7.5, 1.8)
+
+    def _on_paint(self, event):
+        dc = wx.AutoBufferedPaintDC(self)
+        dc.SetBackground(wx.Brush(self.GetParent().GetBackgroundColour()))
+        dc.Clear()
+        gc = wx.GraphicsContext.Create(dc)
+        w, h = self.GetClientSize()
+        if self._selected:
+            fill, border, t1, t2 = UI_ACCENT, UI_ACCENT, wx.WHITE, wx.Colour(219, 234, 254)
+        else:
+            fill = wx.Colour(236, 241, 249) if self._hover else wx.WHITE
+            border = UI_ACCENT if self._hover else UI_BORDER
+            t1, t2 = UI_TEXT, UI_MUTED
+        gc.SetBrush(wx.Brush(fill))
+        gc.SetPen(wx.Pen(border, 1))
+        gc.DrawRoundedRectangle(0.5, 0.5, w - 1, h - 1, 8)
+        gc.SetFont(self._font_title, t1)
+        gc.DrawText(self._title_text(), 14, 6)
+        if self._locked:
+            tw = gc.GetTextExtent(self._title_text())[0]
+            self._draw_lock(gc, 14 + tw + 8, 8, t1)
+        gc.SetFont(self._font_detail, t2)
+        gc.DrawText(self._detail, 14, 26)
