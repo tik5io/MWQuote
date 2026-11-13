@@ -249,6 +249,7 @@ class SearchFrame(wx.Frame):
         self._start_weekly_backup()
 
         self._build_ui()
+        self._update_backup_label()
         self._build_menu()
         self._set_app_icon()
         # Sorting state (must be before _refresh_list)
@@ -321,10 +322,37 @@ class SearchFrame(wx.Frame):
             backup_dir=backup_dir or self.config.get_backup_folder(),
         )
 
+    def _update_backup_label(self):
+        """« Dernière sauvegarde : … » dans le bandeau ; en orange si absente ou en retard."""
+        label = getattr(self, "backup_label", None)
+        if not label:
+            return
+        try:
+            svc = self._backup_service()
+            last = svc.last_backup()
+            overdue = svc.is_due()
+            folder = svc.backup_dir
+        except Exception:
+            logger.exception("Lecture de la dernière sauvegarde impossible")
+            last, overdue, folder = None, True, ""
+        try:
+            if last:
+                text = f"Dernière sauvegarde : {last:%d/%m/%Y %H:%M}"
+            else:
+                text = "Aucune sauvegarde"
+            label.SetLabel(text + ("  ⚠" if overdue else ""))
+            label.SetForegroundColour(wx.Colour(255, 190, 90) if overdue else UI_NAVY_MUTED)
+            label.SetToolTip(f"Dossier : {folder}\nSauvegarde automatique chaque semaine (Réglages pour la lancer à la main)"
+                             if folder else "Dossier de sauvegarde non défini")
+            label.GetParent().Layout()
+        except RuntimeError:
+            pass   # fenêtre détruite pendant la sauvegarde de fond
+
     def _start_weekly_backup(self):
         """Sauvegarde hebdomadaire automatique (base + projets), en tâche de fond, sans popup."""
         try:
-            self._backup_service().start_background()
+            self._backup_service().start_background(
+                on_done=lambda path, error: wx.CallAfter(self._update_backup_label))
         except Exception:
             logger.exception("Démarrage de la sauvegarde automatique impossible")
 
@@ -334,6 +362,7 @@ class SearchFrame(wx.Frame):
 
         def _done(path, error):
             def _show():
+                self._update_backup_label()
                 if on_done:
                     on_done()
                 if error:
@@ -380,8 +409,12 @@ class SearchFrame(wx.Frame):
         subtitle = wx.StaticText(header, label="Projets, gammes et offres")
         subtitle.SetFont(_font(9))
         subtitle.SetForegroundColour(UI_NAVY_MUTED)
+        # Dernière sauvegarde réussie (les zips sont écrits atomiquement : un zip présent est complet).
+        self.backup_label = wx.StaticText(header, label="")
+        self.backup_label.SetFont(_font(8))
         titles.Add(title, 0)
         titles.Add(subtitle, 0, wx.TOP, 1)
+        titles.Add(self.backup_label, 0, wx.TOP, 4)
         h.Add(titles, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.TOP | wx.BOTTOM, 20)
 
         h.AddStretchSpacer(1)
@@ -608,6 +641,7 @@ class SearchFrame(wx.Frame):
             cfg.set_empty_project_name(values["template_name"])
         if values["backup_dir"] != cfg.get_backup_folder():
             cfg.set_backup_folder(values["backup_dir"])
+            self._update_backup_label()
         if values["projects_dir"] and values["projects_dir"] != (cfg.get_quotes_root_folder() or ""):
             self._apply_projects_root(values["projects_dir"])
 
