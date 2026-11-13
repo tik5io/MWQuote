@@ -229,8 +229,14 @@ class TimelinePanel(scrolled.ScrolledPanel):
 
 
 class SearchFrame(wx.Frame):
+    # (libellé, largeur minimale) ; les deux premières s'étirent.
+    LIST_COLUMNS = (("Référence", 200), ("Client", 160), ("Statut", 90),
+                    ("Mode", 115), ("Dernière offre", 105))
+    LIST_STRETCH = (0.55, 0.45)          # part de la largeur libre : Référence, Client
+    LIST_PANE_WIDTH = 720                # volet liste à l'ouverture (colonnes + case à cocher + ascenseur)
+
     def __init__(self):
-        super().__init__(None, title="MWProjet", size=(1280, 820))
+        super().__init__(None, title="MWProjet", size=(1180, 780))
 
         self.db = Database()
         self.indexer = Indexer(self.db)
@@ -267,11 +273,35 @@ class SearchFrame(wx.Frame):
             self._refresh_list()
 
     def _init_sash(self):
-        """Position initiale du séparateur : ~58 % liste / 42 % détails (la taille réelle n'est connue qu'après affichage)."""
+        """Volet liste calé sur ses colonnes, le reste pour les détails (taille connue après affichage)."""
         try:
-            self.splitter.SetSashPosition(int(self.splitter.GetSize().GetWidth() * 0.64))
+            total = self.splitter.GetSize().GetWidth()
+            self.splitter.SetSashPosition(max(300, min(self.LIST_PANE_WIDTH, total - 380)))
+            self._fit_columns()
         except Exception:
             pass
+
+    def _on_list_size(self, event):
+        event.Skip()
+        wx.CallAfter(self._fit_columns)
+
+    def _fit_columns(self):
+        """Référence et Client absorbent la largeur disponible ; les autres gardent leur largeur."""
+        lc = getattr(self, "list_ctrl", None)
+        if not lc:
+            return
+        try:
+            avail = lc.GetClientSize().GetWidth()
+        except RuntimeError:
+            return
+        fixed = sum(w for _, w in self.LIST_COLUMNS[2:])
+        mins = [w for _, w in self.LIST_COLUMNS[:2]]
+        free = max(0, avail - fixed - sum(mins))
+        widths = [mins[0] + int(free * self.LIST_STRETCH[0]), 0]
+        widths[1] = max(mins[1], avail - fixed - widths[0])
+        for col, w in enumerate(widths):
+            if lc.GetColumnWidth(col) != w:
+                lc.SetColumnWidth(col, w)
 
     def _set_app_icon(self):
         try:
@@ -447,11 +477,10 @@ class SearchFrame(wx.Frame):
         row_il.Add(spacer)
         self.list_ctrl.AssignImageList(row_il, wx.IMAGE_LIST_SMALL)
         # Colonnes utiles au quotidien : qui, quoi, où en est l'offre.
-        self.list_ctrl.InsertColumn(0, "Référence", width=190)
-        self.list_ctrl.InsertColumn(1, "Client", width=170)
-        self.list_ctrl.InsertColumn(2, "Statut", width=95)
-        self.list_ctrl.InsertColumn(3, "Mode", width=125)
-        self.list_ctrl.InsertColumn(4, "Dernière offre", width=110)
+        # Référence et Client se partagent la largeur libre (voir _fit_columns).
+        for col, (label, width) in enumerate(self.LIST_COLUMNS):
+            self.list_ctrl.InsertColumn(col, label, width=width)
+        self.list_ctrl.Bind(wx.EVT_SIZE, self._on_list_size)
 
         try:
             self.list_ctrl.EnableCheckBoxes(True)
@@ -934,7 +963,9 @@ class SearchFrame(wx.Frame):
         
         if not projects_to_delete:
             return
-        
+        if self._refuse_if_open([p['filepath'] for p in projects_to_delete], "supprimer"):
+            return
+
         # Single or multiple deletion?
         if len(projects_to_delete) == 1:
             self._delete_single_project(projects_to_delete[0])
@@ -1250,7 +1281,15 @@ class SearchFrame(wx.Frame):
             self.Bind(wx.EVT_MENU, self._on_duplicate, dup_item)
         else:
             menu.AppendSeparator()
-        
+
+        # Comparaison : 2 ou 3 projets cochés (ou sélectionnés) ouverts côte à côte.
+        compare_count = len(self._get_checked_projects())
+        if 2 <= compare_count <= 3:
+            side_item = menu.Append(wx.ID_ANY, f"Ouvrir côte à côte ({compare_count} projets)",
+                                    "Ouvrir les fiches rangées côte à côte pour les comparer")
+            self.Bind(wx.EVT_MENU, self._on_open_side_by_side, side_item)
+            menu.AppendSeparator()
+
         # Delete (works with single or multiple selections)
         del_item = menu.Append(wx.ID_ANY, f"🗑️ Supprimer" + (f" ({selection_count} fichiers)" if selection_count > 1 else ""), 
                                "Supprimer le(s) projet(s)")
@@ -1603,6 +1642,10 @@ class SearchFrame(wx.Frame):
 
     def _on_restore_database(self, backup_dir=None):
         """Restaurer la base de données et les projets depuis un backup ZIP"""
+        if QuoteEditor_app.open_editors():
+            wx.MessageBox("Fermez toutes les fiches projet avant de restaurer une sauvegarde.",
+                          "Fiches ouvertes", wx.OK | wx.ICON_INFORMATION)
+            return
         root_folder = self.config.get_quotes_root_folder()
         
         # Proposer de sélectionner le fichier backup (par défaut dans le dossier des sauvegardes)
@@ -1679,9 +1722,37 @@ class SearchFrame(wx.Frame):
             )
 
     def _on_close(self, event):
-        """Handle window close event"""
+        """Fermeture de la liste : ferme d'abord les fiches ouvertes (chacune propose d'enregistrer)."""
+        for frame in QuoteEditor_app.open_editors():
+            if not frame.Close() and event.CanVeto():
+                event.Veto()          # l'utilisateur a annulé sur une fiche : on garde tout ouvert
+                return
         self.indexer.stop()
         self.Destroy()
+
+    def _refuse_if_open(self, filepaths, action):
+        """True (et message) si l'un des projets est ouvert dans une fiche."""
+        opened = [fp for fp in filepaths if QuoteEditor_app.find_open_editor(fp)]
+        if not opened:
+            return False
+        names = "\n".join(f"• {os.path.basename(fp)}" for fp in opened[:5])
+        wx.MessageBox(f"Fermez d'abord la fiche de ces projets avant de les {action} :\n\n{names}",
+                      "Projet ouvert", wx.OK | wx.ICON_INFORMATION)
+        return True
+
+    def _on_open_side_by_side(self, event):
+        """Ouvre les projets cochés (ou sélectionnés) dans des fiches rangées côte à côte."""
+        projects = self._get_checked_projects()[:3]
+        frames = []
+        for p_data in projects:
+            try:
+                frames.append(QuoteEditor_app.open_quote_from_file(
+                    p_data['filepath'], parent_frame=self, parent_indexer=self.indexer))
+            except Exception as e:
+                wx.MessageBox(f"Impossible d'ouvrir {p_data.get('reference') or p_data['filepath']} :\n{e}",
+                              "Erreur", wx.OK | wx.ICON_ERROR)
+        if len(frames) > 1:
+            wx.CallAfter(QuoteEditor_app.tile_side_by_side, frames)
 
     def _select_and_display_quote(self, filepath):
         """
