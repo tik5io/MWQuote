@@ -16,7 +16,7 @@ from .client import normalize_sectors
 
 class Project:
     """
-    Un projet MWQuote contient N versions indicées de gamme.
+    Un projet MWProjet contient N versions indicées de gamme.
     Chaque version a ses propres opérations, coûts et documents.
     Les propriétés de premier niveau (operations, …) délèguent vers la version courante.
     """

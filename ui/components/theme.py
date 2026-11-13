@@ -1,4 +1,4 @@
-"""Charte graphique commune (bandeau bleu nuit, boutons plats) des fenêtres MWQuote."""
+"""Charte graphique commune (bandeau bleu nuit, boutons plats) des fenêtres MWProjet."""
 import wx
 
 

@@ -3,7 +3,7 @@ import wx
 
 class BusinessDashboardFrame(wx.Frame):
     def __init__(self, parent, analytics_service):
-        super().__init__(parent, title="MWQuote - Business Dashboard", size=(980, 700))
+        super().__init__(parent, title="MWProjet - Business Dashboard", size=(980, 700))
         self.analytics_service = analytics_service
         self._build_ui()
         self._load_data()

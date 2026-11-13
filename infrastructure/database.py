@@ -40,7 +40,11 @@ class Database:
                 is_missing INTEGER DEFAULT 0,
                 mwq_uuid TEXT,
                 has_serie INTEGER DEFAULT 0,
-                is_prototype INTEGER DEFAULT 0
+                is_prototype INTEGER DEFAULT 0,
+                last_offer_at TEXT,
+                last_offer_ref TEXT,
+                last_offer_revision TEXT,
+                offer_count INTEGER
             )
         ''')
 
@@ -54,6 +58,11 @@ class Database:
             "ALTER TABLE projects ADD COLUMN mwq_uuid TEXT",
             "ALTER TABLE projects ADD COLUMN has_serie INTEGER DEFAULT 0",
             "ALTER TABLE projects ADD COLUMN is_prototype INTEGER DEFAULT 0",
+            # Dernière offre émise (NULL partout = brouillon ; offer_count NULL = pas encore indexé).
+            "ALTER TABLE projects ADD COLUMN last_offer_at TEXT",
+            "ALTER TABLE projects ADD COLUMN last_offer_ref TEXT",
+            "ALTER TABLE projects ADD COLUMN last_offer_revision TEXT",
+            "ALTER TABLE projects ADD COLUMN offer_count INTEGER",
         ]
         for migration in migrations:
             try:
@@ -180,6 +189,7 @@ class Database:
                         1 if project_data.get('is_prototype') else 0,
                         project_id
                     ))
+                    self._write_offer_fields(cursor, project_id, project_data)
                     return project_id
 
             if row:
@@ -228,7 +238,42 @@ class Database:
                 ))
                 project_id = cursor.lastrowid
 
+            self._write_offer_fields(cursor, project_id, project_data)
             return project_id
+
+    @staticmethod
+    def _write_offer_fields(cursor, project_id: int, project_data: Dict):
+        """Colonnes « dernière offre » (absentes du dict = on ne touche pas aux valeurs en base)."""
+        if "offer_count" not in project_data:
+            return
+        cursor.execute('''
+            UPDATE projects SET last_offer_at = ?, last_offer_ref = ?, last_offer_revision = ?, offer_count = ?
+            WHERE id = ?
+        ''', (
+            project_data.get("last_offer_at"),
+            project_data.get("last_offer_ref"),
+            project_data.get("last_offer_revision"),
+            project_data.get("offer_count") or 0,
+            project_id,
+        ))
+
+    def update_offer_fields(self, filepath: str, project_data: Dict) -> bool:
+        """Met à jour les seules colonnes « dernière offre » d'un projet déjà indexé."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT id FROM projects WHERE filepath = ?', (filepath,))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            self._write_offer_fields(cursor, row[0], project_data)
+            return True
+
+    def projects_without_offer_index(self) -> List[str]:
+        """Chemins des projets indexés avant l'ajout des colonnes « dernière offre »."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT filepath FROM projects WHERE offer_count IS NULL AND is_missing = 0")
+            return [r[0] for r in cursor.fetchall()]
 
     def search_projects(self,
                        global_search: str = None,
@@ -259,21 +304,27 @@ class Database:
             if where_clauses:
                 full_query += " WHERE " + " AND ".join(where_clauses)
 
+            # Expressions de tri (libellés de colonnes de la liste ou noms de champs).
             col_map = {
-                "Référence": "reference",
-                "Client": "client",
-                "Q. Min": "min_qty",
-                "Q. Max": "max_qty",
-                "Modifié le": "last_modified",
-                "reference": "reference",
-                "client": "client",
-                "min_qty": "min_qty",
-                "max_qty": "max_qty",
-                "last_modified": "last_modified"
+                "Référence": ("p.reference COLLATE NOCASE",),
+                "Client": ("p.client COLLATE NOCASE",),
+                "Statut": ("COALESCE(p.offer_count, 0) > 0", "LENGTH(p.last_offer_revision)", "p.last_offer_revision"),
+                "Mode": ("p.is_prototype * 2 + p.has_serie",),
+                "Dernière offre": ("p.last_offer_at",),
+                "Q. Min": ("p.min_qty",),
+                "Q. Max": ("p.max_qty",),
+                "Modifié le": ("p.last_modified",),
+                "reference": ("p.reference COLLATE NOCASE",),
+                "client": ("p.client COLLATE NOCASE",),
+                "min_qty": ("p.min_qty",),
+                "max_qty": ("p.max_qty",),
+                "last_offer_at": ("p.last_offer_at",),
+                "last_modified": ("p.last_modified",),
             }
-            db_sort_col = col_map.get(sort_by, "last_modified")
             order = "DESC" if sort_order.upper() == "DESC" else "ASC"
-            full_query += f" ORDER BY p.{db_sort_col} {order}"
+            sort_terms = col_map.get(sort_by, ("p.last_modified",))
+            terms = ", ".join(f"{t} {order}" for t in sort_terms)
+            full_query += f" ORDER BY {terms}, p.last_modified DESC"
 
             cursor.execute(full_query, params)
             rows = cursor.fetchall()

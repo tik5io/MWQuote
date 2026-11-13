@@ -42,7 +42,7 @@ class FxRate:
 
         def _worker():
             try:
-                req = urllib.request.Request(_URL, headers={"User-Agent": "MWQuote/1.0"})
+                req = urllib.request.Request(_URL, headers={"User-Agent": "MWProjet/1.0"})
                 with urllib.request.urlopen(req, timeout=6) as resp:
                     data = json.loads(resp.read().decode())
                 cls.rate = float(data["rates"]["USD"])

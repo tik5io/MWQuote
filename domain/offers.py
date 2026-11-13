@@ -175,3 +175,39 @@ def latest_offer_ref(history: List[dict], version_index: int):
     """Numéro de devis de la dernière offre émise sur la version (None si la version n'a pas d'offre)."""
     refs = [e.get("devis_ref") for e in history or [] if e.get("version_index", 1) == version_index and e.get("devis_ref")]
     return refs[-1] if refs else None
+
+
+def _entry_datetime(entry: dict):
+    """Date/heure d'émission d'une entrée (« JJ/MM/AAAA » + « HH:MM »), None si illisible."""
+    import datetime as _dt
+    raw = f"{entry.get('date', '')} {entry.get('time', '00:00')}".strip()
+    for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return _dt.datetime.strptime(raw if " " in fmt else raw.split(" ")[0], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def latest_offer(history: List[dict]) -> Optional[dict]:
+    """Dernière offre émise sur le projet, toutes versions confondues (None = brouillon).
+
+    {devis_ref, revision, version_index, is_serie, issued_at (datetime ou None), count}.
+    À date égale, l'ordre d'émission (ordre de la liste) départage.
+    """
+    entries = [e for e in history or [] if e.get("devis_ref")]
+    if not entries:
+        return None
+    best_pos, best = 0, entries[0]
+    for pos, entry in enumerate(entries):
+        dt, best_dt = _entry_datetime(entry), _entry_datetime(best)
+        if dt is None or best_dt is None or dt >= best_dt:
+            best_pos, best = pos, entry
+    return {
+        "devis_ref": best.get("devis_ref"),
+        "revision": revision_of(best),
+        "version_index": best.get("version_index", 1),
+        "is_serie": bool(best.get("is_serie")),
+        "issued_at": _entry_datetime(best),
+        "count": len(entries),
+    }

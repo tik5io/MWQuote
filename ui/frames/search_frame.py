@@ -230,7 +230,7 @@ class TimelinePanel(scrolled.ScrolledPanel):
 
 class SearchFrame(wx.Frame):
     def __init__(self):
-        super().__init__(None, title="MWQuote - Projets", size=(1280, 820))
+        super().__init__(None, title="MWProjet", size=(1280, 820))
 
         self.db = Database()
         self.indexer = Indexer(self.db)
@@ -251,13 +251,20 @@ class SearchFrame(wx.Frame):
         self._timeline_mode = False
 
         self._refresh_list()
-        
+        # Base indexée avant les colonnes « dernière offre » : on les complète en arrière-plan.
+        self.indexer.backfill_offer_index(
+            completion_callback=lambda n: wx.CallAfter(self._after_offer_backfill, n))
+
         self.Centre()
         self.Show()
         wx.CallAfter(self._init_sash)
         
         self.Bind(wx.EVT_CLOSE, self._on_close)
         self.Bind(wx.EVT_ACTIVATE, self._on_activate)
+
+    def _after_offer_backfill(self, count):
+        if self and count:
+            self._refresh_list()
 
     def _init_sash(self):
         """Position initiale du séparateur : ~58 % liste / 42 % détails (la taille réelle n'est connue qu'après affichage)."""
@@ -337,10 +344,10 @@ class SearchFrame(wx.Frame):
         h = wx.BoxSizer(wx.HORIZONTAL)
 
         titles = wx.BoxSizer(wx.VERTICAL)
-        title = wx.StaticText(header, label="MWQuote")
+        title = wx.StaticText(header, label="MWProjet")
         title.SetFont(_font(18, bold=True))
         title.SetForegroundColour(wx.WHITE)
-        subtitle = wx.StaticText(header, label="Offres et projets")
+        subtitle = wx.StaticText(header, label="Projets, gammes et offres")
         subtitle.SetFont(_font(9))
         subtitle.SetForegroundColour(UI_NAVY_MUTED)
         titles.Add(title, 0)
@@ -439,14 +446,12 @@ class SearchFrame(wx.Frame):
         _dc.SelectObject(wx.NullBitmap)
         row_il.Add(spacer)
         self.list_ctrl.AssignImageList(row_il, wx.IMAGE_LIST_SMALL)
-        self.list_ctrl.InsertColumn(0, "Aperçu", width=56)
-        self.list_ctrl.InsertColumn(1, "Référence", width=135)
-        self.list_ctrl.InsertColumn(2, "Client", width=120)
-        self.list_ctrl.InsertColumn(3, "Mode", width=130)
-        self.list_ctrl.InsertColumn(4, "Q. Min", width=55)
-        self.list_ctrl.InsertColumn(5, "Q. Max", width=62)
-        self.list_ctrl.InsertColumn(6, "Date Proj.", width=80)
-        self.list_ctrl.InsertColumn(7, "Modifié le", width=135)
+        # Colonnes utiles au quotidien : qui, quoi, où en est l'offre.
+        self.list_ctrl.InsertColumn(0, "Référence", width=190)
+        self.list_ctrl.InsertColumn(1, "Client", width=170)
+        self.list_ctrl.InsertColumn(2, "Statut", width=95)
+        self.list_ctrl.InsertColumn(3, "Mode", width=125)
+        self.list_ctrl.InsertColumn(4, "Dernière offre", width=110)
 
         try:
             self.list_ctrl.EnableCheckBoxes(True)
@@ -601,7 +606,7 @@ class SearchFrame(wx.Frame):
 
     def _on_open_file(self, event):
         """Ouvrir un fichier .mwq directement"""
-        with wx.FileDialog(self, "Ouvrir un projet", wildcard="Fichiers MWQuote (*.mwq)|*.mwq",
+        with wx.FileDialog(self, "Ouvrir un projet", wildcard="Fichiers MWProjet (*.mwq)|*.mwq",
                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
             if fileDialog.ShowModal() == wx.ID_CANCEL:
                 return
@@ -663,9 +668,6 @@ class SearchFrame(wx.Frame):
     def _on_col_click(self, event):
         col_idx = event.GetColumn()
         col_name = self.list_ctrl.GetColumn(col_idx).GetText()
-        if col_name == "Aperçu":
-            return
-        
         if self.sort_col == col_name:
             self.sort_ascending = not self.sort_ascending
         else:
@@ -709,27 +711,26 @@ class SearchFrame(wx.Frame):
         self._show_empty_state(not results)
 
         for i, p in enumerate(results):
-            has_preview = bool(p.get('preview_filename'))
             has_serie    = bool(p.get('has_serie', 0))
             is_prototype = bool(p.get('is_prototype', 0))
 
             if is_prototype and has_serie:
-                mode_label = "◆ ● Proto + Série"
+                mode_label = "Proto + Série"
             elif is_prototype:
-                mode_label = "◆ Prototype"
+                mode_label = "Prototype"
             elif has_serie:
-                mode_label = "● Série"
+                mode_label = "Série"
             else:
-                mode_label = "—"
+                mode_label = "Lot"
 
-            idx = self.list_ctrl.InsertItem(i, "✓" if has_preview else "")
-            self.list_ctrl.SetItem(idx, 1, str(p.get('reference') or ""))
-            self.list_ctrl.SetItem(idx, 2, str(p.get('client') or ""))
+            revision = p.get('last_offer_revision')
+            status_label = f"Indice {revision}" if revision else "Brouillon"
+
+            idx = self.list_ctrl.InsertItem(i, str(p.get('reference') or ""))
+            self.list_ctrl.SetItem(idx, 1, str(p.get('client') or ""))
+            self.list_ctrl.SetItem(idx, 2, status_label)
             self.list_ctrl.SetItem(idx, 3, mode_label)
-            self.list_ctrl.SetItem(idx, 4, str(p.get('min_qty', 0)))
-            self.list_ctrl.SetItem(idx, 5, str(p.get('max_qty', 0)))
-            self.list_ctrl.SetItem(idx, 6, _fmt_date(p.get('project_date')))
-            self.list_ctrl.SetItem(idx, 7, _fmt_datetime(p.get('last_modified')))
+            self.list_ctrl.SetItem(idx, 4, _fmt_date(p.get('last_offer_at')) if p.get('last_offer_at') else "—")
 
             if is_prototype:
                 self.list_ctrl.SetItemBackgroundColour(idx, UI_ROW_PROTO)
@@ -1452,7 +1453,7 @@ class SearchFrame(wx.Frame):
             )
             return
 
-        default_name = f"Synthese_MWQuote_{dt_module.date.today().strftime('%Y%m%d')}.xlsx"
+        default_name = f"Synthese_MWProjet_{dt_module.date.today().strftime('%Y%m%d')}.xlsx"
         with wx.FileDialog(
             self, "Enregistrer la synthèse Excel",
             defaultDir=os.path.expanduser("~\\Desktop"),

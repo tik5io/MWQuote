@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MWQuote - Application principale
+MWProjet - Application principale
 Point d'entrée de l'application de gestion des devis.
 
 Modules disponibles:
@@ -68,14 +68,14 @@ def main():
         from ui.frames.search_frame import SearchFrame
 
         # 4. Run application
-        class MWQuoteApp(wx.App):
+        class MWProjetApp(wx.App):
             def OnInit(self):
                 wx.InitAllImageHandlers()
                 self.frame = SearchFrame()
                 self.SetTopWindow(self.frame)
                 return True
 
-        app = MWQuoteApp()
+        app = MWProjetApp()
         app.MainLoop()
         
         # Cleanup
@@ -90,7 +90,7 @@ def main():
             import wx
             if not wx.GetApp():
                 temp_app = wx.App()
-            wx.MessageBox(error_msg, "MWQuote - Startup Failure", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox(error_msg, "MWProjet - Startup Failure", wx.OK | wx.ICON_ERROR)
         except:
             # Fallback to simple file write if wx failed too
             with open("CRASH_REPORT.txt", "w") as f:

@@ -93,7 +93,7 @@ class MainFrame(wx.Frame):
     TAB_TARIF = "Chiffrage · Tarif de vente"
 
     def __init__(self, project=None, clear_logs=False, filepath=None, new_quote=False):
-        super().__init__(None, title="MWQuote", size=(1200, 800))
+        super().__init__(None, title="MWProjet", size=(1200, 800))
         
         if clear_logs:
             clear_logs_directory()
@@ -181,7 +181,7 @@ class MainFrame(wx.Frame):
         root_sizer = wx.BoxSizer(wx.VERTICAL)
 
         # Bandeau bleu nuit (charte commune avec la liste des offres) : projet, état, enregistrement
-        self._header, h_sizer, self._header_title, self._header_sub = theme.build_header(root, "MWQuote")
+        self._header, h_sizer, self._header_title, self._header_sub = theme.build_header(root, "MWProjet")
         self._save_state_lbl = wx.StaticText(self._header, label="")
         self._save_state_lbl.SetFont(theme.font(9, bold=True))
         h_sizer.Add(self._save_state_lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 16)
@@ -931,7 +931,7 @@ class MainFrame(wx.Frame):
             text = (f"⚠ Le scénario « {name} » est figé par une offre émise :\n\n{lines}\n\n"
                     "La supprimer retire aussi ces offres de l'historique du projet, fichiers XLSX "
                     "embarqués compris. Les devis déjà envoyés au client ne sont pas touchés, mais ils "
-                    "ne seront plus retrouvables dans MWQuote.\n\nSupprimer quand même ce scénario ?")
+                    "ne seront plus retrouvables dans MWProjet.\n\nSupprimer quand même ce scénario ?")
             icon = wx.ICON_WARNING
         else:
             text = f"Supprimer le scénario « {name} » et toute sa gamme ?"
@@ -995,7 +995,7 @@ class MainFrame(wx.Frame):
             f"Enregistrer le nouveau projet (scénario {v_name})",
             defaultFile=os.path.basename(default_file) if default_file else "",
             defaultDir=os.path.dirname(default_file) if default_file else "",
-            wildcard="Fichiers MWQuote (*.mwq)|*.mwq",
+            wildcard="Fichiers MWProjet (*.mwq)|*.mwq",
             style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
         ) as fd:
             if fd.ShowModal() == wx.ID_CANCEL:
@@ -1246,13 +1246,13 @@ class MainFrame(wx.Frame):
     def _update_title(self):
         """Met à jour le titre de la fenêtre avec la référence ou le nom du projet."""
         if not self.project:
-            self.SetTitle("MWQuote")
+            self.SetTitle("MWProjet")
             return
         display_name = self.project.display_name
         v_idx = self.project.current_version_index
         phase = self.project.current_phase.display_label
         dirty_marker = " ●" if self._dirty else ""
-        self.SetTitle(f"MWQuote - {display_name}  [S{v_idx} · {phase}]{dirty_marker}")
+        self.SetTitle(f"MWProjet - {display_name}  [S{v_idx} · {phase}]{dirty_marker}")
         self._update_header(display_name, v_idx, phase)
 
     def _update_header(self, display_name, v_idx, phase):
@@ -1357,7 +1357,7 @@ class MainFrame(wx.Frame):
         """Ouvre un projet depuis un fichier"""
         if not self._confirm_discard_or_save():
             return
-        with wx.FileDialog(self, "Ouvrir un projet", wildcard="Fichiers MWQuote (*.mwq)|*.mwq",
+        with wx.FileDialog(self, "Ouvrir un projet", wildcard="Fichiers MWProjet (*.mwq)|*.mwq",
                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
             if fileDialog.ShowModal() == wx.ID_CANCEL:
                 return
@@ -1382,7 +1382,7 @@ class MainFrame(wx.Frame):
 
         with wx.FileDialog(self, "Dupliquer le projet", 
                           defaultFile=default_name,
-                          wildcard="Fichiers MWQuote (*.mwq)|*.mwq",
+                          wildcard="Fichiers MWProjet (*.mwq)|*.mwq",
                           style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fileDialog:
             if fileDialog.ShowModal() == wx.ID_CANCEL:
                 return
@@ -1485,7 +1485,7 @@ class MainFrame(wx.Frame):
                     return False
                 with wx.FileDialog(
                     self, "Enregistrer le projet",
-                    wildcard="Fichiers MWQuote (*.mwq)|*.mwq",
+                    wildcard="Fichiers MWProjet (*.mwq)|*.mwq",
                     style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
                 ) as fd:
                     if fd.ShowModal() == wx.ID_CANCEL:

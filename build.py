@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Build MWQuote executable with PyInstaller.
+Build MWProjet executable with PyInstaller.
 
 Usage:
   python build.py
   python build.py --onefile
-  python build.py --name MWQuote
+  python build.py --name MWProjet
 """
 
 import argparse
@@ -73,9 +73,9 @@ def main():
         print(f"Entry point not found: {entry}")
         return 1
 
-    parser = argparse.ArgumentParser(description="Build MWQuote with PyInstaller")
+    parser = argparse.ArgumentParser(description="Build MWProjet with PyInstaller")
     parser.add_argument("--onefile", action="store_true", help="Build a single-file executable")
-    parser.add_argument("--name", default="MWQuote", help="Executable name")
+    parser.add_argument("--name", default="MWProjet", help="Executable name")
     args = parser.parse_args()
 
     # Ensure icon exists

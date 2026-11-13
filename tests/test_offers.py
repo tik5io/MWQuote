@@ -286,3 +286,46 @@ class OfferCommentTest(unittest.TestCase):
         ws = load_workbook(io.BytesIO(buf.getvalue())).active
         values = [c.value for row in ws.iter_rows() for c in row if c.value]
         self.assertIn("Conditions spécifiques client", values)
+
+
+# --- Dernière offre (colonne « Statut » / « Dernière offre » de la liste des projets) ---
+
+def test_latest_offer_none_is_draft():
+    from domain.offers import latest_offer
+    assert latest_offer([]) is None
+    assert latest_offer(None) is None
+
+
+def test_latest_offer_picks_most_recent_entry_across_versions():
+    from domain.offers import latest_offer
+    history = [
+        {"devis_ref": "OD-1", "revision": "A", "date": "02/03/2026", "time": "10:00", "version_index": 1},
+        {"devis_ref": "OD-2", "revision": "B", "date": "15/04/2026", "time": "09:30", "version_index": 2},
+        {"devis_ref": "OD-1", "revision": "B", "date": "15/04/2026", "time": "08:00", "version_index": 1},
+    ]
+    last = latest_offer(history)
+    assert (last["devis_ref"], last["revision"], last["version_index"]) == ("OD-2", "B", 2)
+    assert last["issued_at"].strftime("%Y-%m-%d %H:%M") == "2026-04-15 09:30"
+    assert last["count"] == 3
+
+
+def test_latest_offer_legacy_entry_without_revision_or_time():
+    from domain.offers import latest_offer
+    last = latest_offer([{"devis_ref": "OD-9", "date": "01/01/2025"}])
+    assert last["revision"] == "A"
+    assert last["issued_at"].strftime("%Y-%m-%d") == "2025-01-01"
+
+
+def test_search_projects_sorts_by_status_and_last_offer(tmp_path):
+    from infrastructure.database import Database
+    db = Database(str(tmp_path / "idx.db"))
+    rows = [("P1", None, None, 0), ("P2", "B", "2026-04-15 09:30", 2), ("P3", "AA", "2026-01-10 10:00", 27)]
+    for ref, rev, at, count in rows:
+        db.upsert_project({"name": ref, "reference": ref, "client": "C", "filepath": str(tmp_path / f"{ref}.mwq"),
+                           "drawing_filename": None, "last_offer_revision": rev, "last_offer_at": at,
+                           "offer_count": count, "last_offer_ref": "OD" if rev else None})
+    by_status = [p["reference"] for p in db.search_projects(sort_by="Statut", sort_order="ASC")]
+    assert by_status == ["P1", "P2", "P3"]          # Brouillon, puis indices B < AA
+    by_date = [p["reference"] for p in db.search_projects(sort_by="Dernière offre", sort_order="DESC")]
+    assert by_date[:2] == ["P2", "P3"]
+    assert db.projects_without_offer_index() == []

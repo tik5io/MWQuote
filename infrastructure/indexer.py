@@ -69,7 +69,10 @@ class Indexer:
 
     def _build_project_data(self, project, filepath: str, content_hash: str) -> Dict:
         """Build the project data dict for database insertion."""
+        from domain.offers import latest_offer
         qtys = sorted(project.sale_quantities)
+        last = latest_offer(getattr(project, "export_history", None) or [])
+        issued_at = last["issued_at"] if last else None
         return {
             'name': project.name,
             'reference': project.reference,
@@ -83,7 +86,39 @@ class Indexer:
             'content_hash': content_hash,
             'has_serie': any(getattr(v, 'is_serie', False) for v in getattr(project, 'versions', [])),
             'is_prototype': any(getattr(v, 'is_prototype', False) for v in getattr(project, 'versions', [])),
+            # Dernière offre émise (aucune = brouillon).
+            'offer_count': last["count"] if last else 0,
+            'last_offer_ref': last["devis_ref"] if last else None,
+            'last_offer_revision': last["revision"] if last else None,
+            'last_offer_at': issued_at.strftime("%Y-%m-%d %H:%M") if issued_at else None,
         }
+
+    def backfill_offer_index(self, completion_callback: Callable[[int], None] = None):
+        """Complète en tâche de fond les colonnes « dernière offre » des projets indexés avant leur ajout.
+
+        Ne touche qu'à ces colonnes (pas à la date de modification). False si rien à faire.
+        """
+        paths = self.database.projects_without_offer_index()
+        if not paths:
+            return False
+
+        def _work():
+            done = 0
+            for path in paths:
+                if self._stop_event.is_set():
+                    break
+                try:
+                    project = PersistenceService.load_project(path)
+                    data = self._build_project_data(project, path, None)
+                    if self.database.update_offer_fields(path, data):
+                        done += 1
+                except Exception as e:
+                    print(f"Offer index backfill failed for {path}: {e}")
+            if completion_callback:
+                completion_callback(done)
+
+        threading.Thread(target=_work, name="offer-index-backfill", daemon=True).start()
+        return True
 
     def stop(self):
         """Stop current indexing process."""

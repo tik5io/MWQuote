@@ -1,6 +1,8 @@
-# MWQuote
+# MWProjet
 
-Application desktop Python (`wxPython`) pour créer, éditer, analyser et comparer des devis techniques.
+Application desktop Python (`wxPython`) de gestion de projets : gammes de fabrication versionnées, chiffrage et offres client indicées.
+
+> Anciennement *MWQuote*. Les données restent dans `%LOCALAPPDATA%\MWQuote` (base `mwquote_index.db`, sauvegardes, journaux) pour rester compatibles avec les installations existantes.
 
 ## Fonctionnalités
 
@@ -39,7 +41,7 @@ Options utiles :
 
 ```bash
 python build.py --onefile
-python build.py --name MWQuote
+python build.py --name MWProjet
 ```
 
 ## Structure rapide
